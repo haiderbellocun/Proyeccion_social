@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   TrendingUp,
@@ -21,66 +22,151 @@ import {
 } from "recharts";
 import { Badge } from "../components/Badge";
 import { StatusBadge } from "../components/StatusBadge";
-import { CategoryTag } from "../components/CategoryTag";
-import {
-  getComplianceStats,
-  deliverables,
-  computeStatus,
-  MONTHS,
-  MONTH_COLORS,
-  type MonthName,
-} from "../data/matrizData";
+import { MONTH_COLORS, type MonthName } from "../data/matrizData";
 
-const weeklyData = [
-  { semana: "S1", avance: 15 },
-  { semana: "S2", avance: 28 },
-  { semana: "S3", avance: 35 },
-  { semana: "S4", avance: 52 },
-  { semana: "S5", avance: 61 },
-  { semana: "S6", avance: 74 },
-  { semana: "S7", avance: 80 },
-  { semana: "S8", avance: 88 },
-];
+const API_BASE_URL = "http://localhost:4000";
 
-const activities = [
-  { id: 1, project: "Alfabetización Digital - Comunidad Norte", activity: "Taller de uso de herramientas digitales", deadline: "15 Mar 2024", status: "pending" as const },
-  { id: 2, project: "Convenio UGEL - Capacitación Docente", activity: "Sesión de capacitación metodológica", deadline: "18 Mar 2024", status: "review" as const },
-  { id: 3, project: "Proyecto Huertos Urbanos", activity: "Diagnóstico inicial del terreno", deadline: "10 Mar 2024", status: "approved" as const },
-  { id: 4, project: "Salud Comunitaria - Zona Rural", activity: "Jornada de sensibilización", deadline: "22 Mar 2024", status: "delayed" as const },
-];
+type StatsByMonth = { month: string; total: number; done: number; pct: number };
+type UpcomingItem = { id: number; proyecto: string; entregable: string; fechaFin: string; semana: number };
+type ActivityRow = { id: number; project: string; activity: string; deadline: string; status: string };
+
+function computeStatusFromDate(fechaFin: string): "no_iniciado" | "semana_en_curso" | "vencido" | "entrega_a_tiempo" {
+  if (!fechaFin) return "no_iniciado";
+  const fin = new Date(fechaFin);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  fin.setHours(0, 0, 0, 0);
+  const diffDays = Math.ceil((fin.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays < 0) return "vencido";
+  if (diffDays <= 7) return "semana_en_curso";
+  return "no_iniciado";
+}
 
 export default function TeacherDashboard() {
   const navigate = useNavigate();
-  const stats = getComplianceStats();
+  const [docenteId, setDocenteId] = useState<number | null>(null);
+  const [projectsCount, setProjectsCount] = useState<number | null>(null);
+  const [stats, setStats] = useState<{ total: number; completed: number; pct: number } | null>(null);
+  const [byMonth, setByMonth] = useState<StatsByMonth[]>([]);
+  const [upcoming, setUpcoming] = useState<UpcomingItem[]>([]);
+  const [activities, setActivities] = useState<ActivityRow[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // Próximas entregas de la matriz (no iniciadas / en curso)
-  const upcoming = deliverables
-    .filter((d) => {
-      const s = computeStatus(d.scheduledDate, d.actualDate);
-      return s === "semana_en_curso" || s === "no_iniciado";
-    })
-    .slice(0, 5);
+  useEffect(() => {
+    const stored = window.localStorage.getItem("proysocial:user");
+    let id: number | null = null;
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (parsed?.user?.id) id = Number(parsed.user.id);
+      } catch {
+        id = null;
+      }
+    }
+    setDocenteId(id);
 
-  // Compliance color
+    if (!id) {
+      setProjectsCount(0);
+      setStats({ total: 0, completed: 0, pct: 0 });
+      setByMonth([]);
+      setUpcoming([]);
+      setActivities([]);
+      setLoading(false);
+      return;
+    }
+
+    const load = async () => {
+      try {
+        const [resDashboard, resStats] = await Promise.all([
+          fetch(`${API_BASE_URL}/docente/${id}/dashboard`),
+          fetch(`${API_BASE_URL}/docente/${id}/dashboard-stats`),
+        ]);
+
+        if (resDashboard.ok) {
+          const data = await resDashboard.json();
+          const proyectos = (data.proyectos || []) as any[];
+          setProjectsCount(proyectos.length);
+        } else {
+          setProjectsCount(0);
+        }
+
+        if (resStats.ok) {
+          const data = await resStats.json();
+          setStats(data.stats || { total: 0, completed: 0, pct: 0 });
+          setByMonth(Array.isArray(data.byMonth) ? data.byMonth : []);
+          setUpcoming(Array.isArray(data.upcoming) ? data.upcoming : []);
+          setActivities(Array.isArray(data.activities) ? data.activities : []);
+        } else {
+          setStats({ total: 0, completed: 0, pct: 0 });
+          setByMonth([]);
+          setUpcoming([]);
+          setActivities([]);
+        }
+      } catch (err) {
+        console.error(err);
+        setProjectsCount(0);
+        setStats({ total: 0, completed: 0, pct: 0 });
+        setByMonth([]);
+        setUpcoming([]);
+        setActivities([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, []);
+
+  const safeStats = stats ?? { total: 0, completed: 0, pct: 0 };
   const complianceColor =
-    stats.pct >= 90 ? "#10b981" : stats.pct >= 80 ? "#1d4ed8" : stats.pct >= 60 ? "#f59e0b" : "#ef4444";
+    safeStats.pct >= 90 ? "#10b981" : safeStats.pct >= 80 ? "#1d4ed8" : safeStats.pct >= 60 ? "#f59e0b" : "#ef4444";
+
+  const weeklyData = Array.from({ length: 8 }, (_, i) => ({
+    semana: `S${i + 1}`,
+    avance: safeStats.total > 0 ? Math.round((safeStats.pct / 100) * ((i + 1) / 8) * 100) : 0,
+  }));
 
   const statCards = [
-    { label: "Cumplimiento general", value: `${stats.pct}%`, sub: `${stats.completed} de ${stats.total} entregables`, icon: TrendingUp, iconBg: "bg-[#1d4ed8]" },
-    { label: "Entregables completados", value: `${stats.completed}`, sub: "Con evidencia registrada", icon: CheckCircle2, iconBg: "bg-emerald-500" },
-    { label: "Pendientes / En curso", value: `${stats.total - stats.completed}`, sub: "Semana 6 activa", icon: Clock, iconBg: "bg-amber-500" },
-    { label: "Proyectos activos", value: "3", sub: "1 convenio, 2 proyectos", icon: FolderOpen, iconBg: "bg-purple-500" },
+    {
+      label: "Cumplimiento general",
+      value: `${safeStats.pct}%`,
+      sub: `${safeStats.completed} de ${safeStats.total} entregables`,
+      icon: TrendingUp,
+      iconBg: "bg-[#1d4ed8]",
+    },
+    {
+      label: "Entregables completados",
+      value: String(safeStats.completed),
+      sub: "Con evidencia registrada",
+      icon: CheckCircle2,
+      iconBg: "bg-emerald-500",
+    },
+    {
+      label: "Pendientes / En curso",
+      value: String(Math.max(0, safeStats.total - safeStats.completed)),
+      sub: "Por reportar",
+      icon: Clock,
+      iconBg: "bg-amber-500",
+    },
+    {
+      label: "Proyectos activos",
+      value: projectsCount != null ? String(projectsCount) : "—",
+      sub: "Proyectos asignados este ciclo",
+      icon: FolderOpen,
+      iconBg: "bg-purple-500",
+    },
   ];
+
+  const hasVencidos = activities.some((a) => a.status === "delayed");
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-gray-900">Mi Dashboard</h1>
           <p className="text-gray-500 text-sm flex items-center gap-1.5 mt-0.5">
             <Calendar className="w-3.5 h-3.5" />
-            Semana 6 en curso — Ciclo 2024-II
+            {loading ? "Cargando..." : "Avance según tus proyectos asignados"}
           </p>
         </div>
         <div className="flex gap-2">
@@ -123,7 +209,7 @@ export default function TeacherDashboard() {
         ))}
       </div>
 
-      {/* ── AVANCE POR MES ── */}
+      {/* Avance por mes */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
         <div className="flex items-center justify-between mb-4">
           <div>
@@ -139,36 +225,29 @@ export default function TeacherDashboard() {
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {stats.byMonth.map((m) => {
-            const isDone = m.pct === 100;
+          {(byMonth.length > 0 ? byMonth : [{ month: "Febrero", total: 0, done: 0, pct: 0 }, { month: "Marzo", total: 0, done: 0, pct: 0 }, { month: "Abril", total: 0, done: 0, pct: 0 }, { month: "Mayo", total: 0, done: 0, pct: 0 }]).map((m) => {
+            const isDone = m.pct === 100 && m.total > 0;
             const isActive = m.month === "Marzo";
+            const colorClass = MONTH_COLORS[m.month as MonthName] || "bg-gray-500";
             return (
               <div
                 key={m.month}
                 className={`rounded-xl p-4 border-2 transition-all cursor-pointer ${
-                  isActive
-                    ? "border-[#1e3a8a] bg-blue-50/40"
-                    : isDone
-                    ? "border-emerald-200 bg-emerald-50/40"
-                    : "border-gray-100"
+                  isActive ? "border-[#1e3a8a] bg-blue-50/40" : isDone ? "border-emerald-200 bg-emerald-50/40" : "border-gray-100"
                 }`}
                 onClick={() => navigate("/docente/matriz")}
               >
                 <div className="flex items-center justify-between mb-2">
-                  <span
-                    className={`text-xs px-2 py-0.5 rounded-full text-white ${MONTH_COLORS[m.month as MonthName]}`}
-                    style={{ fontWeight: 600 }}
-                  >
+                  <span className={`text-xs px-2 py-0.5 rounded-full text-white ${colorClass}`} style={{ fontWeight: 600 }}>
                     {m.month}
                   </span>
-                  {isActive && (
+                  {isActive && m.total > 0 && (
                     <span className="text-xs text-[#1e3a8a] bg-blue-100 px-1.5 py-0.5 rounded" style={{ fontWeight: 500 }}>
                       En curso
                     </span>
                   )}
                   {isDone && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
                 </div>
-
                 <div className="mt-2">
                   <p className="text-gray-900" style={{ fontSize: 22, fontWeight: 800 }}>
                     {m.pct}%
@@ -177,7 +256,6 @@ export default function TeacherDashboard() {
                     {m.done}/{m.total} entregables
                   </p>
                 </div>
-
                 <div className="mt-3 w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
                   <div
                     className="h-full rounded-full transition-all"
@@ -192,20 +270,19 @@ export default function TeacherDashboard() {
           })}
         </div>
 
-        {/* Cumulative bar */}
         <div className="mt-5 pt-4 border-t border-gray-100">
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm text-gray-700" style={{ fontWeight: 500 }}>
               Avance acumulado del ciclo
             </p>
             <p className="text-sm" style={{ fontWeight: 700, color: complianceColor }}>
-              {stats.pct}%
+              {safeStats.pct}%
             </p>
           </div>
           <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden">
             <div
               className="h-full rounded-full transition-all"
-              style={{ width: `${stats.pct}%`, backgroundColor: complianceColor }}
+              style={{ width: `${safeStats.pct}%`, backgroundColor: complianceColor }}
             />
           </div>
           <div className="flex justify-between text-xs text-gray-400 mt-1">
@@ -220,7 +297,6 @@ export default function TeacherDashboard() {
 
       {/* Chart + Upcoming */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Chart */}
         <div className="xl:col-span-2 bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -242,30 +318,25 @@ export default function TeacherDashboard() {
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="semana" tick={{ fontSize: 12, fill: "#9ca3af" }} />
               <YAxis tick={{ fontSize: 12, fill: "#9ca3af" }} unit="%" />
-              <Tooltip
-                formatter={(v) => [`${v}%`, "Avance"]}
-                contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 12 }}
-              />
+              <Tooltip formatter={(v) => [`${v}%`, "Avance"]} contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 12 }} />
               <Area type="monotone" dataKey="avance" stroke="#1d4ed8" strokeWidth={2} fill="url(#tdColorAvance)" />
             </AreaChart>
           </ResponsiveContainer>
         </div>
 
-        {/* Upcoming deliverables from matrix */}
         <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-gray-800">Próximas entregas</h3>
-            <button
-              onClick={() => navigate("/docente/matriz")}
-              className="text-xs text-[#1d4ed8] hover:underline"
-            >
+            <button onClick={() => navigate("/docente/matriz")} className="text-xs text-[#1d4ed8] hover:underline">
               Ver matriz
             </button>
           </div>
-
           <div className="space-y-2.5">
-            {upcoming.map((d) => {
-              const status = computeStatus(d.scheduledDate, d.actualDate);
+            {upcoming.length === 0 && !loading && (
+              <p className="text-xs text-gray-400">No hay entregas próximas cargadas.</p>
+            )}
+            {upcoming.slice(0, 5).map((d) => {
+              const status = computeStatusFromDate(d.fechaFin);
               return (
                 <div
                   key={d.id}
@@ -273,16 +344,15 @@ export default function TeacherDashboard() {
                   onClick={() => navigate("/docente/matriz")}
                 >
                   <div className="flex items-start gap-2 mb-1.5">
-                    <CategoryTag category={d.category} compact />
-                    <span className="text-xs text-gray-400 ml-auto shrink-0">S{d.week}</span>
+                    <span className="text-xs text-gray-500">S{d.semana}</span>
                   </div>
                   <p className="text-gray-700 text-xs leading-snug line-clamp-2" style={{ fontWeight: 500 }}>
-                    {d.deliverable}
+                    {d.entregable}
                   </p>
                   <div className="flex items-center justify-between mt-2">
                     <span className="text-xs text-gray-400 flex items-center gap-1">
                       <Calendar className="w-3 h-3" />
-                      {new Date(d.scheduledDate + "T12:00:00").toLocaleDateString("es-PE", { day: "2-digit", month: "short" })}
+                      {d.fechaFin ? new Date(d.fechaFin + "T12:00:00").toLocaleDateString("es-PE", { day: "2-digit", month: "short" }) : "—"}
                     </span>
                     <StatusBadge status={status} pulse />
                   </div>
@@ -290,15 +360,13 @@ export default function TeacherDashboard() {
               );
             })}
           </div>
-
-          {/* Alert if vencido */}
-          {deliverables.some((d) => computeStatus(d.scheduledDate, d.actualDate) === "vencido") && (
+          {hasVencidos && (
             <div className="mt-3 p-3 bg-red-50 rounded-lg flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
               <div>
                 <p className="text-xs text-red-700" style={{ fontWeight: 600 }}>Entregas vencidas</p>
                 <p className="text-xs text-red-600 mt-0.5">
-                  {deliverables.filter((d) => computeStatus(d.scheduledDate, d.actualDate) === "vencido").length} entregable(s) sin presentar
+                  {activities.filter((a) => a.status === "delayed").length} entregable(s) sin presentar
                 </p>
               </div>
             </div>
@@ -329,6 +397,13 @@ export default function TeacherDashboard() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
+              {activities.length === 0 && !loading && (
+                <tr>
+                  <td colSpan={5} className="px-6 py-8 text-center text-gray-400 text-sm">
+                    No hay actividades cargadas. Asigna proyectos y entregables en administración.
+                  </td>
+                </tr>
+              )}
               {activities.map((row) => (
                 <tr key={row.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4 text-gray-800" style={{ fontWeight: 500 }}>
@@ -339,7 +414,7 @@ export default function TeacherDashboard() {
                   </td>
                   <td className="px-6 py-4 text-gray-500">{row.deadline}</td>
                   <td className="px-6 py-4">
-                    <Badge variant={row.status} />
+                    <Badge variant={row.status as "pending" | "review" | "approved" | "delayed"} />
                   </td>
                   <td className="px-6 py-4">
                     <button

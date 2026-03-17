@@ -71,7 +71,10 @@ app.post("/auth/login", async (req, res) => {
   }
 });
 
-// Datos básicos para dashboard docente
+// Proyectos visibles para un docente: responsable o asignado en proyecto_docentes
+// (usado en dashboard y cronograma)
+
+// Datos básicos para dashboard docente (proyectos asignados o como responsable)
 app.get("/docente/:id/dashboard", async (req, res) => {
   const docenteId = Number(req.params.id);
   if (!docenteId) {
@@ -84,40 +87,120 @@ app.get("/docente/:id/dashboard", async (req, res) => {
       SELECT
         p.id,
         p.titulo,
+        p.descripcion,
+        p.tipo,
         p.estado,
         p.fecha_inicio,
         p.fecha_fin_estimada,
         p.horas_totales,
-        p.semanas
+        p.semanas,
+        prog.nombre AS programa_nombre,
+        u.nombre || ' ' || u.apellido AS coordinador
       FROM proyectos p
+      LEFT JOIN programas prog ON prog.id = p.programa_id
+      LEFT JOIN usuarios u ON u.id = p.docente_responsable_id
       WHERE p.docente_responsable_id = $1
+         OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
       ORDER BY p.fecha_inicio
       `,
-      [docenteId]
+      [docenteId, docenteId]
     );
-
-    const entregables = await pool.query(
-      `
-      SELECT e.*
-      FROM entregables_matriz e
-      JOIN proyectos p ON p.id = e.proyecto_id
-      WHERE p.docente_responsable_id = $1
-      ORDER BY e.semana, e.fecha_programada
-      `,
-      [docenteId]
-    );
-
-    const total = entregables.rowCount;
-    const completed = entregables.rows.filter((e) => e.fecha_real).length;
-    const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
 
     res.json({
       proyectos: proyectos.rows,
-      entregables: entregables.rows,
-      stats: { total, completed, pct },
     });
   } catch (error) {
     console.error("Error en /docente/:id/dashboard", error);
+    res.status(500).json({ error: "Error interno" });
+  }
+});
+
+// Estadísticas y datos para el dashboard del docente (avance por mes, próximas entregas, actividades)
+app.get("/docente/:id/dashboard-stats", async (req, res) => {
+  const docenteId = Number(req.params.id);
+  if (!docenteId) {
+    return res.status(400).json({ error: "id de docente inválido" });
+  }
+
+  try {
+    const entregablesRows = await pool.query(
+      `
+      SELECT
+        e.id,
+        e.descripcion,
+        COALESCE(e.completado, false) AS completado,
+        e.fecha_completado,
+        s.fecha_fin   AS semana_fecha_fin,
+        s.numero      AS semana_numero,
+        p.titulo      AS proyecto_titulo,
+        p.id         AS proyecto_id
+      FROM proyecto_entregables e
+      JOIN proyecto_semanas s ON e.proyecto_semana_id = s.id
+      JOIN proyectos p ON s.proyecto_id = p.id
+      WHERE p.docente_responsable_id = $1
+         OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
+      ORDER BY s.fecha_fin, e.id
+      `,
+      [docenteId, docenteId]
+    );
+
+    const items = entregablesRows.rows || [];
+    const total = items.length;
+    const completed = items.filter((i) => i.completado).length;
+    const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+    const monthNames = { 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo" };
+    const byMonth = [];
+    for (const [num, name] of Object.entries(monthNames)) {
+      const mesNum = Number(num);
+      const delMes = items.filter((i) => {
+        const d = i.semana_fecha_fin ? new Date(i.semana_fecha_fin) : null;
+        return d && d.getMonth() + 1 === mesNum;
+      });
+      const done = delMes.filter((i) => i.completado).length;
+      byMonth.push({
+        month: name,
+        total: delMes.length,
+        done,
+        pct: delMes.length > 0 ? Math.round((done / delMes.length) * 100) : 0,
+      });
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const upcoming = items
+      .filter((i) => !i.completado && i.semana_fecha_fin)
+      .slice(0, 8)
+      .map((i) => ({
+        id: i.id,
+        proyecto: i.proyecto_titulo,
+        entregable: i.descripcion,
+        fechaFin: i.semana_fecha_fin,
+        semana: i.semana_numero,
+      }));
+
+    const activities = items.map((i) => {
+      const fin = i.semana_fecha_fin ? new Date(i.semana_fecha_fin) : null;
+      let status = "pending";
+      if (i.completado) status = "approved";
+      else if (fin && fin < today) status = "delayed";
+      return {
+        id: i.id,
+        project: i.proyecto_titulo,
+        activity: i.descripcion,
+        deadline: fin ? fin.toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric" }) : "—",
+        status,
+      };
+    });
+
+    res.json({
+      stats: { total, completed, pct },
+      byMonth,
+      upcoming,
+      activities,
+    });
+  } catch (error) {
+    console.error("Error en /docente/:id/dashboard-stats", error);
     res.status(500).json({ error: "Error interno" });
   }
 });
@@ -149,6 +232,7 @@ app.get("/docente/:id/cronograma", async (req, res) => {
       LEFT JOIN proyecto_entregables e
         ON e.proyecto_semana_id = s.id
       WHERE p.docente_responsable_id = $1
+         OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
       GROUP BY
         p.id,
         p.titulo,
@@ -158,7 +242,7 @@ app.get("/docente/:id/cronograma", async (req, res) => {
         s.fecha_fin
       ORDER BY p.titulo, s.numero
       `,
-      [docenteId]
+      [docenteId, docenteId]
     );
 
     const map = new Map();

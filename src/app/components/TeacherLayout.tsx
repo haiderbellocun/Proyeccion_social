@@ -14,7 +14,7 @@ import {
   GraduationCap,
   TableProperties,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const navItems = [
   { to: "/docente", label: "Inicio", icon: LayoutDashboard, end: true },
@@ -29,6 +29,39 @@ export function TeacherLayout() {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const [initials, setInitials] = useState<string>("--");
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem("proysocial:user");
+    if (!stored) return;
+    try {
+      const parsed = JSON.parse(stored);
+      const nombre: string | undefined = parsed?.user?.nombre;
+      const apellido: string | undefined = parsed?.user?.apellido;
+      const correo: string | undefined = parsed?.user?.correo;
+
+      let fullName = "";
+      if (nombre || apellido) {
+        fullName = [nombre, apellido].filter(Boolean).join(" ");
+      } else if (correo) {
+        fullName = correo;
+      }
+      if (fullName) {
+        setDisplayName(fullName);
+        const parts = fullName
+          .split(" ")
+          .filter(Boolean)
+          .slice(0, 2);
+        const init = parts.map((p) => p[0]?.toUpperCase() ?? "").join("");
+        if (init) {
+          setInitials(init);
+        }
+      }
+    } catch {
+      // ignore parse errors
+    }
+  }, []);
 
   return (
     <div className="flex h-screen bg-[#f1f5f9] overflow-hidden">
@@ -116,7 +149,7 @@ export function TeacherLayout() {
           <div className="hidden sm:block">
             <p className="text-gray-500 text-sm">Bienvenido de vuelta,</p>
             <p className="text-gray-800 text-sm" style={{ fontWeight: 600 }}>
-              Mg. María Rodríguez
+              {displayName ?? "Docente"}
             </p>
           </div>
 
@@ -132,7 +165,7 @@ export function TeacherLayout() {
                 className="flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-lg hover:bg-gray-100 transition-colors"
               >
                 <div className="w-8 h-8 bg-[#1e3a8a] rounded-full flex items-center justify-center text-white text-sm">
-                  MR
+                  {initials}
                 </div>
                 <span className="hidden sm:block text-sm text-gray-700">
                   Docente

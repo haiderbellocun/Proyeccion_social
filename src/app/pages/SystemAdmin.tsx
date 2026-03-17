@@ -111,6 +111,9 @@ export default function SystemAdmin() {
     null
   );
   const [weeklyItems, setWeeklyItems] = useState<Record<string, EntregableItem[]>>({});
+  const [detailStartDate, setDetailStartDate] = useState<string>("");
+  const [detailEndDate, setDetailEndDate] = useState<string>("");
+  const [detailSaving, setDetailSaving] = useState(false);
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [assignProjectId, setAssignProjectId] = useState<number | "">("");
   const [assignSelectedDocentes, setAssignSelectedDocentes] = useState<number[]>([]);
@@ -438,10 +441,10 @@ export default function SystemAdmin() {
     );
   };
 
-  const handleSaveAssign = async () => {
+  const handleSaveAssign = async (): Promise<boolean> => {
     if (!assignProjectId || typeof assignProjectId !== "number") {
       alert("Selecciona un proyecto.");
-      return;
+      return false;
     }
     try {
       setAssignSaving(true);
@@ -456,21 +459,64 @@ export default function SystemAdmin() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         alert(data.error || "No se pudo asignar el proyecto.");
-        return;
+        return false;
       }
       alert("Asignaciones guardadas correctamente.");
       setShowAssignModal(false);
+      return true;
     } catch (err) {
       console.error(err);
       alert("Error de conexión con el servidor.");
+      return false;
     } finally {
       setAssignSaving(false);
     }
   };
 
+  const recalcWeeklySchedule = (projectId: number, startDateStr: string) => {
+    if (!startDateStr) return;
+    const start = new Date(startDateStr);
+    if (isNaN(start.getTime())) return;
+
+    setWeeklyProjects((prev) =>
+      prev.map((wp) => {
+        if (wp.id !== projectId) return wp;
+        const weeksCount = wp.weeks.length;
+        const toIso = (d: Date) => d.toISOString().slice(0, 10);
+        const newWeeks: WeekDetail[] = [];
+        for (let i = 0; i < weeksCount; i++) {
+          const numero = i + 1;
+          const inicio = new Date(start);
+          inicio.setDate(start.getDate() + i * 7);
+          const fin = new Date(inicio);
+          fin.setDate(inicio.getDate() + 6);
+          const existing = wp.weeks.find((w) => w.numero === numero);
+          newWeeks.push({
+            id: existing?.id,
+            numero,
+            fechaInicio: toIso(inicio),
+            fechaFin: toIso(fin),
+            entregables: existing?.entregables,
+          });
+        }
+        return { ...wp, weeks: newWeeks };
+      })
+    );
+  };
+
   const handleOpenProjectDetail = async (projectId: number) => {
     setDetailProjectId(projectId);
     const proj = projects.find((p) => p.id === projectId) || null;
+    if (proj?.startDate) {
+      setDetailStartDate(proj.startDate.slice(0, 10));
+    } else {
+      setDetailStartDate("");
+    }
+    if (proj?.endDate) {
+      setDetailEndDate(proj.endDate.slice(0, 10));
+    } else {
+      setDetailEndDate("");
+    }
     if (proj?.coordinatorId) {
       setAssignSelectedDocentes([proj.coordinatorId]);
     }
@@ -1542,7 +1588,7 @@ export default function SystemAdmin() {
               const weeklyProj =
                 weeklyProjects.find((p) => p.id === detailProjectId) || null;
 
-              const handleSaveDetailDeliverables = async () => {
+              const handleSaveDetailDeliverables = async (): Promise<boolean> => {
                 if (!weeklyProj) return;
                 try {
                   const semanasPayload = weeklyProj.weeks.map((w) => {
@@ -1571,7 +1617,7 @@ export default function SystemAdmin() {
                       data.error ||
                         `No se pudieron guardar los entregables (estado ${res.status}).`
                     );
-                    return;
+                    return false;
                   }
                   // recargar cronograma desde el backend para que se reflejen
                   const weeksRes = await fetch(
@@ -1583,28 +1629,126 @@ export default function SystemAdmin() {
                     setWeeklyProjects(fromServer);
                   }
                   alert("Entregables guardados correctamente.");
+                  return true;
                 } catch (err) {
                   console.error(err);
                   alert("Error de conexión al guardar entregables.");
+                  return false;
                 }
+              };
+
+              const handleSaveProjectMeta = async (): Promise<boolean> => {
+                if (!proj) return false;
+                try {
+                  const res = await fetch(
+                    `${API_BASE_URL}/admin/proyectos/${proj.id}`,
+                    {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        fechaInicio: detailStartDate || null,
+                        fechaFin: detailEndDate || null,
+                      }),
+                    }
+                  );
+                  if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    alert(
+                      data.error ||
+                        `No se pudo actualizar el proyecto (estado ${res.status}).`
+                    );
+                    return false;
+                  }
+                  // recargar proyectos para reflejar cambios en la tabla
+                  const list = await fetch(`${API_BASE_URL}/admin/proyectos`);
+                  if (list.ok) {
+                    const data = await list.json();
+                    setProjects(data.proyectos || []);
+                  }
+                  return true;
+                } catch (err) {
+                  console.error(err);
+                  alert("Error de conexión al actualizar el proyecto.");
+                  return false;
+                }
+              };
+
+              const handleSaveAllDetail = async () => {
+                if (!proj) return;
+                setDetailSaving(true);
+                // 1) Guardar entregables
+                const okDeliverables = await handleSaveDetailDeliverables();
+                if (!okDeliverables) {
+                  setDetailSaving(false);
+                  return;
+                }
+                // 2) Guardar docentes asignados
+                setAssignProjectId(proj.id);
+                const okAssign = await handleSaveAssign();
+                if (!okAssign) {
+                  setDetailSaving(false);
+                  return;
+                }
+                // 3) Guardar fechas de inicio y fin
+                const okMeta = await handleSaveProjectMeta();
+                if (!okMeta) {
+                  setDetailSaving(false);
+                  return;
+                }
+                setDetailSaving(false);
+                alert("Cambios guardados correctamente.");
+                setShowProjectDetailModal(false);
               };
 
               return (
                 <>
                   <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-                    <div>
-                      <h3 className="text-gray-800">
+                    <div className="flex-1 mr-4">
+                      <h3 className="text-gray-800 mb-1">
                         {proj ? proj.name : "Proyecto"}
                       </h3>
                       {proj && (
-                        <p className="text-xs text-gray-400 mt-0.5">
-                          {proj.program} • {proj.totalHours ?? "—"} hrs •{" "}
-                          {proj.weeks ?? "—"} semanas • Inicio:{" "}
-                          {proj.startDate ?? "—"} • Fin: {proj.endDate ?? "—"}
-                        </p>
+                        <>
+                          <p className="text-xs text-gray-400">
+                            {proj.program} • {proj.totalHours ?? "—"} hrs •{" "}
+                            {proj.weeks ?? "—"} semanas
+                          </p>
+                          <div className="mt-1 flex flex-wrap gap-3 items-center">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] text-gray-500">
+                                Inicio:
+                              </span>
+                              <input
+                                type="date"
+                                value={detailStartDate}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  setDetailStartDate(value);
+                                  if (proj) {
+                                    recalcWeeklySchedule(proj.id, value);
+                                  }
+                                }}
+                                className="px-2 py-1 border border-gray-200 rounded-md bg-white text-[11px]"
+                              />
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] text-gray-500">
+                                Fin estimada:
+                              </span>
+                              <input
+                                type="date"
+                                value={detailEndDate}
+                                onChange={(e) =>
+                                  setDetailEndDate(e.target.value)
+                                }
+                                className="px-2 py-1 border border-gray-200 rounded-md bg-white text-[11px]"
+                              />
+                            </div>
+                          </div>
+                        </>
                       )}
                       {proj?.description && (
-                        <p className="text-xs text-gray-500 mt-1">
+                        <p className="text-xs text-gray-500 mt-2">
                           {proj.description}
                         </p>
                       )}
@@ -1656,19 +1800,6 @@ export default function SystemAdmin() {
                           </label>
                         ))}
                       </div>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (!proj) return;
-                          setAssignProjectId(proj.id);
-                          await handleSaveAssign();
-                        }}
-                        className="w-full mt-2 px-4 py-2.5 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white rounded-lg text-xs shadow-sm"
-                        style={{ fontWeight: 600 }}
-                        disabled={assignSaving}
-                      >
-                        {assignSaving ? "Guardando..." : "Guardar docentes"}
-                      </button>
                     </div>
 
                     {/* Columna cronograma */}
@@ -1820,19 +1951,20 @@ export default function SystemAdmin() {
                               );
                             })}
                           </div>
-                          <div className="flex justify-end mt-3">
-                            <button
-                              type="button"
-                              onClick={handleSaveDetailDeliverables}
-                              className="px-4 py-2.5 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white rounded-lg text-xs shadow-sm"
-                              style={{ fontWeight: 600 }}
-                            >
-                              Guardar cronograma
-                            </button>
-                          </div>
                         </>
                       )}
                     </div>
+                  </div>
+                  <div className="flex justify-end px-6 pb-6 border-t border-gray-100 mt-2">
+                    <button
+                      type="button"
+                      onClick={handleSaveAllDetail}
+                      className="px-5 py-2.5 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white rounded-lg text-sm shadow-sm"
+                      style={{ fontWeight: 600 }}
+                      disabled={detailSaving}
+                    >
+                      {detailSaving ? "Guardando..." : "Guardar cambios"}
+                    </button>
                   </div>
                 </>
               );
