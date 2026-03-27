@@ -11,54 +11,33 @@ import {
   User,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
+import { API_BASE } from "../config/api";
 
-const API_BASE_URL = "http://localhost:4000";
+const API_BASE_URL = API_BASE;
 
-const pendingReports = [
-  {
-    id: 1,
-    teacher: "Mg. María Rodríguez",
-    school: "Escuela de Ingeniería de Sistemas",
-    program: "Ing. de Sistemas",
-    email: "m.rodriguez@universidad.edu",
-    project: "Alfabetización Digital - Comunidad Norte",
-    week: "Semana 8",
-    date: "15 Mar 2024",
-    activity: "Taller de herramientas digitales básicas",
-    description:
-      "Se realizó la sesión N°11 del taller de alfabetización digital con 18 participantes adultos mayores. Se cubrieron los temas de uso de correo electrónico, navegación web segura y uso de redes sociales básicas. Se contó con apoyo de 2 estudiantes voluntarios. La sesión tuvo una duración de 3 horas.",
-    progress: 88,
-    evidences: [
-      { name: "Lista-asistencia-S8.pdf", type: "PDF" },
-      { name: "Fotos-sesion-11.jpg", type: "JPG" },
-      { name: "https://drive.google.com/archivo-material-s8", type: "LINK" },
-    ],
-    status: "pending" as const,
-  },
-  {
-    id: 2,
-    teacher: "Mg. Ana Torres",
-    school: "Escuela de Educación",
-    program: "Educación",
-    email: "a.torres@universidad.edu",
-    project: "Convenio UGEL - Capacitación Docente",
-    week: "Semana 7",
-    date: "08 Mar 2024",
-    activity: "Reunión de planificación mensual",
-    description:
-      "Reunión de coordinación con directores de instituciones educativas de la UGEL para definir el cronograma de capacitaciones del segundo semestre. Se acordaron 6 fechas de talleres y se distribuyeron responsabilidades.",
-    progress: 45,
-    evidences: [
-      { name: "Acta-reunion-UGEL.pdf", type: "PDF" },
-    ],
-    status: "review" as const,
-  },
-];
+type ReportItem = {
+  id: number;
+  teacher: string;
+  school: string;
+  program: string;
+  email: string;
+  project: string;
+  week: string;
+  date: string;
+  activity: string;
+  description: string;
+  progress: number;
+  evidences: { name: string; type: "LINK" | "TEXT" }[];
+  status: "pending" | "review" | "approved";
+};
 
 export default function ReportReview() {
   const [current, setCurrent] = useState(0);
   const [comment, setComment] = useState("");
   const [reviewed, setReviewed] = useState<Record<number, string>>({});
+  const [reports, setReports] = useState<ReportItem[]>([]);
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [savingDecision, setSavingDecision] = useState(false);
   const [selectedSchool, setSelectedSchool] = useState<string>("Todas");
   const [selectedProgram, setSelectedProgram] = useState<string>("Todos");
   const [selectedTeacher, setSelectedTeacher] = useState<string>("Todos");
@@ -67,10 +46,15 @@ export default function ReportReview() {
     { name: string; programs: { id: number; name: string; code: string; teachers: { id: number; fullName: string }[] }[] }[]
   >([]);
   const [loadingCatalogs, setLoadingCatalogs] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [limit] = useState(20);
+  const [total, setTotal] = useState(0);
 
   useEffect(() => {
     const loadCatalogs = async () => {
       try {
+        setError(null);
         setLoadingCatalogs(true);
         const res = await fetch(`${API_BASE_URL}/admin/catalogos`);
         if (!res.ok) throw new Error("Error al cargar catálogos");
@@ -78,12 +62,68 @@ export default function ReportReview() {
         setCatalogSchools(data.schools || []);
       } catch (err) {
         console.error(err);
+        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
       } finally {
         setLoadingCatalogs(false);
       }
     };
     loadCatalogs();
   }, []);
+
+  useEffect(() => {
+    const loadReports = async () => {
+      try {
+        setError(null);
+        setLoadingReports(true);
+        const res = await fetch(
+          `${API_BASE_URL}/admin/reportes-revision?page=${page}&limit=${limit}`
+        );
+        if (!res.ok) throw new Error("Error al cargar reportes de revisión");
+        const data = await res.json();
+        const rows = (data.reportes || data.data || []) as any[];
+        setTotal(Number(data.pagination?.total ?? rows.length));
+        const mapped: ReportItem[] = rows.map((r: any) => {
+          let status: ReportItem["status"] = "pending";
+          if (r.estado_revision === "aprobado") status = "approved";
+          else if (r.estado_revision === "observado") status = "review";
+          return {
+            id: Number(r.id),
+            teacher: r.docente_nombre || "Docente",
+            school: "Sin escuela",
+            program: r.programa_nombre || "Sin programa",
+            email: r.docente_correo || "",
+            project: r.proyecto_titulo || "Iniciativa",
+            week: `Semana ${r.semana_numero || "—"}`,
+            date: r.fecha_real_entrega
+              ? new Date(String(r.fecha_real_entrega) + "T12:00:00").toLocaleDateString("es-CO")
+              : "—",
+            activity:
+              r.actividad_reportada ||
+              r.actividad ||
+              "Entregable reportado",
+            description:
+              r.descripcion_reporte ||
+              r.descripcion ||
+              r.actividad ||
+              "Sin descripción",
+            progress: Number(r.porcentaje_avance ?? 100),
+            evidences: r.url_evidencia
+              ? [{ name: r.url_evidencia, type: "LINK" as const }]
+              : [{ name: "Sin URL de evidencia", type: "TEXT" as const }],
+            status,
+          };
+        });
+        setReports(mapped);
+      } catch (err) {
+        console.error(err);
+        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        setReports([]);
+      } finally {
+        setLoadingReports(false);
+      }
+    };
+    loadReports();
+  }, [page, limit]);
 
   const schools = catalogSchools.map((s) => s.name);
 
@@ -100,7 +140,8 @@ export default function ReportReview() {
     .filter((p) => (selectedProgram === "Todos" ? true : p.name === selectedProgram))
     .flatMap((p) => p.teachers.map((t) => t.fullName));
 
-  const filteredReports = pendingReports.filter((r) => {
+  const filteredReports = reports.filter((r) => {
+    if (r.status === "approved") return false;
     if (selectedSchool !== "Todas" && r.school !== selectedSchool) return false;
     if (selectedProgram !== "Todos" && r.program !== selectedProgram) return false;
     if (selectedTeacher !== "Todos" && r.teacher !== selectedTeacher) return false;
@@ -109,13 +150,58 @@ export default function ReportReview() {
 
   const safeIndex =
     filteredReports.length > 0 ? Math.min(current, filteredReports.length - 1) : 0;
-  const report =
-    filteredReports.length > 0 ? filteredReports[safeIndex] : pendingReports[0];
+  const report = filteredReports.length > 0 ? filteredReports[safeIndex] : null;
 
-  const handleAction = (action: "approve" | "adjust" | "reject") => {
-    setReviewed({ ...reviewed, [report.id]: action });
-    setComment("");
-    if (current < pendingReports.length - 1) setCurrent(current + 1);
+  const handleAction = async (action: "approve" | "adjust" | "reject") => {
+    if (!report) return;
+    const estado_revision =
+      action === "approve"
+        ? "aprobado"
+        : action === "adjust"
+        ? "observado"
+        : "observado";
+    if (action !== "approve" && !comment.trim()) {
+      alert("Para solicitar ajustes o rechazar, debes ingresar un comentario.");
+      return;
+    }
+    try {
+      setError(null);
+      setSavingDecision(true);
+      const res = await fetch(`${API_BASE_URL}/admin/reportes-revision/${report.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ estado_revision, comentario_revision: comment || null }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || "No se pudo guardar la revisión.");
+        return;
+      }
+      setReviewed({ ...reviewed, [report.id]: action });
+      setComment("");
+      setReports((prev) =>
+        prev.map((r) =>
+          r.id === report.id
+            ? {
+                ...r,
+                status:
+                  action === "approve"
+                    ? "approved"
+                    : action === "adjust"
+                    ? "review"
+                    : "review",
+              }
+            : r
+        )
+      );
+      if (safeIndex < filteredReports.length - 1) setCurrent(safeIndex + 1);
+    } catch (err) {
+      console.error(err);
+      setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+      alert("Error de conexión al guardar la revisión.");
+    } finally {
+      setSavingDecision(false);
+    }
   };
 
   const actionLabels = {
@@ -123,9 +209,40 @@ export default function ReportReview() {
     adjust: { label: "Requiere ajustes", color: "text-amber-600" },
     reject: { label: "Rechazado", color: "text-red-600" },
   };
+  const hasPrevPage = page > 1;
+  const hasNextPage = page * limit < total;
+
+  if (loadingReports && !report) {
+    return (
+      <div className="p-6 space-y-6">
+        <div>
+          <h1 className="text-gray-900">Revisión de Reportes</h1>
+          <p className="text-gray-500 text-sm mt-0.5">Cargando avances enviados…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!report && !loadingReports) {
+    return (
+      <div className="p-6 space-y-6">
+        <div>
+          <h1 className="text-gray-900">Revisión de Reportes</h1>
+          <p className="text-gray-500 text-sm mt-0.5">
+            No hay avances enviados por revisar.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 space-y-6">
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+          {error}
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-gray-900">Revisión de Reportes</h1>
@@ -137,6 +254,21 @@ export default function ReportReview() {
 
         {/* Navegación entre reportes */}
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={!hasPrevPage}
+            className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Anterior
+          </button>
+          <span className="text-xs text-gray-500">Página {page}</span>
+          <button
+            onClick={() => setPage((p) => p + 1)}
+            disabled={!hasNextPage}
+            className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Siguiente
+          </button>
           <button
             onClick={() => setCurrent(Math.max(0, safeIndex - 1))}
             disabled={safeIndex === 0 || filteredReports.length === 0}
@@ -357,13 +489,15 @@ export default function ReportReview() {
               <div className="space-y-2.5">
                 <button
                   onClick={() => handleAction("approve")}
+                  disabled={savingDecision}
                   className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-lg text-sm transition-colors"
                   style={{ fontWeight: 600 }}
                 >
-                  <CheckCircle2 className="w-4 h-4" /> Aprobar reporte
+                  <CheckCircle2 className="w-4 h-4" /> {savingDecision ? "Guardando..." : "Aprobar reporte"}
                 </button>
                 <button
                   onClick={() => handleAction("adjust")}
+                  disabled={savingDecision}
                   className="w-full flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 text-white py-2.5 rounded-lg text-sm transition-colors"
                   style={{ fontWeight: 600 }}
                 >
@@ -371,6 +505,7 @@ export default function ReportReview() {
                 </button>
                 <button
                   onClick={() => handleAction("reject")}
+                  disabled={savingDecision}
                   className="w-full flex items-center justify-center gap-2 border border-red-300 text-red-600 hover:bg-red-50 py-2.5 rounded-lg text-sm transition-colors"
                   style={{ fontWeight: 600 }}
                 >

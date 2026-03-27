@@ -12,6 +12,7 @@ import AdminDashboard from "./pages/AdminDashboard";
 import ReportReview from "./pages/ReportReview";
 import ReportsMetrics from "./pages/ReportsMetrics";
 import SystemAdmin from "./pages/SystemAdmin";
+import IndicadoresGrupo from "./pages/IndicadoresGrupo";
 import { TeacherLayout } from "./components/TeacherLayout";
 import { AdminLayout } from "./components/AdminLayout";
 
@@ -38,6 +39,7 @@ export const router = createBrowserRouter([
       { index: true, Component: AdminDashboard },
       { path: "revision", Component: ReportReview },
       { path: "reportes", Component: ReportsMetrics },
+      { path: "indicadores", Component: IndicadoresGrupo },
       { path: "sistema", Component: SystemAdmin },
     ],
   },

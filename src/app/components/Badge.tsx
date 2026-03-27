@@ -1,4 +1,14 @@
-type BadgeVariant = "approved" | "pending" | "delayed" | "review" | "active" | "inactive" | "project" | "activity" | "agreement";
+export type BadgeVariant =
+  | "approved"
+  | "pending"
+  | "delayed"
+  | "review"
+  | "active"
+  | "inactive"
+  | "project"
+  | "activity"
+  | "agreement"
+  | "training";
 
 const variants: Record<BadgeVariant, string> = {
   approved: "bg-emerald-100 text-emerald-700",
@@ -10,6 +20,7 @@ const variants: Record<BadgeVariant, string> = {
   project: "bg-purple-100 text-purple-700",
   activity: "bg-sky-100 text-sky-700",
   agreement: "bg-orange-100 text-orange-700",
+  training: "bg-yellow-100 text-yellow-700",
 };
 
 const labels: Record<BadgeVariant, string> = {
@@ -19,9 +30,10 @@ const labels: Record<BadgeVariant, string> = {
   review: "En Revisión",
   active: "Activo",
   inactive: "Inactivo",
-  project: "Proyecto",
+  project: "Iniciativa",
   activity: "Actividad",
   agreement: "Convenio",
+  training: "Capacitación",
 };
 
 interface BadgeProps {

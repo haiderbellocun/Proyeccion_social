@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   ClipboardCheck,
   BarChart3,
+  BarChart2,
   Settings,
   Bell,
   ChevronDown,
@@ -18,6 +19,7 @@ const navItems = [
   { to: "/admin", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/admin/revision", label: "Revisión de Reportes", icon: ClipboardCheck },
   { to: "/admin/reportes", label: "Reportes y Métricas", icon: BarChart3 },
+  { to: "/admin/indicadores", label: "Indicadores", icon: BarChart2 },
   { to: "/admin/sistema", label: "Administración", icon: Settings },
 ];
 

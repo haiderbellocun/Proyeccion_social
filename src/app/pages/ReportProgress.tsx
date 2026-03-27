@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { FileEdit, Save, Send, Link2, CheckCircle2, X } from "lucide-react";
+import { useCurrentUser } from "../hooks/useCurrentUser";
+import { API_BASE } from "../config/api";
 
-const API_BASE_URL = "http://localhost:4000";
+const API_BASE_URL = API_BASE;
 
 type ReportWeek = {
   id: number;
@@ -10,6 +12,13 @@ type ReportWeek = {
   fechaInicio: string;
   fechaFin: string;
   entregables: string[];
+  entregablesDetalle?: {
+    id: number;
+    descripcion: string;
+    completado?: boolean;
+    url_evidencia?: string | null;
+    fecha_real_entrega?: string | null;
+  }[];
 };
 
 type ReportProject = {
@@ -18,8 +27,23 @@ type ReportProject = {
   weeks: ReportWeek[];
 };
 
+type IniciativaDetalle = {
+  semanasDetalle?: {
+    id: number;
+    numero: number;
+    entregables: {
+      id: number;
+      descripcion: string;
+      completado?: boolean;
+      url_evidencia?: string | null;
+      fecha_real_entrega?: string | null;
+    }[];
+  }[];
+};
+
 export default function ReportProgress() {
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
   const [submitted, setSubmitted] = useState(false);
   const [link, setLink] = useState("");
   const [links, setLinks] = useState<string[]>([]);
@@ -27,20 +51,18 @@ export default function ReportProgress() {
   const [projects, setProjects] = useState<ReportProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<number | "">("");
   const [selectedWeekId, setSelectedWeekId] = useState<number | "">("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [actividadRealizada, setActividadRealizada] = useState("");
+  const [descripcionReporte, setDescripcionReporte] = useState("");
+
+  const getDocenteIdFromStorage = (): number | null => {
+    return currentUser?.id ?? null;
+  };
 
   useEffect(() => {
-    const stored = window.localStorage.getItem("proysocial:user");
-    let docenteId: number | null = null;
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        if (parsed?.user?.id) {
-          docenteId = Number(parsed.user.id);
-        }
-      } catch {
-        docenteId = null;
-      }
-    }
+    const docenteId = currentUser?.id ?? null;
 
     if (!docenteId) {
       return;
@@ -48,6 +70,7 @@ export default function ReportProgress() {
 
     const load = async () => {
       try {
+        setError(null);
         const res = await fetch(`${API_BASE_URL}/docente/${docenteId}/cronograma`);
         if (!res.ok) throw new Error("Error al cargar cronograma del docente");
         const data = await res.json();
@@ -61,11 +84,12 @@ export default function ReportProgress() {
         }
       } catch (e) {
         console.error(e);
+        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
       }
     };
 
     load();
-  }, []);
+  }, [currentUser]);
 
   const selectedProject = useMemo(
     () =>
@@ -87,8 +111,76 @@ export default function ReportProgress() {
     }
   };
 
-  const handleSend = () => {
-    setSubmitted(true);
+  const handleSend = async () => {
+    if (!selectedWeek) {
+      alert("Selecciona una semana con entregables para reportar.");
+      return;
+    }
+    try {
+      const docenteId = getDocenteIdFromStorage();
+      if (!docenteId) {
+        alert("No se pudo identificar el docente para enviar el reporte.");
+        return;
+      }
+      const actividadPayload = actividadRealizada.trim() || null;
+      const descripcionPayload = descripcionReporte.trim() || null;
+      setSending(true);
+      const today = new Date().toISOString().slice(0, 10);
+      const evidenceUrl = links[0] || null;
+
+      let entregablesToSend = selectedWeek.entregablesDetalle || [];
+
+      // Fallback: si cronograma no trae detalle con ids, obtenerlos desde detalle de iniciativa.
+      if (entregablesToSend.length === 0 && typeof selectedProjectId === "number") {
+        const docenteId = getDocenteIdFromStorage();
+        if (docenteId) {
+          const resDetail = await fetch(
+            `${API_BASE_URL}/docente/${docenteId}/iniciativas/${selectedProjectId}`
+          );
+          if (resDetail.ok) {
+            const detail = (await resDetail.json()) as IniciativaDetalle;
+            const weekDetail = (detail.semanasDetalle || []).find(
+              (w) => Number(w.numero) === Number(selectedWeek.numero)
+            );
+            entregablesToSend = weekDetail?.entregables || [];
+          }
+        }
+      }
+
+      if (entregablesToSend.length === 0) {
+        alert("Esta semana no tiene entregables con ID para reportar aún.");
+        return;
+      }
+
+      const requests = entregablesToSend.map((e) =>
+        fetch(`${API_BASE_URL}/docente/entregables/${e.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            completado: true,
+            fecha_real_entrega: today,
+            url_evidencia: evidenceUrl,
+            docente_id: docenteId,
+            actividad_reportada: actividadPayload,
+            descripcion_reporte: descripcionPayload,
+            porcentaje_avance: Math.round(progress),
+          }),
+        })
+      );
+      const responses = await Promise.all(requests);
+      const failed = responses.find((r) => !r.ok);
+      if (failed) {
+        const data = await failed.json().catch(() => ({}));
+        alert(data.error || "No se pudo enviar el reporte.");
+        return;
+      }
+      setSubmitted(true);
+    } catch (err) {
+      console.error(err);
+      alert("Error de conexión al enviar el reporte.");
+    } finally {
+      setSending(false);
+    }
   };
 
   if (submitted) {
@@ -125,6 +217,11 @@ export default function ReportProgress() {
 
   return (
     <div className="p-6 space-y-6">
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+          {error}
+        </div>
+      )}
       <div className="flex items-center gap-3">
         <div className="w-9 h-9 bg-[#1e3a8a] rounded-lg flex items-center justify-center">
           <FileEdit className="w-5 h-5 text-white" />
@@ -214,6 +311,8 @@ export default function ReportProgress() {
                 type="text"
                 placeholder="Ej: Taller de uso de herramientas digitales básicas"
                 className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50"
+                value={actividadRealizada}
+                onChange={(e) => setActividadRealizada(e.target.value)}
               />
             </div>
 
@@ -246,6 +345,8 @@ export default function ReportProgress() {
                 rows={4}
                 placeholder="Describe las actividades realizadas durante la semana, logros, dificultades y observaciones..."
                 className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50 resize-none"
+                value={descripcionReporte}
+                onChange={(e) => setDescripcionReporte(e.target.value)}
               />
             </div>
           </div>
@@ -338,10 +439,11 @@ export default function ReportProgress() {
               </button>
               <button
                 onClick={handleSend}
+                disabled={sending}
                 className="w-full flex items-center justify-center gap-2 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white py-2.5 rounded-lg text-sm transition-colors shadow-sm"
                 style={{ fontWeight: 600 }}
               >
-                <Send className="w-4 h-4" /> Enviar reporte
+                <Send className="w-4 h-4" /> {sending ? "Enviando..." : "Enviar reporte"}
               </button>
             </div>
           </div>

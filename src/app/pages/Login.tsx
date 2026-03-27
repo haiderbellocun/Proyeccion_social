@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router";
 import { GraduationCap, Mail, Lock, Eye, EyeOff, LogIn } from "lucide-react";
+import { API_BASE } from "../config/api";
 
-const API_BASE_URL = "http://localhost:4000";
+const API_BASE_URL = API_BASE;
 
 export default function Login() {
   const navigate = useNavigate();

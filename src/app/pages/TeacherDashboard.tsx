@@ -23,8 +23,10 @@ import {
 import { Badge } from "../components/Badge";
 import { StatusBadge } from "../components/StatusBadge";
 import { MONTH_COLORS, type MonthName } from "../data/matrizData";
+import { useCurrentUser } from "../hooks/useCurrentUser";
+import { API_BASE } from "../config/api";
 
-const API_BASE_URL = "http://localhost:4000";
+const API_BASE_URL = API_BASE;
 
 type StatsByMonth = { month: string; total: number; done: number; pct: number };
 type UpcomingItem = { id: number; proyecto: string; entregable: string; fechaFin: string; semana: number };
@@ -44,6 +46,7 @@ function computeStatusFromDate(fechaFin: string): "no_iniciado" | "semana_en_cur
 
 export default function TeacherDashboard() {
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
   const [docenteId, setDocenteId] = useState<number | null>(null);
   const [projectsCount, setProjectsCount] = useState<number | null>(null);
   const [stats, setStats] = useState<{ total: number; completed: number; pct: number } | null>(null);
@@ -51,18 +54,10 @@ export default function TeacherDashboard() {
   const [upcoming, setUpcoming] = useState<UpcomingItem[]>([]);
   const [activities, setActivities] = useState<ActivityRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem("proysocial:user");
-    let id: number | null = null;
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        if (parsed?.user?.id) id = Number(parsed.user.id);
-      } catch {
-        id = null;
-      }
-    }
+    const id = currentUser?.id ?? null;
     setDocenteId(id);
 
     if (!id) {
@@ -77,6 +72,7 @@ export default function TeacherDashboard() {
 
     const load = async () => {
       try {
+        setError(null);
         const [resDashboard, resStats] = await Promise.all([
           fetch(`${API_BASE_URL}/docente/${id}/dashboard`),
           fetch(`${API_BASE_URL}/docente/${id}/dashboard-stats`),
@@ -104,6 +100,7 @@ export default function TeacherDashboard() {
         }
       } catch (err) {
         console.error(err);
+        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
         setProjectsCount(0);
         setStats({ total: 0, completed: 0, pct: 0 });
         setByMonth([]);
@@ -115,7 +112,7 @@ export default function TeacherDashboard() {
     };
 
     load();
-  }, []);
+  }, [currentUser]);
 
   const safeStats = stats ?? { total: 0, completed: 0, pct: 0 };
   const complianceColor =
@@ -161,6 +158,11 @@ export default function TeacherDashboard() {
 
   return (
     <div className="p-6 space-y-6">
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+          {error}
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-gray-900">Mi Dashboard</h1>

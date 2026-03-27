@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import React from "react";
 import { useNavigate } from "react-router";
 import {
@@ -13,35 +13,219 @@ import {
   FileText,
 } from "lucide-react";
 import {
-  deliverables,
   computeStatus,
+  computeSimpleStatus,
+  isDeliverableCompleted,
   categoryConfig,
   statusConfig,
-  getComplianceStats,
   MONTHS,
-  MONTH_COLORS,
   type MonthName,
-  type Category,
-  type DeliveryStatus,
+  type Deliverable,
 } from "../data/matrizData";
-import { StatusBadge } from "../components/StatusBadge";
 import { CategoryTag } from "../components/CategoryTag";
+import { useCurrentUser } from "../hooks/useCurrentUser";
+import { API_BASE } from "../config/api";
 
 const ALL = "all";
+const API_BASE_URL = API_BASE;
+
+function semaphoreClasses(pct: number, emptyMonth: boolean) {
+  if (emptyMonth) {
+    return {
+      card: "border-gray-100 bg-gray-50",
+      label: "text-gray-500",
+      pct: "text-gray-400",
+      barTrack: "bg-gray-100",
+      barFill: "bg-gray-300",
+    };
+  }
+  if (pct <= 39) {
+    return {
+      card: "border-red-200 bg-red-100",
+      label: "text-red-800",
+      pct: "text-red-700",
+      barTrack: "bg-red-200/80",
+      barFill: "bg-red-600",
+    };
+  }
+  if (pct <= 79) {
+    return {
+      card: "border-yellow-200 bg-yellow-100",
+      label: "text-yellow-800",
+      pct: "text-yellow-700",
+      barTrack: "bg-yellow-200/80",
+      barFill: "bg-yellow-500",
+    };
+  }
+  return {
+    card: "border-green-200 bg-green-100",
+    label: "text-green-800",
+    pct: "text-green-700",
+    barTrack: "bg-green-200/80",
+    barFill: "bg-green-600",
+  };
+}
+
+const SIMPLE_STATUS_LABEL: Record<
+  ReturnType<typeof computeSimpleStatus>,
+  string
+> = {
+  completado: "Completado",
+  pendiente: "Pendiente",
+  atrasado: "Atrasado",
+};
+
+const SIMPLE_STATUS_STYLE: Record<
+  ReturnType<typeof computeSimpleStatus>,
+  string
+> = {
+  completado: "bg-green-100 text-green-700",
+  pendiente: "bg-gray-100 text-gray-600",
+  atrasado: "bg-red-100 text-red-700",
+};
 
 export default function MatrizSeguimiento() {
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
 
   // ── Filters ──
   const [filterMonth, setFilterMonth] = useState<string>(ALL);
   const [filterCategory, setFilterCategory] = useState<string>(ALL);
   const [filterStatus, setFilterStatus] = useState<string>(ALL);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [collapsedPhase, setCollapsedPhase] = useState<Record<string, boolean>>(
+    {}
+  );
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const [showLegend, setShowLegend] = useState(true);
 
-  // ── Stats ──
-  const stats = getComplianceStats();
+  const [deliverables, setDeliverables] = useState<Deliverable[]>([]);
+  const [loadingMatrix, setLoadingMatrix] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const userId = currentUser?.id ?? null;
+
+    if (!userId) {
+      setDeliverables([]);
+      setLoadingMatrix(false);
+      return;
+    }
+
+    const load = async () => {
+      try {
+        setLoadingMatrix(true);
+        setError(null);
+        const res = await fetch(`${API_BASE_URL}/docente/${userId}/matriz`);
+        if (!res.ok) throw new Error("Error al cargar matriz");
+        const data = await res.json();
+        setDeliverables(Array.isArray(data.items) ? data.items : []);
+      } catch (err) {
+        console.error(err);
+        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        setDeliverables([]);
+      } finally {
+        setLoadingMatrix(false);
+      }
+    };
+
+    load();
+  }, [currentUser]);
+
+  // ── Stats (calculadas en base a los entregables reales) ──
+  const stats = useMemo(() => {
+    const total = deliverables.length;
+    const completed = deliverables.filter((d) => isDeliverableCompleted(d)).length;
+    const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+    const months: MonthName[] = ["Febrero", "Marzo", "Abril", "Mayo"];
+    const byMonth = months.map((month) => {
+      const items = deliverables.filter((d) => d.month === month);
+      const done = items.filter((d) => isDeliverableCompleted(d)).length;
+      return {
+        month,
+        total: items.length,
+        done,
+        pct: items.length > 0 ? Math.round((done / items.length) * 100) : 0,
+      };
+    });
+
+    return { total, completed, pct, byMonth };
+  }, [deliverables]);
+
+  // ── Baja 1: Métricas semanales / acumuladas / semestrales ──
+  const semesterReferenceWeek = useMemo(() => {
+    const ref = new Date("2025-02-03T00:00:00");
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const diffDays = Math.floor((today.getTime() - ref.getTime()) / (1000 * 60 * 60 * 24));
+    const rawWeek = Math.ceil(diffDays / 7);
+    return Math.min(16, Math.max(1, rawWeek));
+  }, []);
+
+  const todayNoon = useMemo(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0, 0);
+  }, []);
+
+  const semesterMetrics = useMemo(() => {
+    const weekItems = deliverables.filter((d) => d.week === semesterReferenceWeek);
+    const weekDen = weekItems.length;
+    const weekNum = weekItems.filter((d) => isDeliverableCompleted(d)).length;
+    const weekPct = weekDen > 0 ? Math.round((weekNum / weekDen) * 100) : 0;
+
+    const accItems = deliverables.filter((d) => {
+      const scheduled = d.scheduledDate
+        ? new Date(d.scheduledDate + "T12:00:00")
+        : null;
+      return scheduled ? scheduled.getTime() <= todayNoon.getTime() : false;
+    });
+    const accDen = accItems.length;
+    const accNum = accItems.filter((d) => isDeliverableCompleted(d)).length;
+    const accPct = accDen > 0 ? Math.round((accNum / accDen) * 100) : 0;
+
+    const semDen = deliverables.length;
+    const semNum = deliverables.filter((d) => isDeliverableCompleted(d)).length;
+    const semPct = semDen > 0 ? Math.round((semNum / semDen) * 100) : 0;
+
+    return {
+      weekly: {
+        title: "Avance Semanal",
+        subLabel: `Semana ${semesterReferenceWeek}`,
+        numerator: weekNum,
+        denominator: weekDen,
+        pct: weekPct,
+      },
+      accumulated: {
+        title: "Avance Acumulado",
+        subLabel: "A la fecha",
+        numerator: accNum,
+        denominator: accDen,
+        pct: accPct,
+      },
+      semestral: {
+        title: "Avance Semestral",
+        subLabel: "Total semestre",
+        numerator: semNum,
+        denominator: semDen,
+        pct: semPct,
+      },
+    };
+  }, [deliverables, semesterReferenceWeek, todayNoon]);
+
+  const currentWeekLabel = useMemo(() => {
+    const curr = deliverables.find(
+      (d) => computeStatus(d.scheduledDate, d.actualDate) === "semana_en_curso"
+    );
+    return curr ? `Semana ${curr.week} en curso` : "Semana en curso";
+  }, [deliverables]);
+
+  const currentWeekNumber = useMemo(() => {
+    const curr = deliverables.find(
+      (d) => computeStatus(d.scheduledDate, d.actualDate) === "semana_en_curso"
+    );
+    return curr ? curr.week : null;
+  }, [deliverables]);
 
   // ── Filtered + grouped data ──
   const filtered = useMemo(() => {
@@ -53,20 +237,54 @@ export default function MatrizSeguimiento() {
         (filterStatus === ALL || status === filterStatus)
       );
     });
-  }, [filterMonth, filterCategory, filterStatus]);
+  }, [deliverables, filterMonth, filterCategory, filterStatus]);
 
-  const grouped = useMemo(() => {
-    const months = filterMonth === ALL ? MONTHS : [filterMonth as MonthName];
-    return months
-      .map((month) => ({
-        month,
-        items: filtered.filter((d) => d.month === month),
-      }))
-      .filter((g) => g.items.length > 0);
+  const groupedByMonthPhase = useMemo(() => {
+    const months: MonthName[] =
+      filterMonth === ALL ? [...MONTHS] : [filterMonth as MonthName];
+
+    const blocks: {
+      month: MonthName;
+      items: Deliverable[];
+      phases: { phase: string; items: Deliverable[] }[];
+    }[] = [];
+
+    for (const month of months) {
+      const items = filtered.filter((d) => d.month === month);
+      if (items.length === 0) continue;
+
+      const phaseMap = new Map<string, Deliverable[]>();
+      for (const d of items) {
+        const ph = (d.phase && d.phase.trim()) || d.indicator || "Sin fase";
+        if (!phaseMap.has(ph)) phaseMap.set(ph, []);
+        phaseMap.get(ph)!.push(d);
+      }
+
+      const phases = Array.from(phaseMap.entries()).map(([phase, phItems]) => ({
+        phase,
+        items: [...phItems].sort(
+          (a, b) =>
+            a.week - b.week ||
+            (a.numero ?? 0) - (b.numero ?? 0) ||
+            a.deliverable.localeCompare(b.deliverable)
+        ),
+      }));
+
+      blocks.push({ month, items, phases });
+    }
+
+    return blocks;
   }, [filtered, filterMonth]);
+
+  const phaseKey = (month: string, phase: string) => `${month}||${phase}`;
 
   const toggleCollapse = (month: string) => {
     setCollapsed((prev) => ({ ...prev, [month]: !prev[month] }));
+  };
+
+  const togglePhaseCollapse = (month: string, phase: string) => {
+    const k = phaseKey(month, phase);
+    setCollapsedPhase((prev) => ({ ...prev, [k]: !prev[k] }));
   };
 
   // ─── Compliance color ───
@@ -79,14 +297,72 @@ export default function MatrizSeguimiento() {
       ? "text-amber-600"
       : "text-red-600";
 
+  const MetricCard = ({
+    title,
+    subLabel,
+    numerator,
+    denominator,
+    pct,
+  }: {
+    title: string;
+    subLabel: string;
+    numerator: number;
+    denominator: number;
+    pct: number;
+  }) => {
+    const empty = denominator === 0;
+    const sem = semaphoreClasses(pct, empty);
+    return (
+      <div className={`rounded-xl border shadow-sm p-5 ${sem.card}`}>
+        <p className="text-gray-500 text-xs uppercase tracking-wider" style={{ fontWeight: 650 }}>
+          {title}
+        </p>
+        <p className={`text-xs mt-1 ${empty ? "text-gray-500" : "text-gray-600"}`} style={{ fontWeight: 600 }}>
+          {empty ? "Sin entregables" : subLabel}
+        </p>
+
+        <p className={`text-3xl mt-3 ${sem.pct}`} style={{ fontWeight: 850 }}>
+          {empty ? "—" : `${pct}%`}
+        </p>
+
+        {!empty && (
+          <p className="text-xs text-gray-500 mt-1">
+            {numerator} / {denominator} entregables
+          </p>
+        )}
+
+        <div className={`w-full h-2 ${sem.barTrack} rounded-full overflow-hidden mt-3`}>
+          <div
+            className={`h-full ${sem.barFill} rounded-full transition-all`}
+            style={{ width: empty ? "0%" : `${pct}%` }}
+          />
+        </div>
+      </div>
+    );
+  };
+
   return (
+    <>
+      {loadingMatrix ? (
+        <div className="p-6 flex items-center justify-center min-h-[60vh]">
+          <div className="w-10 h-10 border-2 border-gray-200 border-t-[#1d4ed8] rounded-full animate-spin" />
+          <span className="ml-3 text-sm text-gray-500" style={{ fontWeight: 500 }}>
+            Cargando matriz...
+          </span>
+        </div>
+      ) : (
     <div className="p-6 space-y-6">
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+          {error}
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-gray-900">Matriz de Seguimiento</h1>
           <p className="text-gray-500 text-sm mt-0.5">
-            Ciclo 2024-II · {deliverables.length} entregables programados · Semana 6 en curso
+            Ciclo · {deliverables.length} entregables programados · {currentWeekLabel}
           </p>
         </div>
         <button
@@ -129,42 +405,55 @@ export default function MatrizSeguimiento() {
             <div className="flex items-center gap-1.5 mt-2">
               <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
               <span className="text-xs text-emerald-600" style={{ fontWeight: 500 }}>
-                Semana 6 de 16
+                Semana {currentWeekNumber ?? "—"} de 16
               </span>
             </div>
           </div>
         </div>
 
-        {/* Monthly mini cards */}
-        {stats.byMonth.map((m) => (
-          <div
-            key={m.month}
-            className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 cursor-pointer hover:shadow-md transition-shadow"
-            onClick={() => setFilterMonth(filterMonth === m.month ? ALL : m.month)}
-          >
-            <div className="flex items-center justify-between mb-2">
-              <span
-                className={`text-xs px-2 py-0.5 rounded-full text-white ${MONTH_COLORS[m.month as MonthName]}`}
-                style={{ fontWeight: 600 }}
+        {/* Semáforo mensual (progreso por mes) */}
+        {stats.byMonth.map((m) => {
+          const empty = m.total === 0;
+          const sem = semaphoreClasses(m.pct, empty);
+          return (
+            <button
+              type="button"
+              key={m.month}
+              className={`rounded-xl border shadow-sm p-4 text-left cursor-pointer hover:shadow-md transition-shadow ${sem.card}`}
+              onClick={() =>
+                setFilterMonth(filterMonth === m.month ? ALL : m.month)
+              }
+            >
+              <p
+                className={`text-xs uppercase tracking-wide ${sem.label}`}
+                style={{ fontWeight: 700 }}
               >
                 {m.month}
-              </span>
-              <span className={`text-sm ${m.pct === 100 ? "text-emerald-600" : m.pct > 0 ? "text-amber-600" : "text-gray-400"}`} style={{ fontWeight: 700 }}>
-                {m.pct}%
-              </span>
-            </div>
-            <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all"
-                style={{
-                  width: `${m.pct}%`,
-                  backgroundColor: m.pct === 100 ? "#10b981" : m.pct > 0 ? "#f59e0b" : "#e5e7eb",
-                }}
-              />
-            </div>
-            <p className="text-gray-400 text-xs mt-1.5">{m.done}/{m.total} entregables</p>
-          </div>
-        ))}
+              </p>
+              <div className="flex items-baseline justify-between gap-2 mt-2">
+                <span className={`text-lg tabular-nums ${sem.pct}`} style={{ fontWeight: 800 }}>
+                  {empty ? "—" : `${m.pct}%`}
+                </span>
+              </div>
+              <div className={`w-full h-2 ${sem.barTrack} rounded-full overflow-hidden mt-2`}>
+                <div
+                  className={`h-full ${sem.barFill} rounded-full transition-all`}
+                  style={{ width: empty ? "0%" : `${m.pct}%` }}
+                />
+              </div>
+              <p className={`text-xs mt-2 ${empty ? "text-gray-400" : sem.label}`}>
+                {m.done} / {m.total} entregables
+              </p>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Baja 1: Métricas semanales / acumuladas / semestrales */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <MetricCard {...semesterMetrics.weekly} />
+        <MetricCard {...semesterMetrics.accumulated} />
+        <MetricCard {...semesterMetrics.semestral} />
       </div>
 
       {/* Legend toggle */}
@@ -262,232 +551,242 @@ export default function MatrizSeguimiento() {
         </span>
       </div>
 
-      {/* Matrix table grouped by month */}
+      {/* Lista por mes y fase temática */}
       <div className="space-y-4">
-        {grouped.map(({ month, items }) => (
-          <div key={month} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-            {/* Month header */}
-            <button
-              onClick={() => toggleCollapse(month)}
-              className="w-full flex items-center gap-4 px-5 py-3 hover:bg-gray-50 transition-colors"
+        {groupedByMonthPhase.map(({ month, items, phases }) => {
+          const mDone = items.filter((d) => isDeliverableCompleted(d)).length;
+          const mTotal = items.length;
+          const mPct = mTotal > 0 ? Math.round((mDone / mTotal) * 100) : 0;
+          const sem = semaphoreClasses(mPct, mTotal === 0);
+          const yearHint =
+            items[0]?.scheduledDate &&
+            new Date(items[0].scheduledDate + "T12:00:00").getFullYear();
+
+          return (
+            <div
+              key={month}
+              className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden"
             >
-              <span
-                className={`w-2.5 h-2.5 rounded-full ${MONTH_COLORS[month as MonthName]} shrink-0`}
-              />
-              <span className="text-gray-800 text-sm" style={{ fontWeight: 700 }}>
-                {month} 2024
-              </span>
-              <span className="text-xs text-gray-400">
-                {items.filter((d) => d.actualDate).length}/{items.length} completados
-              </span>
-              <div className="flex-1 mx-4 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+              <button
+                type="button"
+                onClick={() => toggleCollapse(month)}
+                className="w-full flex flex-wrap items-center gap-3 px-5 py-3.5 hover:bg-gray-50 transition-colors text-left"
+              >
+                <Calendar className="w-4 h-4 shrink-0 text-[#1d4ed8]" />
+                <span className="text-gray-800 text-sm" style={{ fontWeight: 800 }}>
+                  {month}
+                  {yearHint ? ` ${yearHint}` : ""}
+                </span>
+                <span className="text-xs text-gray-500">
+                  · Progreso: {mDone}/{mTotal} ({mTotal ? `${mPct}%` : "—"})
+                </span>
                 <div
-                  className="h-full rounded-full"
-                  style={{
-                    width: `${Math.round((items.filter((d) => d.actualDate).length / items.length) * 100)}%`,
-                    backgroundColor: MONTH_COLORS[month as MonthName].includes("violet")
-                      ? "#7c3aed" : MONTH_COLORS[month as MonthName].includes("teal")
-                      ? "#0d9488" : MONTH_COLORS[month as MonthName].includes("emerald")
-                      ? "#059669" : "#1e3a8a",
-                  }}
-                />
-              </div>
-              {collapsed[month] ? (
-                <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
-              ) : (
-                <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" />
-              )}
-            </button>
+                  className={`flex-1 min-w-[120px] h-2 rounded-full overflow-hidden ${sem.barTrack}`}
+                >
+                  <div
+                    className={`h-full ${sem.barFill} transition-all rounded-full`}
+                    style={{ width: mTotal ? `${mPct}%` : "0%" }}
+                  />
+                </div>
+                {collapsed[month] ? (
+                  <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+                ) : (
+                  <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" />
+                )}
+              </button>
 
-            {!collapsed[month] && (
-              <div className="overflow-x-auto border-t border-gray-100">
-                <table className="w-full text-sm min-w-[1000px]">
-                  <thead>
-                    <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                      <th className="text-left px-4 py-2.5 w-16">Sem.</th>
-                      <th className="text-left px-3 py-2.5 w-32">Fechas</th>
-                      <th className="text-left px-3 py-2.5 w-14">Horas</th>
-                      <th className="text-left px-3 py-2.5 w-36">Categoría</th>
-                      <th className="text-left px-3 py-2.5 w-48">Entregable</th>
-                      <th className="text-left px-3 py-2.5">Indicador</th>
-                      <th className="text-left px-3 py-2.5 w-28">F. Programada</th>
-                      <th className="text-left px-3 py-2.5 w-28">F. Entrega real</th>
-                      <th className="text-left px-3 py-2.5 w-36">Estado</th>
-                      <th className="text-left px-3 py-2.5 w-16">Evidencia</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {items.map((d) => {
-                      const status = computeStatus(d.scheduledDate, d.actualDate);
-                      const catCfg = categoryConfig[d.category];
-                      const isCurrent = status === "semana_en_curso";
-                      const isExpanded = expandedRow === d.id;
-
-                      return (
-                        <React.Fragment key={d.id}>
-                          <tr
-                            onClick={() => setExpandedRow(isExpanded ? null : d.id)}
-                            className={`cursor-pointer border-l-4 transition-colors ${catCfg.border} ${
-                              isCurrent
-                                ? "bg-blue-50/60 hover:bg-blue-50"
-                                : "hover:bg-gray-50/80"
-                            }`}
-                          >
-                            {/* Semana */}
-                            <td className="px-4 py-2.5">
-                              <span
-                                className="text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded"
-                                style={{ fontWeight: 600 }}
-                              >
-                                S{d.week}
-                              </span>
-                            </td>
-
-                            {/* Fechas inicio - cierre */}
-                            <td className="px-3 py-2.5">
-                              <div className="flex items-center gap-1 text-xs text-gray-500">
-                                <Calendar className="w-3 h-3 shrink-0" />
-                                <span>{d.startDate}</span>
-                                <span className="text-gray-300">—</span>
-                                <span>{d.endDate}</span>
-                              </div>
-                            </td>
-
-                            {/* Horas */}
-                            <td className="px-3 py-2.5">
-                              <div className="flex items-center gap-1 text-xs text-gray-500">
-                                <Clock className="w-3 h-3 shrink-0" />
-                                {d.hours}h
-                              </div>
-                            </td>
-
-                            {/* Categoría */}
-                            <td className="px-3 py-2.5">
-                              <CategoryTag category={d.category} compact />
-                            </td>
-
-                            {/* Entregable */}
-                            <td className="px-3 py-2.5">
-                              <p
-                                className="text-gray-800 text-xs leading-snug line-clamp-2"
-                                style={{ fontWeight: 500 }}
-                              >
-                                {d.deliverable}
-                              </p>
-                            </td>
-
-                            {/* Indicador */}
-                            <td className="px-3 py-2.5">
-                              <p className="text-gray-500 text-xs line-clamp-1">{d.indicator}</p>
-                            </td>
-
-                            {/* F. Programada */}
-                            <td className="px-3 py-2.5">
-                              <span className="text-xs text-gray-600">
-                                {new Date(d.scheduledDate + "T12:00:00").toLocaleDateString("es-PE", {
-                                  day: "2-digit", month: "short",
-                                })}
-                              </span>
-                            </td>
-
-                            {/* F. Real */}
-                            <td className="px-3 py-2.5">
-                              {d.actualDate ? (
-                                <span className="text-xs text-gray-600">
-                                  {new Date(d.actualDate + "T12:00:00").toLocaleDateString("es-PE", {
-                                    day: "2-digit", month: "short",
-                                  })}
-                                </span>
-                              ) : (
-                                <span className="text-xs text-gray-300">—</span>
-                              )}
-                            </td>
-
-                            {/* Estado */}
-                            <td className="px-3 py-2.5">
-                              <StatusBadge status={status} pulse />
-                            </td>
-
-                            {/* Evidencia */}
-                            <td className="px-3 py-2.5">
-                              {d.evidence ? (
-                                <a
-                                  href={d.evidence}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="text-[#1d4ed8] hover:text-[#1e3a8a] transition-colors"
-                                >
-                                  <ExternalLink className="w-3.5 h-3.5" />
-                                </a>
-                              ) : (
-                                <span className="text-gray-300 text-xs">—</span>
-                              )}
-                            </td>
-                          </tr>
-
-                          {/* Expanded description row */}
-                          {isExpanded && (
-                            <tr
-                              className={`border-l-4 ${catCfg.border} ${catCfg.bg}`}
-                            >
-                              <td colSpan={10} className="px-5 py-3">
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                                  <div className="sm:col-span-2">
-                                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1" style={{ fontWeight: 600 }}>
-                                      Descripción del entregable
-                                    </p>
-                                    <p className="text-sm text-gray-700 leading-relaxed">{d.description}</p>
-                                  </div>
-                                  <div className="space-y-2">
-                                    <div>
-                                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1" style={{ fontWeight: 600 }}>
-                                        Indicador asociado
-                                      </p>
-                                      <p className="text-sm text-gray-700">{d.indicator}</p>
-                                    </div>
-                                    {d.evidence && (
-                                      <div>
-                                        <p className="text-xs text-gray-500 uppercase tracking-wider mb-1" style={{ fontWeight: 600 }}>
-                                          Evidencia
-                                        </p>
-                                        <a
-                                          href={d.evidence}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                          className="text-xs text-[#1d4ed8] hover:underline flex items-center gap-1"
-                                        >
-                                          <ExternalLink className="w-3 h-3" />
-                                          {d.evidence.length > 40 ? d.evidence.slice(0, 40) + "…" : d.evidence}
-                                        </a>
-                                      </div>
-                                    )}
-                                    {!d.actualDate && (
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); navigate("/docente/reportar"); }}
-                                        className="mt-2 text-xs text-white bg-[#1e3a8a] hover:bg-[#1d4ed8] px-3 py-1.5 rounded-lg transition-colors"
-                                        style={{ fontWeight: 500 }}
-                                      >
-                                        + Reportar este entregable
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
+              {!collapsed[month] && (
+                <div className="border-t border-gray-100 bg-gray-50/60 px-3 py-3 space-y-2">
+                  {phases.map(({ phase, items: phaseItems }) => {
+                    const pk = phaseKey(month, phase);
+                    const phaseCollapsed = collapsedPhase[pk];
+                    return (
+                      <div
+                        key={pk}
+                        className="rounded-xl border border-gray-100 bg-white overflow-hidden shadow-sm"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => togglePhaseCollapse(month, phase)}
+                          className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-gray-50/80 transition-colors border-b border-gray-50"
+                        >
+                          {phaseCollapsed ? (
+                            <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+                          ) : (
+                            <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" />
                           )}
-                        </React.Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        ))}
+                          <span
+                            className="text-sm text-gray-800 flex-1 truncate"
+                            style={{ fontWeight: 600 }}
+                          >
+                            {phase}
+                          </span>
+                          <span className="text-[11px] text-gray-400 tabular-nums shrink-0">
+                            {phaseItems.length}{" "}
+                            {phaseItems.length === 1 ? "entregable" : "entregables"}
+                          </span>
+                        </button>
+
+                        {!phaseCollapsed && (
+                          <ul className="divide-y divide-gray-50">
+                            {phaseItems.map((d) => {
+                              const filterStatusVal = computeStatus(
+                                d.scheduledDate,
+                                d.actualDate
+                              );
+                              const simple = computeSimpleStatus(d);
+                              const catCfg = categoryConfig[d.category];
+                              const isCurrent =
+                                filterStatusVal === "semana_en_curso";
+                              const isExpanded = expandedRow === d.id;
+
+                              return (
+                                <li key={d.id}>
+                                  <div
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() =>
+                                      setExpandedRow(
+                                        isExpanded ? null : d.id
+                                      )
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter" || e.key === " ") {
+                                        e.preventDefault();
+                                        setExpandedRow(
+                                          isExpanded ? null : d.id
+                                        );
+                                      }
+                                    }}
+                                    className={`px-4 py-3 cursor-pointer border-l-4 transition-colors ${catCfg.border} ${
+                                      isCurrent
+                                        ? "bg-blue-50/50"
+                                        : "hover:bg-gray-50/90"
+                                    }`}
+                                  >
+                                    <div className="flex flex-wrap items-start gap-3">
+                                      <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
+                                        <span className="text-[11px] text-gray-500 bg-gray-100 px-2 py-0.5 rounded font-semibold tabular-nums shrink-0">
+                                          {d.numero != null && d.numero !== 0
+                                            ? `#${d.numero}`
+                                            : `S${d.week}`}
+                                        </span>
+                                        <CategoryTag category={d.category} compact />
+                                        <span
+                                          className="text-sm text-gray-900 leading-snug"
+                                          style={{ fontWeight: 600 }}
+                                        >
+                                          {d.deliverable}
+                                        </span>
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 shrink-0">
+                                        <span className="inline-flex items-center gap-1">
+                                          <Clock className="w-3.5 h-3.5" />
+                                          {d.hours}h
+                                        </span>
+                                        <span
+                                          className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium ${SIMPLE_STATUS_STYLE[simple]}`}
+                                        >
+                                          {SIMPLE_STATUS_LABEL[simple]}
+                                        </span>
+                                        {d.evidence ? (
+                                          <a
+                                            href={d.evidence}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="inline-flex text-[#1d4ed8] hover:text-[#1e3a8a] p-1"
+                                            onClick={(e) => e.stopPropagation()}
+                                            aria-label="Abrir evidencia"
+                                          >
+                                            <ExternalLink className="w-4 h-4" />
+                                          </a>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                    <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
+                                      <Calendar className="w-3.5 h-3.5 shrink-0" />
+                                      <span>
+                                        {d.startDate} – {d.endDate}
+                                      </span>
+                                      <span className="text-gray-300 mx-1">·</span>
+                                      <span className="text-gray-400">
+                                        F. límite:{" "}
+                                        {d.scheduledDate
+                                          ? new Date(
+                                              d.scheduledDate + "T12:00:00"
+                                            ).toLocaleDateString("es-CO", {
+                                              day: "2-digit",
+                                              month: "short",
+                                            })
+                                          : "—"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  {isExpanded && (
+                                    <div
+                                      className={`px-4 py-3 text-sm border-l-4 ${catCfg.border} ${catCfg.bg}`}
+                                    >
+                                      <p
+                                        className="text-xs text-gray-500 uppercase tracking-wider mb-1"
+                                        style={{ fontWeight: 600 }}
+                                      >
+                                        Descripción del entregable
+                                      </p>
+                                      <p className="text-gray-700 leading-relaxed">
+                                        {d.description}
+                                      </p>
+                                      <div className="mt-3 flex flex-wrap gap-3 text-xs text-gray-600">
+                                        <span>
+                                          <span style={{ fontWeight: 600 }}>
+                                            Indicador:{" "}
+                                          </span>
+                                          {d.indicator}
+                                        </span>
+                                        {d.actualDate && (
+                                          <span>
+                                            <span style={{ fontWeight: 600 }}>
+                                              Entrega real:{" "}
+                                            </span>
+                                            {new Date(
+                                              d.actualDate + "T12:00:00"
+                                            ).toLocaleDateString("es-CO", {
+                                              day: "2-digit",
+                                              month: "short",
+                                            })}
+                                          </span>
+                                        )}
+                                      </div>
+                                      {!isDeliverableCompleted(d) && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            navigate("/docente/reportar");
+                                          }}
+                                          className="mt-3 text-xs text-white bg-[#1e3a8a] hover:bg-[#1d4ed8] px-3 py-1.5 rounded-lg transition-colors"
+                                          style={{ fontWeight: 500 }}
+                                        >
+                                          + Reportar este entregable
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
-      {grouped.length === 0 && (
+      {groupedByMonthPhase.length === 0 && (
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm py-16 text-center">
           <p className="text-gray-400 text-sm">No hay entregables con los filtros seleccionados</p>
           <button
@@ -499,5 +798,7 @@ export default function MatrizSeguimiento() {
         </div>
       )}
     </div>
+      )}
+    </>
   );
 }

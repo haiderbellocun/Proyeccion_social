@@ -2,6 +2,9 @@
 
 export type Category =
   | "capacitacion"
+  | "convenio_nuevo"
+  | "convenio_dinamizado"
+  // Compatibilidad (antes no se separaban)
   | "convenio"
   | "presupuesto"
   | "proyecto"
@@ -22,6 +25,8 @@ export type MonthName = "Febrero" | "Marzo" | "Abril" | "Mayo";
 
 export interface Deliverable {
   id: number;
+  /** Número de entregable en plantilla (si el backend lo envía) */
+  numero?: number | null;
   month: MonthName;
   week: number;
   startDate: string;   // Display "03 Feb"
@@ -31,6 +36,10 @@ export interface Deliverable {
   description: string;
   category: Category;
   indicator: string;
+  /** Fase temática (agrupación en UI) */
+  phase?: string;
+  /** Marca explícita de evidencia completada en BD */
+  completado?: boolean;
   scheduledDate: string;  // ISO "2024-02-07" for comparison
   actualDate?: string;     // ISO – present only when submitted
   evidence?: string;
@@ -50,6 +59,23 @@ export const categoryConfig: Record<
     badge: "bg-amber-100 text-amber-700",
     dot: "bg-amber-400",
   },
+  convenio_nuevo: {
+    label: "Convenios Nuevos",
+    border: "border-l-amber-400",
+    bg: "bg-amber-50",
+    text: "text-amber-700",
+    badge: "bg-amber-100 text-amber-700",
+    dot: "bg-amber-500",
+  },
+  convenio_dinamizado: {
+    label: "Convenios Dinamizados",
+    border: "border-l-teal-400",
+    bg: "bg-teal-50",
+    text: "text-teal-700",
+    badge: "bg-teal-100 text-teal-700",
+    dot: "bg-teal-400",
+  },
+  // Compatibilidad: antes 'convenio' ya representaba dinamizados
   convenio: {
     label: "Convenios Dinamizados",
     border: "border-l-teal-400",
@@ -150,21 +176,42 @@ export const statusConfig: Record<
 
 export const DEMO_TODAY = new Date("2024-03-15");
 
+export function isDeliverableCompleted(d: Deliverable): boolean {
+  return d.completado === true || !!d.actualDate;
+}
+
+export type SimpleDeliveryStatus = "completado" | "pendiente" | "atrasado";
+
+export function computeSimpleStatus(d: Deliverable): SimpleDeliveryStatus {
+  if (isDeliverableCompleted(d)) return "completado";
+  if (!d.scheduledDate) return "pendiente";
+  const scheduled = new Date(`${d.scheduledDate}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (scheduled < today) return "atrasado";
+  return "pendiente";
+}
+
 export function computeStatus(scheduledDate: string, actualDate?: string): DeliveryStatus {
-  const scheduled = new Date(scheduledDate);
+  const scheduled = new Date(`${scheduledDate}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
   if (actualDate) {
-    const actual = new Date(actualDate);
+    const actual = new Date(`${actualDate}T00:00:00`);
     if (actual < scheduled) return "entrega_anticipada";
     if (actual.toDateString() === scheduled.toDateString()) return "entrega_a_tiempo";
     return "entrega_fuera";
   }
 
-  // Sin entrega real
-  const weekStart = new Date("2024-03-11");
-  const weekEnd = new Date("2024-03-15");
-  if (scheduled >= weekStart && scheduled <= weekEnd) return "semana_en_curso";
-  if (scheduled > DEMO_TODAY) return "no_iniciado";
+  // Sin entrega real: interpretamos el scheduledDate como "fin de semana"
+  const weekEnd = new Date(scheduled);
+  const weekStart = new Date(scheduled);
+  // Ventana típica: 5 días de semana (fin de semana -4)
+  weekStart.setDate(weekStart.getDate() - 4);
+
+  if (scheduled > today) return "no_iniciado";
+  if (today >= weekStart && today <= weekEnd) return "semana_en_curso";
   return "vencido";
 }
 

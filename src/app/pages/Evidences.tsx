@@ -1,174 +1,215 @@
-import { useState } from "react";
-import { Link2, FileText, Image, Video, Trash2, ExternalLink, X } from "lucide-react";
-import { Badge } from "../components/Badge";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
+import {
+  Link2,
+  ExternalLink,
+  CheckCircle2,
+  Circle,
+} from "lucide-react";
+import { useCurrentUser } from "../hooks/useCurrentUser";
+import { API_BASE } from "../config/api";
 
-const evidenceData = [
-  { id: 1, name: "Registro-asistencia-S1.pdf", date: "05 Mar 2024", type: "PDF", project: "Alfabetización Digital", status: "approved" as const },
-  { id: 2, name: "Fotos-taller-digital.zip", date: "12 Mar 2024", type: "ZIP", project: "Alfabetización Digital", status: "pending" as const },
-  { id: 3, name: "drive.google.com/file/d/1abc...", date: "13 Mar 2024", type: "LINK", project: "Convenio UGEL", status: "review" as const },
-  { id: 4, name: "Material-modulo1.pptx", date: "15 Mar 2024", type: "PPTX", project: "Alfabetización Digital", status: "approved" as const },
-  { id: 5, name: "Informe-huertos-S7.docx", date: "08 Mar 2024", type: "DOCX", project: "Huertos Urbanos", status: "pending" as const },
-];
+const API_BASE_URL = API_BASE;
 
-const iconForType = (type: string) => {
-  if (type === "LINK") return <Link2 className="w-4 h-4 text-blue-500" />;
-  if (["JPG", "PNG", "ZIP"].includes(type)) return <Image className="w-4 h-4 text-purple-500" />;
-  if (type === "MP4") return <Video className="w-4 h-4 text-red-500" />;
-  return <FileText className="w-4 h-4 text-[#1d4ed8]" />;
+type CronogramaEntregable = {
+  id: number;
+  descripcion: string;
+  completado: boolean;
+  url_evidencia: string | null;
+};
+
+type CronogramaSemana = {
+  id: number;
+  numero: number;
+  fechaInicio: string;
+  fechaFin: string;
+  entregablesDetalle?: CronogramaEntregable[];
+};
+
+type CronogramaProyecto = {
+  id: number;
+  name: string;
+  weeks: CronogramaSemana[];
+};
+
+type EvidenceRow = {
+  proyectoId: number;
+  iniciativa: string;
+  semanaNumero: number;
+  entregable: string;
+  link: string;
+  completado: boolean;
 };
 
 export default function Evidences() {
-  const [link, setLink] = useState("");
-  const [links, setLinks] = useState<string[]>([]);
+  const navigate = useNavigate();
+  const currentUser = useCurrentUser();
+  const [rows, setRows] = useState<EvidenceRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const addLink = () => {
-    if (link.trim()) {
-      setLinks([...links, link.trim()]);
-      setLink("");
+  useEffect(() => {
+    const docenteId = currentUser?.id ?? null;
+
+    if (!docenteId) {
+      setLoading(false);
+      return;
+    }
+
+    const load = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const res = await fetch(`${API_BASE_URL}/docente/${docenteId}/cronograma`);
+        if (!res.ok) throw new Error("Error al cargar cronograma del docente");
+        const data = await res.json();
+        const proyectos = (data.proyectos || []) as CronogramaProyecto[];
+
+        const evidences: EvidenceRow[] = [];
+        for (const p of proyectos) {
+          for (const w of p.weeks || []) {
+            const ents = w.entregablesDetalle || [];
+            for (const e of ents) {
+              if (e.url_evidencia && String(e.url_evidencia).trim() !== "") {
+                evidences.push({
+                  proyectoId: p.id,
+                  iniciativa: p.name,
+                  semanaNumero: w.numero,
+                  entregable: e.descripcion,
+                  link: e.url_evidencia,
+                  completado: e.completado === true,
+                });
+              }
+            }
+          }
+        }
+
+        setRows(evidences);
+      } catch (err) {
+        console.error(err);
+        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        setRows([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, [currentUser]);
+
+  const shortDomain = (url: string) => {
+    try {
+      const u = new URL(url);
+      return u.hostname.replace(/^www\./, "");
+    } catch {
+      return url.length > 28 ? `${url.slice(0, 28)}…` : url;
     }
   };
 
   return (
     <div className="p-6 space-y-6">
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+          {error}
+        </div>
+      )}
       <div>
-        <h1 className="text-gray-900">Carga de Evidencias</h1>
+        <h1 className="text-gray-900">Mis Evidencias</h1>
         <p className="text-gray-500 text-sm mt-0.5">
-          Agrega enlaces como evidencia de tus actividades
+          Entregables con enlace de evidencia registrado
         </p>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Área de enlaces */}
-        <div className="xl:col-span-2 space-y-5">
-          {/* Enlace */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-            <h3 className="text-gray-800 mb-4">Agregar Enlace</h3>
-
-            <div className="flex gap-3">
-              <div className="relative flex-1">
-                <Link2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <input
-                  type="url"
-                  value={link}
-                  onChange={(e) => setLink(e.target.value)}
-                  placeholder="https://drive.google.com/file/..."
-                  className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50"
-                  onKeyDown={(e) => e.key === "Enter" && addLink()}
-                />
-              </div>
-              <button
-                onClick={addLink}
-                className="px-5 py-2.5 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white rounded-lg text-sm transition-colors"
-                style={{ fontWeight: 600 }}
-              >
-                Agregar
-              </button>
-            </div>
-
-            {links.length > 0 && (
-              <div className="mt-3 space-y-2">
-                {links.map((l, i) => (
-                  <div
-                    key={i}
-                    className="flex items-center gap-2 p-2.5 bg-blue-50 rounded-lg text-sm"
-                  >
-                    <Link2 className="w-3.5 h-3.5 text-[#1d4ed8] shrink-0" />
-                    <span className="flex-1 text-[#1d4ed8] truncate">{l}</span>
-                    <button onClick={() => setLinks(links.filter((_, j) => j !== i))}>
-                      <X className="w-3.5 h-3.5 text-gray-400 hover:text-red-500" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+      {loading && (
+        <div className="flex items-center justify-center min-h-[40vh]">
+          <div className="w-10 h-10 border-4 border-gray-200 border-t-[#1d4ed8] rounded-full animate-spin" />
         </div>
+      )}
 
-        {/* Side: project selector */}
-        <div className="space-y-5">
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-            <h3 className="text-gray-800 mb-4">Asociar a</h3>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1.5" style={{ fontWeight: 500 }}>
-                  Proyecto
-                </label>
-                <select className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50">
-                  <option>Seleccionar...</option>
-                  <option>Alfabetización Digital</option>
-                  <option>Convenio UGEL</option>
-                  <option>Huertos Urbanos</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1.5" style={{ fontWeight: 500 }}>
-                  Semana
-                </label>
-                <select className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50">
-                  <option>Semana 8</option>
-                  <option>Semana 7</option>
-                  <option>Semana 6</option>
-                </select>
-              </div>
-            </div>
-          </div>
+      {!loading && rows.length === 0 && (
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+          <p className="text-sm text-gray-600">
+            Aún no has registrado evidencias. Ve al detalle de una iniciativa para agregar
+            links de Drive.
+          </p>
         </div>
-      </div>
+      )}
 
-      {/* Evidences table */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h3 className="text-gray-800">Evidencias cargadas</h3>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                <th className="text-left px-6 py-3">Nombre</th>
-                <th className="text-left px-6 py-3">Fecha</th>
-                <th className="text-left px-6 py-3">Tipo</th>
-                <th className="text-left px-6 py-3">Proyecto</th>
-                <th className="text-left px-6 py-3">Estado</th>
-                <th className="text-left px-6 py-3">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {evidenceData.map((ev) => (
-                <tr key={ev.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-2.5">
-                      {iconForType(ev.type)}
-                      <span className="text-gray-700 truncate max-w-[180px]">{ev.name}</span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 text-gray-500">{ev.date}</td>
-                  <td className="px-6 py-4">
-                    <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded text-xs">
-                      {ev.type}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-gray-600 max-w-[140px] truncate">
-                    {ev.project}
-                  </td>
-                  <td className="px-6 py-4">
-                    <Badge variant={ev.status} />
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <button className="text-[#1d4ed8] hover:text-[#1e3a8a] transition-colors">
-                        <ExternalLink className="w-4 h-4" />
-                      </button>
-                      <button className="text-gray-400 hover:text-red-500 transition-colors">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </td>
+      {!loading && rows.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+                  <th className="text-left px-6 py-3">Iniciativa</th>
+                  <th className="text-left px-6 py-3">Semana</th>
+                  <th className="text-left px-6 py-3">Entregable</th>
+                  <th className="text-left px-6 py-3">Link</th>
+                  <th className="text-left px-6 py-3">Estado</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {rows.map((r, idx) => (
+                  <tr
+                    key={`${r.proyectoId}-${r.semanaNumero}-${idx}`}
+                    className="hover:bg-gray-50 transition-colors"
+                  >
+                    <td className="px-6 py-4 text-gray-800" style={{ fontWeight: 500 }}>
+                      {r.iniciativa}
+                    </td>
+                    <td className="px-6 py-4 text-gray-600">Semana {r.semanaNumero}</td>
+                    <td className="px-6 py-4 text-gray-600">{r.entregable}</td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
+                        <Link2 className="w-4 h-4 text-[#1d4ed8]" />
+                        <a
+                          href={r.link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[#1d4ed8] hover:text-[#1e3a8a] truncate max-w-[240px]"
+                        >
+                          {shortDomain(r.link)}
+                        </a>
+                        <a
+                          href={r.link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-gray-400 hover:text-gray-600"
+                          title="Abrir enlace"
+                        >
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      {r.completado ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Completado
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-600">
+                          <Circle className="w-3.5 h-3.5" />
+                          Pendiente
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-6 py-4 border-t border-gray-100 flex justify-end">
+            <button
+              onClick={() => navigate("/docente/proyectos")}
+              className="text-sm text-[#1d4ed8] hover:text-[#1e3a8a]"
+              style={{ fontWeight: 500 }}
+            >
+              Ver mis iniciativas
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

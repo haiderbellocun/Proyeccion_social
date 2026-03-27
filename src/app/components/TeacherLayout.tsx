@@ -15,11 +15,12 @@ import {
   TableProperties,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useCurrentUser } from "../hooks/useCurrentUser";
 
 const navItems = [
   { to: "/docente", label: "Inicio", icon: LayoutDashboard, end: true },
   { to: "/docente/matriz", label: "Matriz de Seguimiento", icon: TableProperties },
-  { to: "/docente/proyectos", label: "Mis Proyectos", icon: FolderKanban },
+  { to: "/docente/proyectos", label: "Mis Iniciativas", icon: FolderKanban },
   { to: "/docente/reportar", label: "Reportar Avance", icon: FileEdit },
   { to: "/docente/evidencias", label: "Evidencias", icon: Paperclip },
   { to: "/docente/historial", label: "Historial", icon: History },
@@ -27,19 +28,18 @@ const navItems = [
 
 export function TeacherLayout() {
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [initials, setInitials] = useState<string>("--");
 
   useEffect(() => {
-    const stored = window.localStorage.getItem("proysocial:user");
-    if (!stored) return;
+    if (!currentUser) return;
     try {
-      const parsed = JSON.parse(stored);
-      const nombre: string | undefined = parsed?.user?.nombre;
-      const apellido: string | undefined = parsed?.user?.apellido;
-      const correo: string | undefined = parsed?.user?.correo;
+      const nombre: string | undefined = currentUser.nombre;
+      const apellido: string | undefined = currentUser.apellido;
+      const correo: string | undefined = currentUser.correo;
 
       let fullName = "";
       if (nombre || apellido) {
@@ -61,7 +61,7 @@ export function TeacherLayout() {
     } catch {
       // ignore parse errors
     }
-  }, []);
+  }, [currentUser]);
 
   return (
     <div className="flex h-screen bg-[#f1f5f9] overflow-hidden">

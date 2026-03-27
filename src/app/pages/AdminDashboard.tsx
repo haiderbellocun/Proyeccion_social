@@ -21,8 +21,9 @@ import {
   Legend,
 } from "recharts";
 import { Badge } from "../components/Badge";
+import { API_BASE } from "../config/api";
 
-const API_BASE_URL = "http://localhost:4000";
+const API_BASE_URL = API_BASE;
 
 const weeklyProgressData = [
   { semana: "S4", enviados: 18, aprobados: 12 },

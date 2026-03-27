@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { Search, Filter, ArrowRight } from "lucide-react";
 import { Badge } from "../components/Badge";
+import { useCurrentUser } from "../hooks/useCurrentUser";
+import { API_BASE } from "../config/api";
 
-const API_BASE_URL = "http://localhost:4000";
+const API_BASE_URL = API_BASE;
 
 type DocenteProject = {
   id: number;
@@ -20,23 +22,14 @@ type DocenteProject = {
 
 export default function MyProjects() {
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
   const [projects, setProjects] = useState<DocenteProject[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem("proysocial:user");
-    let docenteId: number | null = null;
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        if (parsed?.user?.id) {
-          docenteId = Number(parsed.user.id);
-        }
-      } catch {
-        docenteId = null;
-      }
-    }
+    const docenteId = currentUser?.id ?? null;
 
     if (!docenteId) {
       setLoading(false);
@@ -45,6 +38,7 @@ export default function MyProjects() {
 
     const load = async () => {
       try {
+        setError(null);
         const res = await fetch(`${API_BASE_URL}/docente/${docenteId}/dashboard`);
         if (!res.ok) throw new Error("Error al cargar proyectos del docente");
         const data = await res.json();
@@ -80,13 +74,14 @@ export default function MyProjects() {
         setProjects(mapped);
       } catch (e) {
         console.error(e);
+        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
       } finally {
         setLoading(false);
       }
     };
 
     load();
-  }, []);
+  }, [currentUser]);
 
   const filteredProjects = useMemo(() => {
     const term = search.toLowerCase();
@@ -101,13 +96,18 @@ export default function MyProjects() {
 
   return (
     <div className="p-6 space-y-6">
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+          {error}
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-gray-900">Mis Proyectos</h1>
+          <h1 className="text-gray-900">Mis Iniciativas</h1>
           <p className="text-gray-500 text-sm mt-0.5">
             {loading
-              ? "Cargando proyectos..."
-              : `${projects.length} proyectos asignados este ciclo`}
+              ? "Cargando iniciativas..."
+              : `${projects.length} iniciativas asignadas este ciclo`}
           </p>
         </div>
       </div>
@@ -118,7 +118,7 @@ export default function MyProjects() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             type="text"
-            placeholder="Buscar proyecto..."
+            placeholder="Buscar iniciativa..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-white"

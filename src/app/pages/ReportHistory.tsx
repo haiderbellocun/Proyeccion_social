@@ -1,36 +1,81 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Search, Filter, Eye, ChevronDown, ChevronUp } from "lucide-react";
 import { Badge } from "../components/Badge";
 import React from "react";
+import { useCurrentUser } from "../hooks/useCurrentUser";
+import { API_BASE } from "../config/api";
 
-const reports = [
-  { id: 1, date: "15 Mar 2024", week: "Semana 8", project: "Alfabetización Digital - Comunidad Norte", activity: "Taller herramientas digitales básicas", progress: 88, status: "pending" as const, comment: "" },
-  { id: 2, date: "08 Mar 2024", week: "Semana 7", project: "Alfabetización Digital - Comunidad Norte", activity: "Sesión de capacitación internet", progress: 80, status: "approved" as const, comment: "Muy buen trabajo, continuar con el cronograma." },
-  { id: 3, date: "08 Mar 2024", week: "Semana 7", project: "Convenio UGEL - Capacitación Docente", activity: "Reunión de planificación mensual", progress: 45, status: "review" as const, comment: "" },
-  { id: 4, date: "01 Mar 2024", week: "Semana 6", project: "Proyecto Huertos Urbanos", activity: "Diagnóstico del terreno fase 2", progress: 90, status: "approved" as const, comment: "Evidencias completas y bien documentadas." },
-  { id: 5, date: "01 Mar 2024", week: "Semana 6", project: "Alfabetización Digital - Comunidad Norte", activity: "Taller módulo internet y redes", progress: 74, status: "delayed" as const, comment: "Requiere completar la lista de asistencia." },
-  { id: 6, date: "23 Feb 2024", week: "Semana 5", project: "Salud Comunitaria - Zona Rural", activity: "Jornada de salud preventiva", progress: 30, status: "approved" as const, comment: "" },
-];
+const API_BASE_URL = API_BASE;
+
+type ReportStatus = "pending" | "review" | "approved";
+
+type ReportHistoryRow = {
+  id: number;
+  date: string;
+  week: string;
+  project: string;
+  activity: string;
+  progress: number;
+  status: ReportStatus;
+  comment: string;
+};
 
 export default function ReportHistory() {
+  const currentUser = useCurrentUser();
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [reports, setReports] = useState<ReportHistoryRow[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const filtered = reports.filter((r) => {
+  useEffect(() => {
+    const load = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const docenteId = currentUser?.id ?? null;
+        if (!docenteId) {
+          setReports([]);
+          return;
+        }
+
+        const res = await fetch(`${API_BASE_URL}/docente/${docenteId}/reportes`);
+        if (!res.ok) throw new Error("Error al cargar historial de reportes");
+        const data = await res.json();
+        setReports(Array.isArray(data.reportes) ? data.reportes : []);
+      } catch (err) {
+        console.error(err);
+        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        setReports([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, [currentUser]);
+
+  const filtered = useMemo(() => {
+    return reports.filter((r) => {
     const matchSearch =
       r.project.toLowerCase().includes(search.toLowerCase()) ||
       r.activity.toLowerCase().includes(search.toLowerCase());
     const matchStatus = filterStatus === "all" || r.status === filterStatus;
     return matchSearch && matchStatus;
-  });
+    });
+  }, [reports, search, filterStatus]);
 
   return (
     <div className="p-6 space-y-6">
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+          {error}
+        </div>
+      )}
       <div>
         <h1 className="text-gray-900">Historial de Reportes</h1>
         <p className="text-gray-500 text-sm mt-0.5">
-          Registro de todos tus reportes semanales del ciclo 2024-II
+          Registro de tus reportes semanales y decisiones del administrador
         </p>
       </div>
 
@@ -74,7 +119,6 @@ export default function ReportHistory() {
             <option value="approved">Aprobado</option>
             <option value="pending">Pendiente</option>
             <option value="review">En revisión</option>
-            <option value="delayed">Retrasado</option>
           </select>
         </div>
       </div>
@@ -94,7 +138,14 @@ export default function ReportHistory() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {filtered.map((r) => (
+              {loading ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-10 text-center text-gray-400 text-sm">
+                    Cargando...
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((r) => (
                 <React.Fragment key={r.id}>
                   <tr className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4">
@@ -166,11 +217,12 @@ export default function ReportHistory() {
                     </tr>
                   )}
                 </React.Fragment>
-              ))}
+              ))
+              )}
             </tbody>
           </table>
         </div>
-        {filtered.length === 0 && (
+        {!loading && filtered.length === 0 && (
           <div className="py-12 text-center text-gray-400 text-sm">
             No se encontraron reportes con los filtros aplicados
           </div>

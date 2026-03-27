@@ -1,239 +1,361 @@
-import { useNavigate } from "react-router";
+import { useNavigate, useParams } from "react-router";
+import { useEffect, useState } from "react";
 import {
   ArrowLeft,
-  Target,
-  Calendar,
-  Users,
-  FileText,
-  Paperclip,
-  Plus,
   CheckCircle2,
-  Clock,
   Circle,
+  Link2,
+  Clock,
+  ExternalLink,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
+import { useCurrentUser } from "../hooks/useCurrentUser";
+import { API_BASE } from "../config/api";
 
-const project = {
-  name: "Alfabetización Digital - Comunidad Norte",
-  type: "project" as const,
-  status: "active" as const,
-  program: "Ing. de Sistemas",
-  coordinator: "Mg. María Rodríguez",
-  startDate: "01 Mar 2024",
-  endDate: "30 Jun 2024",
-  hours: 120,
-  hoursCompleted: 86,
-  progress: 72,
-  description:
-    "Proyecto de extensión universitaria orientado a capacitar a adultos y adultos mayores de la Comunidad Norte en el uso de herramientas digitales básicas: computación, internet, banca digital y trámites virtuales. Contribuye al ODS 4 (Educación de calidad) y ODS 10 (Reducción de desigualdades).",
-  objectives: [
-    "Capacitar a 120 personas en competencias digitales básicas",
-    "Desarrollar 15 sesiones prácticas de alfabetización digital",
-    "Generar material didáctico adaptado para adultos mayores",
-    "Establecer convenio con el municipio para continuidad del programa",
-  ],
-  indicators: [
-    { label: "Beneficiarios capacitados", target: 120, current: 86 },
-    { label: "Sesiones ejecutadas", target: 15, current: 11 },
-    { label: "Material generado", target: 5, current: 4 },
-  ],
-  schedule: [
-    { week: "Semana 1-2", activity: "Diagnóstico y planificación", status: "done" },
-    { week: "Semana 3-5", activity: "Talleres módulo básico", status: "done" },
-    { week: "Semana 6-8", activity: "Talleres módulo internet y redes", status: "done" },
-    { week: "Semana 9-10", activity: "Talleres banca digital", status: "current" },
-    { week: "Semana 11-12", activity: "Evaluación final y cierre", status: "upcoming" },
-  ],
-  evidences: [
-    { name: "Registro-asistencia-S1.pdf", date: "05 Mar 2024", type: "PDF" },
-    { name: "Fotos-taller-digital.zip", date: "12 Mar 2024", type: "ZIP" },
-    { name: "Material-modulo1.pptx", date: "15 Mar 2024", type: "PPTX" },
-  ],
+const API_BASE_URL = API_BASE;
+
+type Entregable = {
+  id: number;
+  descripcion: string;
+  horas: number | null;
+  completado: boolean;
+  fecha_completado: string | null;
+  url_evidencia: string | null;
+  fecha_real_entrega: string | null;
 };
 
-const statusIcon = {
-  done: <CheckCircle2 className="w-4 h-4 text-emerald-500" />,
-  current: <Clock className="w-4 h-4 text-amber-500" />,
-  upcoming: <Circle className="w-4 h-4 text-gray-300" />,
+type Semana = {
+  id: number;
+  numero: number;
+  fecha_inicio: string;
+  fecha_fin: string;
+  entregables: Entregable[];
+};
+
+type InitiativeDetail = {
+  id: number;
+  titulo: string;
+  descripcion: string | null;
+  tipo: string;
+  estado: string;
+  fechaInicio: string | null;
+  fechaFin: string | null;
+  horasTotales: number | null;
+  programa: string;
+  coordinador: string;
+  semanasDetalle: Semana[];
 };
 
 export default function ProjectDetail() {
+  const { id } = useParams();
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
+  const [initiative, setInitiative] = useState<InitiativeDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<number | null>(null);
+  const [evidenceInputs, setEvidenceInputs] = useState<Record<number, string>>({});
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const userId = currentUser?.id ?? null;
+    if (!userId || !id) {
+      setLoading(false);
+      return;
+    }
+
+    const load = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const res = await fetch(
+          `${API_BASE_URL}/docente/${userId}/iniciativas/${id}`
+        );
+        if (!res.ok) {
+          setInitiative(null);
+          return;
+        }
+        const data = (await res.json()) as InitiativeDetail;
+        setInitiative(data);
+
+        const inputs: Record<number, string> = {};
+        (data.semanasDetalle || []).forEach((s) =>
+          (s.entregables || []).forEach((e) => {
+            inputs[e.id] = e.url_evidencia || "";
+          })
+        );
+        setEvidenceInputs(inputs);
+      } catch (err) {
+        console.error(err);
+        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        setInitiative(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, [id, currentUser]);
+
+  const handleSaveEntregable = async (
+    entregable: Entregable,
+    nuevoCompletado: boolean
+  ) => {
+    try {
+      setSaving(entregable.id);
+      const res = await fetch(
+        `${API_BASE_URL}/docente/entregables/${entregable.id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            completado: nuevoCompletado,
+            url_evidencia: evidenceInputs[entregable.id] || null,
+            fecha_real_entrega: nuevoCompletado
+              ? new Date().toISOString().slice(0, 10)
+              : null,
+          }),
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || "No se pudo guardar el entregable.");
+        return;
+      }
+
+      setInitiative((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          semanasDetalle: prev.semanasDetalle.map((s) => ({
+            ...s,
+            entregables: s.entregables.map((e) => {
+              if (e.id !== entregable.id) return e;
+              return {
+                ...e,
+                completado: nuevoCompletado,
+                url_evidencia: evidenceInputs[entregable.id] || null,
+                fecha_real_entrega: nuevoCompletado
+                  ? new Date().toISOString().slice(0, 10)
+                  : null,
+                fecha_completado: nuevoCompletado
+                  ? new Date().toISOString().slice(0, 10)
+                  : null,
+              };
+            }),
+          })),
+        };
+      });
+    } catch (err) {
+      console.error(err);
+      alert("Error de conexión al guardar el entregable.");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="p-6 flex items-center justify-center min-h-[60vh]">
+        <div className="w-10 h-10 border-4 border-gray-200 border-t-[#1d4ed8] rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!initiative) {
+    return (
+      <div className="p-6 flex items-center justify-center min-h-[60vh]">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-center max-w-md">
+          <p className="text-gray-700 mb-4">No se encontró la iniciativa.</p>
+          <button
+            onClick={() => navigate("/docente/proyectos")}
+            className="bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white px-4 py-2 rounded-lg text-sm transition-colors"
+            style={{ fontWeight: 600 }}
+          >
+            Volver a Mis Iniciativas
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const formatDate = (f: string | null) =>
+    f ? new Date(f).toLocaleDateString("es-CO") : "—";
+
+  const allEntregables = initiative.semanasDetalle.flatMap((s) => s.entregables);
+  const totalEnt = allEntregables.length;
+  const doneEnt = allEntregables.filter((e) => e.completado).length;
+  const pct = totalEnt > 0 ? Math.round((doneEnt / totalEnt) * 100) : 0;
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+          {error}
+        </div>
+      )}
       <div>
         <button
           onClick={() => navigate("/docente/proyectos")}
           className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 mb-4 transition-colors"
         >
-          <ArrowLeft className="w-4 h-4" /> Volver a Mis Proyectos
+          <ArrowLeft className="w-4 h-4" /> Volver a Mis Iniciativas
         </button>
 
-        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+        <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="flex items-center gap-3 mb-2">
-              <Badge variant={project.type} />
-              <Badge variant={project.status} />
+            <div className="flex items-center gap-2 mb-2">
+              <Badge variant={initiative.tipo as any} />
+              <Badge variant={initiative.estado as any} />
             </div>
-            <h1 className="text-gray-900">{project.name}</h1>
+            <h1 className="text-gray-900">{initiative.titulo}</h1>
             <p className="text-gray-500 text-sm mt-1">
-              {project.program} · Coord: {project.coordinator}
+              {initiative.programa} • {initiative.horasTotales ?? "—"} hrs •{" "}
+              {initiative.coordinador}
+            </p>
+            <p className="text-gray-500 text-sm mt-1">
+              Inicio: {formatDate(initiative.fechaInicio)} | Fin estimado:{" "}
+              {formatDate(initiative.fechaFin)}
             </p>
           </div>
-          <button
-            onClick={() => navigate("/docente/reportar")}
-            className="flex items-center gap-2 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white px-4 py-2 rounded-lg text-sm transition-colors shrink-0"
-            style={{ fontWeight: 600 }}
-          >
-            <Plus className="w-4 h-4" /> Reportar Avance
-          </button>
         </div>
       </div>
 
-      {/* Progress bar + stats */}
+      {/* Progreso general */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
-          {[
-            { label: "Progreso total", value: `${project.progress}%` },
-            { label: "Horas completadas", value: `${project.hoursCompleted}/${project.hours}` },
-            { label: "Inicio", value: project.startDate },
-            { label: "Cierre", value: project.endDate },
-          ].map((s) => (
-            <div key={s.label}>
-              <p className="text-xs text-gray-400">{s.label}</p>
-              <p className="text-gray-800 mt-1" style={{ fontWeight: 700 }}>
-                {s.value}
-              </p>
-            </div>
-          ))}
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm text-gray-800" style={{ fontWeight: 600 }}>
+            Progreso
+          </p>
+          <p className="text-xs text-gray-500">
+            {doneEnt} de {totalEnt} entregables completados
+          </p>
         </div>
-        <div className="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">
+        <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
           <div
-            className="h-full bg-[#1d4ed8] rounded-full transition-all"
-            style={{ width: `${project.progress}%` }}
+            className="h-full bg-emerald-500 rounded-full transition-all"
+            style={{ width: `${pct}%` }}
           />
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left column */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Description */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <FileText className="w-4 h-4 text-[#1d4ed8]" />
-              <h3 className="text-gray-800">Descripción</h3>
-            </div>
-            <p className="text-gray-600 text-sm leading-relaxed">{project.description}</p>
-          </div>
-
-          {/* Objectives */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <Target className="w-4 h-4 text-[#1d4ed8]" />
-              <h3 className="text-gray-800">Objetivos</h3>
-            </div>
-            <ul className="space-y-2">
-              {project.objectives.map((obj, i) => (
-                <li key={i} className="flex items-start gap-2 text-sm text-gray-600">
-                  <span className="w-5 h-5 bg-blue-100 rounded-full flex items-center justify-center text-[#1d4ed8] shrink-0 mt-0.5" style={{ fontSize: 10, fontWeight: 700 }}>
-                    {i + 1}
-                  </span>
-                  {obj}
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* Cronogram */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <Calendar className="w-4 h-4 text-[#1d4ed8]" />
-              <h3 className="text-gray-800">Cronograma de Actividades</h3>
-            </div>
-            <div className="space-y-3">
-              {project.schedule.map((item, i) => (
-                <div key={i} className="flex items-center gap-3">
-                  <div className="shrink-0">{statusIcon[item.status as keyof typeof statusIcon]}</div>
-                  <div className="flex-1 flex items-center justify-between">
-                    <span className={`text-sm ${item.status === "upcoming" ? "text-gray-400" : "text-gray-700"}`}>
-                      {item.activity}
-                    </span>
-                    <span className="text-xs text-gray-400 ml-2 shrink-0">{item.week}</span>
-                  </div>
+      {/* Semanas */}
+      <div>
+        {initiative.semanasDetalle.map((semana) => {
+          const totalW = semana.entregables.length;
+          const doneW = semana.entregables.filter((e) => e.completado).length;
+          return (
+            <div
+              key={semana.id}
+              className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 mb-4"
+            >
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <div>
+                  <p className="text-gray-800" style={{ fontWeight: 600 }}>
+                    Semana {semana.numero}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {formatDate(semana.fecha_inicio)} —{" "}
+                    {formatDate(semana.fecha_fin)}
+                  </p>
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Right column */}
-        <div className="space-y-6">
-          {/* Indicators */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <Users className="w-4 h-4 text-[#1d4ed8]" />
-              <h3 className="text-gray-800">Indicadores</h3>
-            </div>
-            <div className="space-y-4">
-              {project.indicators.map((ind) => (
-                <div key={ind.label}>
-                  <div className="flex justify-between text-xs mb-1.5">
-                    <span className="text-gray-600">{ind.label}</span>
-                    <span className="text-gray-700" style={{ fontWeight: 600 }}>
-                      {ind.current}/{ind.target}
-                    </span>
-                  </div>
-                  <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-[#1d4ed8] rounded-full"
-                      style={{ width: `${(ind.current / ind.target) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Evidences */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Paperclip className="w-4 h-4 text-[#1d4ed8]" />
-                <h3 className="text-gray-800">Evidencias</h3>
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] bg-gray-100 text-gray-600">
+                  {doneW}/{totalW} completados
+                </span>
               </div>
-              <button
-                onClick={() => navigate("/docente/evidencias")}
-                className="text-xs text-[#1d4ed8] hover:underline"
-              >
-                + Agregar
-              </button>
-            </div>
-            <div className="space-y-2">
-              {project.evidences.map((ev, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-3 p-2.5 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer"
-                >
-                  <div className="w-7 h-7 bg-blue-100 rounded flex items-center justify-center">
-                    <FileText className="w-3.5 h-3.5 text-[#1d4ed8]" />
+
+              <div className="divide-y divide-gray-50">
+                {semana.entregables.map((e) => (
+                  <div key={e.id} className="py-3">
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={e.completado}
+                        onChange={() => handleSaveEntregable(e, !e.completado)}
+                        className="w-4 h-4 text-emerald-500 rounded mt-0.5"
+                      />
+                      <div className="flex-1">
+                        <div className="flex items-start justify-between gap-3">
+                          <p
+                            className={`text-sm ${
+                              e.completado
+                                ? "text-gray-400 line-through"
+                                : "text-gray-700"
+                            }`}
+                          >
+                            {e.descripcion}
+                          </p>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {e.horas != null && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] bg-gray-100 text-gray-600">
+                                {e.horas}h
+                              </span>
+                            )}
+                            {saving === e.id && (
+                              <div className="w-4 h-4 border-2 border-gray-200 border-t-emerald-500 rounded-full animate-spin" />
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="mt-2">
+                          <p className="text-[11px] text-gray-500 mb-1">
+                            Enlace de evidencia (Drive/Forms):
+                          </p>
+                          <div className="flex items-center gap-2">
+                            <div className="relative flex-1">
+                              <Link2 className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                              <input
+                                type="url"
+                                value={evidenceInputs[e.id] || ""}
+                                onChange={(ev) =>
+                                  setEvidenceInputs((prev) => ({
+                                    ...prev,
+                                    [e.id]: ev.target.value,
+                                  }))
+                                }
+                                placeholder="https://drive.google.com/..."
+                                className="flex-1 text-xs px-2 py-1.5 pl-8 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50 w-full"
+                                onBlur={() => handleSaveEntregable(e, e.completado)}
+                              />
+                            </div>
+                            {evidenceInputs[e.id]?.trim() && (
+                              <a
+                                href={evidenceInputs[e.id]}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[#1d4ed8] hover:text-[#1e3a8a] transition-colors"
+                                title="Abrir evidencia"
+                              >
+                                <ExternalLink className="w-4 h-4" />
+                              </a>
+                            )}
+                          </div>
+
+                          <div className="mt-1 flex items-center gap-2 text-[11px] text-gray-400">
+                            {e.completado ? (
+                              <span className="inline-flex items-center gap-1">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                                Completado
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1">
+                                <Circle className="w-3.5 h-3.5 text-gray-300" />
+                                Pendiente
+                              </span>
+                            )}
+                            <span className="inline-flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5 text-gray-400" />
+                              Entrega real: {formatDate(e.fecha_real_entrega)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-gray-700 truncate" style={{ fontWeight: 500 }}>
-                      {ev.name}
-                    </p>
-                    <p className="text-xs text-gray-400">{ev.date}</p>
-                  </div>
-                  <span className="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">
-                    {ev.type}
-                  </span>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </div>
-        </div>
+          );
+        })}
       </div>
     </div>
   );
