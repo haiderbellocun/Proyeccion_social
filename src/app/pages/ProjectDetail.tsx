@@ -94,7 +94,7 @@ export default function ProjectDetail() {
     };
 
     load();
-  }, [id, currentUser]);
+  }, [id, currentUser?.id]);
 
   const handleSaveEntregable = async (
     entregable: Entregable,

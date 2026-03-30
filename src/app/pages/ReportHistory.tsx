@@ -53,7 +53,7 @@ export default function ReportHistory() {
       }
     };
     load();
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   const filtered = useMemo(() => {
     return reports.filter((r) => {

@@ -14,8 +14,12 @@ import {
   GraduationCap,
   TableProperties,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useCurrentUser } from "../hooks/useCurrentUser";
+import { API_BASE } from "../config/api";
+import { NotificationPanel } from "./NotificationPanel";
+
+const API_BASE_URL = API_BASE;
 
 const navItems = [
   { to: "/docente", label: "Inicio", icon: LayoutDashboard, end: true },
@@ -31,8 +35,43 @@ export function TeacherLayout() {
   const currentUser = useCurrentUser();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [showNotifs, setShowNotifs] = useState(false);
+  const [notifCount, setNotifCount] = useState(0);
+  const notifRef = useRef<HTMLDivElement>(null);
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [initials, setInitials] = useState<string>("--");
+
+  useEffect(() => {
+    if (!currentUser?.id || currentUser.rol !== "docente") {
+      setNotifCount(0);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/docente/${currentUser.id}/notificaciones`);
+        const data = await res.json().catch(() => ({}));
+        const n = Array.isArray(data.notificaciones) ? data.notificaciones.length : 0;
+        if (!cancelled) setNotifCount(n);
+      } catch {
+        if (!cancelled) setNotifCount(0);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!showNotifs) return;
+    const onDown = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setShowNotifs(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [showNotifs]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -61,7 +100,7 @@ export function TeacherLayout() {
     } catch {
       // ignore parse errors
     }
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   return (
     <div className="flex h-screen bg-[#f1f5f9] overflow-hidden">
@@ -154,10 +193,29 @@ export function TeacherLayout() {
           </div>
 
           <div className="ml-auto flex items-center gap-3">
-            <button className="relative p-2 rounded-lg hover:bg-gray-100 text-gray-500 hover:text-gray-700 transition-colors">
-              <Bell className="w-5 h-5" />
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full"></span>
-            </button>
+            <div className="relative" ref={notifRef}>
+              <button
+                type="button"
+                onClick={() => setShowNotifs((v) => !v)}
+                className="relative p-2 rounded-lg hover:bg-gray-100 text-gray-500 hover:text-gray-700 transition-colors"
+                aria-expanded={showNotifs}
+                aria-label="Notificaciones"
+              >
+                <Bell className="w-5 h-5" />
+                {notifCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[1.125rem] h-[1.125rem] px-0.5 flex items-center justify-center bg-red-500 text-white text-[10px] font-bold rounded-full leading-none">
+                    {notifCount > 9 ? "9+" : notifCount}
+                  </span>
+                )}
+              </button>
+              {showNotifs && currentUser?.id != null && currentUser.rol === "docente" && (
+                <NotificationPanel
+                  rol="docente"
+                  userId={currentUser.id}
+                  onClose={() => setShowNotifs(false)}
+                />
+              )}
+            </div>
 
             <div className="relative">
               <button

@@ -95,7 +95,7 @@ export default function Evidences() {
     };
 
     load();
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   const shortDomain = (url: string) => {
     try {

@@ -81,7 +81,7 @@ export default function MyProjects() {
     };
 
     load();
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   const filteredProjects = useMemo(() => {
     const term = search.toLowerCase();

@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { Badge } from "../components/Badge";
 import { StatusBadge } from "../components/StatusBadge";
-import { MONTH_COLORS, type MonthName } from "../data/matrizData";
+import { MONTH_COLORS, type MonthName } from "../data/matrizConstants";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE } from "../config/api";
 
@@ -112,7 +112,7 @@ export default function TeacherDashboard() {
     };
 
     load();
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   const safeStats = stats ?? { total: 0, completed: 0, pct: 0 };
   const complianceColor =

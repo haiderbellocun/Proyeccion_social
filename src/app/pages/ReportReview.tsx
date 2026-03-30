@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 import {
   CheckCircle2,
   XCircle,
@@ -17,6 +18,7 @@ const API_BASE_URL = API_BASE;
 
 type ReportItem = {
   id: number;
+  docente_id: number | null;
   teacher: string;
   school: string;
   program: string;
@@ -32,6 +34,7 @@ type ReportItem = {
 };
 
 export default function ReportReview() {
+  const navigate = useNavigate();
   const [current, setCurrent] = useState(0);
   const [comment, setComment] = useState("");
   const [reviewed, setReviewed] = useState<Record<number, string>>({});
@@ -88,6 +91,7 @@ export default function ReportReview() {
           else if (r.estado_revision === "observado") status = "review";
           return {
             id: Number(r.id),
+            docente_id: r.docente_id != null ? Number(r.docente_id) : null,
             teacher: r.docente_nombre || "Docente",
             school: "Sin escuela",
             program: r.programa_nombre || "Sin programa",
@@ -418,6 +422,15 @@ export default function ReportReview() {
                     </p>
                   </div>
                 </div>
+                {report.docente_id != null && (
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/admin/docentes/${report.docente_id}/matriz`)}
+                    className="mt-4 text-xs text-blue-700 hover:underline font-medium"
+                  >
+                    Ver matriz completa →
+                  </button>
+                )}
               </div>
             </div>
           </div>

@@ -1,4 +1,4 @@
-import { Category, categoryConfig } from "../data/matrizData";
+import { Category, categoryConfig } from "../data/matrizConstants";
 
 interface CategoryTagProps {
   category: Category;

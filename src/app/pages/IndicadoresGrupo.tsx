@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BarChart2 } from "lucide-react";
 import { API_BASE } from "../config/api";
 
@@ -7,6 +7,7 @@ const API_BASE_URL = API_BASE;
 type IndicadoresGrupoRow = {
   id: number;
   nombre: string;
+  semestre?: string | null;
   tipo_docente: "ANTIGUO" | "NUEVO" | string | null;
   horas_totales: number | null;
   num_proyectos: number;
@@ -39,30 +40,59 @@ function TipoBadge({ tipo }: { tipo: IndicadoresGrupoRow["tipo_docente"] }) {
 }
 
 export default function IndicadoresGrupo() {
+  const [semestres, setSemestres] = useState<string[]>([]);
+  const [semestreActivo, setSemestreActivo] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [grupos, setGrupos] = useState<IndicadoresGrupoRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const load = async () => {
+    let cancelled = false;
+    (async () => {
       try {
-        setLoading(true);
-        setError(null);
-        const res = await fetch(`${API_BASE_URL}/admin/indicadores-grupo`);
-        if (!res.ok) throw new Error("No se pudo cargar indicadores por grupo");
-        const data = await res.json();
-        setGrupos(Array.isArray(data.grupos) ? data.grupos : []);
-      } catch (err) {
-        console.error(err);
-        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
-        setGrupos([]);
-      } finally {
-        setLoading(false);
+        const r = await fetch(`${API_BASE_URL}/admin/semestres`);
+        const d = await r.json();
+        const list = Array.isArray(d.semestres) ? d.semestres : [];
+        if (cancelled) return;
+        setSemestres(list);
+        setSemestreActivo((prev) => {
+          if (prev) return prev;
+          return list[0] ?? "2026A";
+        });
+      } catch {
+        if (!cancelled) {
+          setSemestres([]);
+          setSemestreActivo((prev) => prev || "2026A");
+        }
       }
+    })();
+    return () => {
+      cancelled = true;
     };
-
-    load();
   }, []);
+
+  const loadGrupos = useCallback(async () => {
+    if (!semestreActivo) return;
+    try {
+      setLoading(true);
+      setError(null);
+      const q = encodeURIComponent(semestreActivo);
+      const res = await fetch(`${API_BASE_URL}/admin/indicadores-grupo?semestre=${q}`);
+      if (!res.ok) throw new Error("No se pudo cargar indicadores por grupo");
+      const data = await res.json();
+      setGrupos(Array.isArray(data.grupos) ? data.grupos : []);
+    } catch (err) {
+      console.error(err);
+      setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+      setGrupos([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [semestreActivo]);
+
+  useEffect(() => {
+    void loadGrupos();
+  }, [loadGrupos]);
 
   const totals = useMemo(() => {
     const totalGruposActivos = grupos.length;
@@ -101,6 +131,14 @@ export default function IndicadoresGrupo() {
     };
   }, [grupos]);
 
+  if (!semestreActivo) {
+    return (
+      <div className="p-6 text-gray-500 text-sm flex items-center gap-2">
+        Cargando semestres…
+      </div>
+    );
+  }
+
   return (
     <div className="p-6 space-y-6">
       {error && (
@@ -117,11 +155,30 @@ export default function IndicadoresGrupo() {
             Resumen de la matriz por grupo y tipo docente.
           </p>
         </div>
-        <div className="hidden sm:flex items-center gap-2 text-gray-600">
-          <BarChart2 className="w-4 h-4" />
-          <span className="text-xs" style={{ fontWeight: 600 }}>
-            Vista consolidada
-          </span>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <span style={{ fontWeight: 600 }}>Semestre:</span>
+            <select
+              value={semestreActivo}
+              onChange={(e) => setSemestreActivo(e.target.value)}
+              className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white min-w-[100px]"
+            >
+              {semestres.length === 0 && (
+                <option value={semestreActivo}>{semestreActivo}</option>
+              )}
+              {semestres.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="hidden sm:flex items-center gap-2 text-gray-600">
+            <BarChart2 className="w-4 h-4" />
+            <span className="text-xs" style={{ fontWeight: 600 }}>
+              Vista consolidada
+            </span>
+          </div>
         </div>
       </div>
 
@@ -159,6 +216,7 @@ export default function IndicadoresGrupo() {
             <thead>
               <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
                 <th className="text-left px-4 py-3">Grupo</th>
+                <th className="text-left px-4 py-3 w-24">Semestre</th>
                 <th className="text-left px-4 py-3 w-32">Tipo</th>
                 <th className="text-left px-4 py-3 w-24">Horas</th>
                 <th className="text-left px-4 py-3 w-28">Proyectos</th>
@@ -174,13 +232,13 @@ export default function IndicadoresGrupo() {
             <tbody className="divide-y divide-gray-50">
               {loading ? (
                 <tr>
-                  <td colSpan={10} className="px-4 py-10 text-center text-gray-400 text-sm">
+                  <td colSpan={11} className="px-4 py-10 text-center text-gray-400 text-sm">
                     Cargando…
                   </td>
                 </tr>
               ) : grupos.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-4 py-10 text-center text-gray-400 text-sm">
+                  <td colSpan={11} className="px-4 py-10 text-center text-gray-400 text-sm">
                     No hay datos para mostrar.
                   </td>
                 </tr>
@@ -203,6 +261,11 @@ export default function IndicadoresGrupo() {
                           <div className="text-gray-800" style={{ fontWeight: 650 }}>
                             {g.nombre}
                           </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
+                            {g.semestre ?? "—"}
+                          </span>
                         </td>
                         <td className="px-4 py-3">
                           <TipoBadge tipo={g.tipo_docente} />
@@ -237,7 +300,7 @@ export default function IndicadoresGrupo() {
 
                   {/* Fila de totales */}
                   <tr className="bg-gray-50 font-semibold">
-                    <td className="px-4 py-4 text-gray-900" colSpan={2}>
+                    <td className="px-4 py-4 text-gray-900" colSpan={3}>
                       Totales
                     </td>
                     <td className="px-4 py-4 text-gray-900 tabular-nums">

@@ -1,4 +1,4 @@
-import { DeliveryStatus, statusConfig } from "../data/matrizData";
+import { DeliveryStatus, statusConfig } from "../data/matrizConstants";
 
 interface StatusBadgeProps {
   status: DeliveryStatus;

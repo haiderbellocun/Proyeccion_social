@@ -1,10 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { FileEdit, Save, Send, Link2, CheckCircle2, X } from "lucide-react";
+import { FileEdit, Loader2, Save, Send, Link2, CheckCircle2, X } from "lucide-react";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE } from "../config/api";
 
 const API_BASE_URL = API_BASE;
+
+function getViernesActual(): string {
+  const hoy = new Date();
+  const diaSemana = hoy.getDay();
+  const diasHastaViernes = (5 - diaSemana + 7) % 7;
+  const viernes = new Date(hoy);
+  viernes.setDate(hoy.getDate() + diasHastaViernes);
+  return viernes.toLocaleDateString("es-CO", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  });
+}
 
 type ReportWeek = {
   id: number;
@@ -27,17 +40,19 @@ type ReportProject = {
   weeks: ReportWeek[];
 };
 
+type EntregableDetalleItem = {
+  id: number;
+  descripcion: string;
+  completado?: boolean;
+  url_evidencia?: string | null;
+  fecha_real_entrega?: string | null;
+};
+
 type IniciativaDetalle = {
   semanasDetalle?: {
     id: number;
     numero: number;
-    entregables: {
-      id: number;
-      descripcion: string;
-      completado?: boolean;
-      url_evidencia?: string | null;
-      fecha_real_entrega?: string | null;
-    }[];
+    entregables: EntregableDetalleItem[];
   }[];
 };
 
@@ -52,6 +67,8 @@ export default function ReportProgress() {
   const [selectedProjectId, setSelectedProjectId] = useState<number | "">("");
   const [selectedWeekId, setSelectedWeekId] = useState<number | "">("");
   const [sending, setSending] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [actividadRealizada, setActividadRealizada] = useState("");
@@ -89,7 +106,7 @@ export default function ReportProgress() {
     };
 
     load();
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   const selectedProject = useMemo(
     () =>
@@ -111,6 +128,88 @@ export default function ReportProgress() {
     }
   };
 
+  const resolveEntregablesDetalle = async (): Promise<EntregableDetalleItem[]> => {
+    let entregablesToSend: EntregableDetalleItem[] =
+      selectedWeek?.entregablesDetalle || [];
+    if (
+      entregablesToSend.length === 0 &&
+      selectedProject &&
+      typeof selectedProjectId === "number"
+    ) {
+      const docenteId = getDocenteIdFromStorage();
+      if (docenteId) {
+        const resDetail = await fetch(
+          `${API_BASE_URL}/docente/${docenteId}/iniciativas/${selectedProjectId}`
+        );
+        if (resDetail.ok) {
+          const detail = (await resDetail.json()) as IniciativaDetalle;
+          const weekDetail = (detail.semanasDetalle || []).find(
+            (w) => Number(w.numero) === Number(selectedWeek?.numero)
+          );
+          entregablesToSend = weekDetail?.entregables || [];
+        }
+      }
+    }
+    return entregablesToSend;
+  };
+
+  const handleGuardarBorrador = async () => {
+    if (!selectedProject || typeof selectedProjectId !== "number") {
+      alert("Selecciona un proyecto.");
+      return;
+    }
+    if (!selectedWeek || typeof selectedWeekId !== "number") {
+      alert("Selecciona una semana.");
+      return;
+    }
+    const docenteId = getDocenteIdFromStorage();
+    if (!docenteId) {
+      alert("No se pudo identificar el docente.");
+      return;
+    }
+    try {
+      setGuardando(true);
+      setError(null);
+      const entregablesToSave = await resolveEntregablesDetalle();
+      if (entregablesToSave.length === 0) {
+        alert("Esta semana no tiene entregables con ID para guardar aún.");
+        return;
+      }
+      const actividadPayload = actividadRealizada.trim();
+      const descripcionPayload = descripcionReporte.trim();
+      const requests = entregablesToSave.map((e) =>
+        fetch(`${API_BASE_URL}/docente/entregables/${e.id}/borrador`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            actividad_reportada: actividadPayload,
+            descripcion_reporte: descripcionPayload,
+            porcentaje_avance: Math.round(progress),
+            urls_evidencia: links,
+            docente_id: docenteId,
+          }),
+        })
+      );
+      const responses = await Promise.all(requests);
+      const failed = responses.find((r) => !r.ok);
+      if (failed) {
+        const data = await failed.json().catch(() => ({}));
+        setError(
+          typeof data.error === "string"
+            ? data.error
+            : "No se pudo guardar el borrador."
+        );
+        return;
+      }
+      setSavedAt(new Date().toLocaleTimeString("es-CO"));
+    } catch (err) {
+      console.error(err);
+      setError("Error de conexión al guardar el borrador.");
+    } finally {
+      setGuardando(false);
+    }
+  };
+
   const handleSend = async () => {
     if (!selectedWeek) {
       alert("Selecciona una semana con entregables para reportar.");
@@ -128,24 +227,7 @@ export default function ReportProgress() {
       const today = new Date().toISOString().slice(0, 10);
       const evidenceUrl = links[0] || null;
 
-      let entregablesToSend = selectedWeek.entregablesDetalle || [];
-
-      // Fallback: si cronograma no trae detalle con ids, obtenerlos desde detalle de iniciativa.
-      if (entregablesToSend.length === 0 && typeof selectedProjectId === "number") {
-        const docenteId = getDocenteIdFromStorage();
-        if (docenteId) {
-          const resDetail = await fetch(
-            `${API_BASE_URL}/docente/${docenteId}/iniciativas/${selectedProjectId}`
-          );
-          if (resDetail.ok) {
-            const detail = (await resDetail.json()) as IniciativaDetalle;
-            const weekDetail = (detail.semanasDetalle || []).find(
-              (w) => Number(w.numero) === Number(selectedWeek.numero)
-            );
-            entregablesToSend = weekDetail?.entregables || [];
-          }
-        }
-      }
+      const entregablesToSend = await resolveEntregablesDetalle();
 
       if (entregablesToSend.length === 0) {
         alert("Esta semana no tiene entregables con ID para reportar aún.");
@@ -432,11 +514,24 @@ export default function ReportProgress() {
 
             <div className="mt-5 space-y-2.5">
               <button
-                className="w-full flex items-center justify-center gap-2 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50 transition-colors"
+                type="button"
+                onClick={() => void handleGuardarBorrador()}
+                disabled={guardando}
+                className="w-full flex items-center justify-center gap-2 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{ fontWeight: 500 }}
               >
-                <Save className="w-4 h-4" /> Guardar borrador
+                {guardando ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Save className="w-4 h-4" />
+                )}{" "}
+                {guardando ? "Guardando…" : "Guardar borrador"}
               </button>
+              {savedAt && (
+                <span className="text-xs text-gray-500 block text-center">
+                  Borrador guardado a las {savedAt}
+                </span>
+              )}
               <button
                 onClick={handleSend}
                 disabled={sending}
@@ -451,7 +546,7 @@ export default function ReportProgress() {
           <div className="bg-blue-50 rounded-xl border border-blue-100 p-4">
             <p className="text-[#1e3a8a] text-sm" style={{ fontWeight: 600 }}>Recordatorio</p>
             <p className="text-blue-700 text-xs mt-1">
-              El reporte semanal debe enviarse antes del <strong>viernes 15 de marzo</strong> a las
+              El reporte semanal debe enviarse antes del <strong>{getViernesActual()}</strong> a las
               23:59 hrs.
             </p>
           </div>
