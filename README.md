@@ -29,7 +29,11 @@ La solución está orientada a equipos académicos que requieren visibilidad ope
 
 ---
 
+
 ## 🏗️ Arquitectura
+=======
+##  Arquitectura
+>>>>>>> e114e3e8f1da81985118e97c8b1181de84cb3e51
 
 ### Frontend
 - React 18
@@ -54,7 +58,11 @@ La solución está orientada a equipos académicos que requieren visibilidad ope
 
 ---
 
+ HEAD
 ## 📁 Estructura del proyecto
+=======
+##  Estructura del proyecto
+>>>>>>> e114e3e8f1da81985118e97c8b1181de84cb3e51
 
 ```
 app_Proyec_social/
@@ -87,7 +95,11 @@ app_Proyec_social/
 
 ---
 
+
 ## 🚀 Inicio rápido
+=======
+##  Inicio rápido
+>>>>>>> e114e3e8f1da81985118e97c8b1181de84cb3e51
 
 1. Clonar el repositorio:
    ```bash
@@ -103,7 +115,11 @@ app_Proyec_social/
 
 ---
 
+HEAD
 ## 🔐 Variables de entorno
+=======
+##  Variables de entorno
+>>>>>>> e114e3e8f1da81985118e97c8b1181de84cb3e51
 
 **Frontend `.env`**
 ```env
@@ -123,7 +139,11 @@ ALLOWED_ORIGIN=http://localhost:5173
 
 ---
 
+HEAD
 ## 🗄️ Configuración de base de datos
+=======
+##  Configuración de base de datos
+>>>>>>> e114e3e8f1da81985118e97c8b1181de84cb3e51
 
 Crea la base de datos y ejecuta las migraciones en orden:
 
@@ -137,7 +157,11 @@ psql -U postgres -d app_proyecion -f backend/migrations/fase3a_evidencia_entrega
 
 ---
 
+ HEAD
 ## ▶️ Ejecución del proyecto
+=======
+## Ejecución del proyecto
+>>>>>>> e114e3e8f1da81985118e97c8b1181de84cb3e51
 
 **Backend**
 ```bash
@@ -157,7 +181,11 @@ El frontend estará disponible en `http://localhost:5173` y el backend en `http:
 
 ---
 
+HEAD
 ## 🔌 API principal
+
+##  API principal
+>>>>>>> e114e3e8f1da81985118e97c8b1181de84cb3e51
 
 ### Autenticación
 - `POST /auth/login` — Iniciar sesión
