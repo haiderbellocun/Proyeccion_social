@@ -947,6 +947,9 @@ router.get("/:id/reportes", async (req, res) => {
         e.comentario_revision,
         e.fecha_real_entrega,
         e.fecha_completado,
+        e.url_evidencia,
+        COALESCE(e.descripcion_reporte, '') AS descripcion_reporte,
+        e.descripcion_reporte AS descripcion_reporte_raw,
         COALESCE(e.porcentaje_avance, 100)::int AS porcentaje_avance,
         COALESCE(e.actividad_reportada, e.descripcion) AS actividad,
         p.id AS proyecto_id,
@@ -991,6 +994,8 @@ router.get("/:id/reportes", async (req, res) => {
             ? "review"
             : "pending",
         comment: r.comentario_revision || "",
+        url_evidencia: r.url_evidencia || "",
+        descripcion_reporte: r.descripcion_reporte || "",
       };
     });
 
@@ -1236,6 +1241,77 @@ router.patch("/entregables/:entregableId/fecha-entrega", async (req, res) => {
   }
 });
 
+// Reenviar reporte observado para revisión (docente)
+router.post("/:docenteId/entregables/:entregableId/reenviar", async (req, res) => {
+  const entregableId = Number(req.params.entregableId);
+  const docenteId = Number(req.params.docenteId);
+
+  if (!docenteId || Number.isNaN(docenteId)) {
+    return res.status(400).json({ error: "id de docente inválido" });
+  }
+  if (!entregableId || Number.isNaN(entregableId)) {
+    return res.status(400).json({ error: "id de entregable inválido" });
+  }
+
+  try {
+    const check = await pool.query(
+      `
+      SELECT
+        e.id,
+        COALESCE(e.estado_revision, 'enviado') AS estado_revision,
+        p.docente_responsable_id,
+        pd.docente_id AS colaborador_id
+      FROM proyecto_entregables e
+      INNER JOIN proyecto_semanas ps ON ps.id = e.proyecto_semana_id
+      INNER JOIN proyectos p ON p.id = ps.proyecto_id
+      LEFT JOIN proyecto_docentes pd
+        ON pd.proyecto_id = p.id AND pd.docente_id = $2
+      WHERE e.id = $1
+      `,
+      [entregableId, docenteId]
+    );
+
+    if (check.rowCount === 0) {
+      return res.status(404).json({ error: "Reporte no encontrado" });
+    }
+
+    const row = check.rows[0];
+    const docenteResp = Number(row.docente_responsable_id);
+    const colaboradorId = row.colaborador_id != null ? Number(row.colaborador_id) : null;
+
+    if (docenteResp !== docenteId && colaboradorId !== docenteId) {
+      return res
+        .status(403)
+        .json({ error: "No tienes permiso para reenviar este reporte" });
+    }
+
+    if (row.estado_revision !== "observado") {
+      return res.status(400).json({
+        error: `Solo puedes reenviar reportes con estado 'observado'. Estado actual: ${row.estado_revision}`,
+      });
+    }
+
+    await pool.query(
+      `
+      UPDATE proyecto_entregables
+      SET estado_revision = 'enviado',
+          comentario_revision = NULL,
+          revisado_en = NULL
+      WHERE id = $1
+      `,
+      [entregableId]
+    );
+
+    res.json({ ok: true, mensaje: "Reporte reenviado para revisión" });
+  } catch (error) {
+    console.error(
+      "Error en POST /docente/:docenteId/entregables/:entregableId/reenviar",
+      error
+    );
+    res.status(500).json({ error: "Error interno" });
+  }
+});
+
 // PUT /docente/entregables/:entregableId
 router.put("/entregables/:entregableId", async (req, res) => {
   const entregableId = Number(req.params.entregableId);
@@ -1289,7 +1365,14 @@ router.put("/entregables/:entregableId", async (req, res) => {
            actividad_reportada = $4,
            descripcion_reporte = $5,
            porcentaje_avance  = $6,
-           estado_revision    = CASE WHEN $1 = true THEN 'enviado' ELSE COALESCE(estado_revision, 'enviado') END
+           estado_revision    = CASE
+                                WHEN $1 = true THEN
+                                  CASE
+                                    WHEN COALESCE(estado_revision, 'enviado') = 'observado' THEN 'observado'
+                                    ELSE 'enviado'
+                                  END
+                                ELSE COALESCE(estado_revision, 'enviado')
+                              END
        WHERE id = $7`,
       [
         completado === true,

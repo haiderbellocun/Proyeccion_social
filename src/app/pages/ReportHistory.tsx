@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search, Filter, Eye, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  Search,
+  Filter,
+  Eye,
+  ChevronDown,
+  ChevronUp,
+  AlertCircle,
+  Loader2,
+  Send,
+  ExternalLink,
+} from "lucide-react";
 import { Badge } from "../components/Badge";
 import React from "react";
 import { useCurrentUser } from "../hooks/useCurrentUser";
@@ -18,6 +28,8 @@ type ReportHistoryRow = {
   progress: number;
   status: ReportStatus;
   comment: string;
+  url_evidencia: string;
+  descripcion_reporte: string;
 };
 
 export default function ReportHistory() {
@@ -28,6 +40,83 @@ export default function ReportHistory() {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [reports, setReports] = useState<ReportHistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const [edits, setEdits] = useState<
+    Record<
+      number,
+      {
+        url_evidencia: string;
+        descripcion_reporte: string;
+        porcentaje_avance: number;
+      }
+    >
+  >({});
+  const [guardandoEdicion, setGuardandoEdicion] = useState<number | null>(null);
+
+  const handleGuardarYReenviar = async (reporte: ReportHistoryRow) => {
+    const uid = currentUser?.id;
+    if (!uid) return;
+
+    const cambios = edits[reporte.id];
+    const urlEvidencia = cambios?.url_evidencia ?? reporte.url_evidencia;
+    const descripcion = cambios?.descripcion_reporte ?? reporte.descripcion_reporte;
+    const porcentaje = cambios?.porcentaje_avance ?? reporte.progress;
+
+    setGuardandoEdicion(reporte.id);
+    setError(null);
+    try {
+      const resPut = await fetch(`${API_BASE_URL}/docente/entregables/${reporte.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          completado: true,
+          url_evidencia: urlEvidencia || null,
+          descripcion_reporte: descripcion || null,
+          porcentaje_avance: porcentaje,
+          docente_id: uid,
+        }),
+      });
+      if (!resPut.ok) {
+        const err = await resPut.json().catch(() => ({}));
+        setError(err.error ?? "No se pudo guardar las correcciones.");
+        return;
+      }
+
+      const resReenviar = await fetch(
+        `${API_BASE_URL}/docente/${uid}/entregables/${reporte.id}/reenviar`,
+        { method: "POST", headers: { "Content-Type": "application/json" } }
+      );
+      if (!resReenviar.ok) {
+        const err = await resReenviar.json().catch(() => ({}));
+        setError(err.error ?? "No se pudo reenviar el reporte.");
+        return;
+      }
+
+      setReports((prev) =>
+        prev.map((rep) =>
+          rep.id === reporte.id
+            ? {
+                ...rep,
+                status: "pending",
+                comment: "",
+                url_evidencia: urlEvidencia,
+                descripcion_reporte: descripcion,
+                progress: porcentaje,
+              }
+            : rep
+        )
+      );
+      setEdits((prev) => {
+        const next = { ...prev };
+        delete next[reporte.id];
+        return next;
+      });
+    } catch {
+      setError("Error de conexión. Intenta de nuevo.");
+    } finally {
+      setGuardandoEdicion(null);
+    }
+  };
 
   useEffect(() => {
     const load = async () => {
@@ -85,7 +174,7 @@ export default function ReportHistory() {
           { label: "Total reportes", value: reports.length, color: "text-gray-800" },
           { label: "Aprobados", value: reports.filter((r) => r.status === "approved").length, color: "text-emerald-600" },
           { label: "Pendientes", value: reports.filter((r) => r.status === "pending").length, color: "text-amber-600" },
-          { label: "En revisión", value: reports.filter((r) => r.status === "review").length, color: "text-blue-600" },
+          { label: "Requieren corrección", value: reports.filter((r) => r.status === "review").length, color: "text-amber-700" },
         ].map((s) => (
           <div key={s.label} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 text-center">
             <p className={`text-2xl ${s.color}`} style={{ fontWeight: 700 }}>
@@ -118,7 +207,7 @@ export default function ReportHistory() {
             <option value="all">Todos los estados</option>
             <option value="approved">Aprobado</option>
             <option value="pending">Pendiente</option>
-            <option value="review">En revisión</option>
+            <option value="review">Requiere corrección</option>
           </select>
         </div>
       </div>
@@ -147,7 +236,11 @@ export default function ReportHistory() {
               ) : (
                 filtered.map((r) => (
                 <React.Fragment key={r.id}>
-                  <tr className="hover:bg-gray-50 transition-colors">
+                  <tr
+                    className={`hover:bg-gray-50 transition-colors ${
+                      r.status === "review" ? "border-l-4 border-amber-400" : ""
+                    }`}
+                  >
                     <td className="px-6 py-4">
                       <p className="text-gray-700" style={{ fontWeight: 500 }}>{r.week}</p>
                       <p className="text-gray-400 text-xs">{r.date}</p>
@@ -168,7 +261,12 @@ export default function ReportHistory() {
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <Badge variant={r.status} />
+                      <Badge
+                        variant={r.status}
+                        label={
+                          r.status === "review" ? "Requiere corrección" : undefined
+                        }
+                      />
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2">
@@ -211,6 +309,159 @@ export default function ReportHistory() {
                             <p className="text-xs text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg inline-block">
                               Pendiente de revisión por el administrador
                             </p>
+                          )}
+
+                          {r.status === "review" && (
+                            <div className="mt-3 p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-4">
+                              <div className="flex items-start gap-2">
+                                <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+                                <div>
+                                  <p className="text-sm font-semibold text-amber-800">
+                                    El administrador solicitó ajustes:
+                                  </p>
+                                  <p className="text-sm text-amber-700 mt-1 whitespace-pre-line">
+                                    {r.comment || "Sin comentario adicional."}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <hr className="border-amber-200" />
+
+                              <p className="text-sm font-semibold text-amber-900">
+                                Realiza tus correcciones y reenvía:
+                              </p>
+
+                              <div className="flex flex-col gap-1">
+                                <label className="text-xs font-medium text-gray-700">
+                                  % de avance
+                                </label>
+                                <div className="flex items-center gap-3">
+                                  <input
+                                    type="range"
+                                    min={0}
+                                    max={100}
+                                    step={5}
+                                    value={edits[r.id]?.porcentaje_avance ?? r.progress}
+                                    onChange={(e) =>
+                                      setEdits((prev) => ({
+                                        ...prev,
+                                        [r.id]: {
+                                          url_evidencia:
+                                            prev[r.id]?.url_evidencia ?? r.url_evidencia,
+                                          descripcion_reporte:
+                                            prev[r.id]?.descripcion_reporte ??
+                                            r.descripcion_reporte,
+                                          porcentaje_avance: Number(e.target.value),
+                                        },
+                                      }))
+                                    }
+                                    className="flex-1 accent-amber-600"
+                                  />
+                                  <span className="text-sm font-semibold text-amber-700 w-12 text-right">
+                                    {edits[r.id]?.porcentaje_avance ?? r.progress}%
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-col gap-1">
+                                <label className="text-xs font-medium text-gray-700">
+                                  Descripción de la actividad
+                                </label>
+                                <textarea
+                                  rows={3}
+                                  value={
+                                    edits[r.id]?.descripcion_reporte ?? r.descripcion_reporte
+                                  }
+                                  onChange={(e) =>
+                                    setEdits((prev) => ({
+                                      ...prev,
+                                      [r.id]: {
+                                        url_evidencia:
+                                          prev[r.id]?.url_evidencia ?? r.url_evidencia,
+                                        descripcion_reporte: e.target.value,
+                                        porcentaje_avance:
+                                          prev[r.id]?.porcentaje_avance ?? r.progress,
+                                      },
+                                    }))
+                                  }
+                                  placeholder="Describe qué hiciste y cómo corregiste el ajuste solicitado..."
+                                  className="text-sm border border-gray-300 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+                                />
+                              </div>
+
+                              <div className="flex flex-col gap-1">
+                                <label className="text-xs font-medium text-gray-700">
+                                  Link de evidencia (Drive, formulario, etc.)
+                                </label>
+                                <input
+                                  type="url"
+                                  value={edits[r.id]?.url_evidencia ?? r.url_evidencia}
+                                  onChange={(e) =>
+                                    setEdits((prev) => ({
+                                      ...prev,
+                                      [r.id]: {
+                                        url_evidencia: e.target.value,
+                                        descripcion_reporte:
+                                          prev[r.id]?.descripcion_reporte ??
+                                          r.descripcion_reporte,
+                                        porcentaje_avance:
+                                          prev[r.id]?.porcentaje_avance ?? r.progress,
+                                      },
+                                    }))
+                                  }
+                                  placeholder="https://drive.google.com/..."
+                                  className="text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+                                />
+                                {(edits[r.id]?.url_evidencia ?? r.url_evidencia) && (
+                                  <a
+                                    href={edits[r.id]?.url_evidencia ?? r.url_evidencia}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs text-blue-600 underline flex items-center gap-1 mt-0.5"
+                                  >
+                                    <ExternalLink className="w-3 h-3" /> Ver evidencia
+                                    actual
+                                  </a>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-3 pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleGuardarYReenviar(r)}
+                                  disabled={guardandoEdicion === r.id}
+                                  className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  {guardandoEdicion === r.id ? (
+                                    <>
+                                      <Loader2 className="w-4 h-4 animate-spin" />{" "}
+                                      Guardando y reenviando...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Send className="w-4 h-4" /> Guardar correcciones y
+                                      reenviar
+                                    </>
+                                  )}
+                                </button>
+
+                                {edits[r.id] && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setEdits((prev) => {
+                                        const next = { ...prev };
+                                        delete next[r.id];
+                                        return next;
+                                      })
+                                    }
+                                    className="text-xs text-gray-500 hover:text-gray-700 underline"
+                                  >
+                                    Descartar cambios
+                                  </button>
+                                )}
+                              </div>
+                            </div>
                           )}
                         </div>
                       </td>

@@ -699,6 +699,7 @@ router.get("/reportes-revision", async (req, res) => {
       SELECT COUNT(*)::int AS total
       FROM proyecto_entregables e
       WHERE COALESCE(e.completado, false) = true
+        AND COALESCE(e.estado_revision, 'enviado') = 'enviado'
       `
     );
     const result = await client.query(
@@ -728,6 +729,7 @@ router.get("/reportes-revision", async (req, res) => {
       LEFT JOIN programas prog ON prog.id = p.programa_id
       LEFT JOIN usuarios u ON u.id = p.docente_responsable_id
       WHERE COALESCE(e.completado, false) = true
+        AND COALESCE(e.estado_revision, 'enviado') = 'enviado'
       ORDER BY
         CASE COALESCE(e.estado_revision, 'enviado')
           WHEN 'enviado' THEN 0

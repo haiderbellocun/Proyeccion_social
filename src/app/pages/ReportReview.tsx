@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   CheckCircle2,
@@ -33,6 +33,14 @@ type ReportItem = {
   status: "pending" | "review" | "approved";
 };
 
+type AdminMetricas = {
+  resumen?: {
+    pendientes?: number;
+    con_observaciones?: number;
+    aprobados?: number;
+  };
+};
+
 export default function ReportReview() {
   const navigate = useNavigate();
   const [current, setCurrent] = useState(0);
@@ -41,6 +49,7 @@ export default function ReportReview() {
   const [reports, setReports] = useState<ReportItem[]>([]);
   const [loadingReports, setLoadingReports] = useState(false);
   const [savingDecision, setSavingDecision] = useState(false);
+  const [metricas, setMetricas] = useState<AdminMetricas | null>(null);
   const [selectedSchool, setSelectedSchool] = useState<string>("Todas");
   const [selectedProgram, setSelectedProgram] = useState<string>("Todos");
   const [selectedTeacher, setSelectedTeacher] = useState<string>("Todos");
@@ -71,6 +80,20 @@ export default function ReportReview() {
       }
     };
     loadCatalogs();
+  }, []);
+
+  useEffect(() => {
+    const loadMetricas = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/admin/metricas`);
+        if (!res.ok) throw new Error("Error al cargar métricas");
+        const data = await res.json().catch(() => ({}));
+        setMetricas(data);
+      } catch {
+        setMetricas(null);
+      }
+    };
+    void loadMetricas();
   }, []);
 
   useEffect(() => {
@@ -117,7 +140,8 @@ export default function ReportReview() {
             status,
           };
         });
-        setReports(mapped);
+        // Con backend corregido solo deberían llegar 'enviado'. Si llegara algo 'observado', se oculta.
+        setReports(mapped.filter((x) => x.status !== "review"));
       } catch (err) {
         console.error(err);
         setError("No se pudo cargar la información. Intente de nuevo más tarde.");
@@ -146,11 +170,21 @@ export default function ReportReview() {
 
   const filteredReports = reports.filter((r) => {
     if (r.status === "approved") return false;
+    if (r.status === "review") return false;
     if (selectedSchool !== "Todas" && r.school !== selectedSchool) return false;
     if (selectedProgram !== "Todos" && r.program !== selectedProgram) return false;
     if (selectedTeacher !== "Todos" && r.teacher !== selectedTeacher) return false;
     return true;
   });
+
+  const resumen = metricas?.resumen ?? {};
+  const pendientes = Number(resumen.pendientes ?? 0);
+  const observados = Number(resumen.con_observaciones ?? 0);
+  const aprobados = Number(resumen.aprobados ?? 0);
+
+  const headerBadge = useMemo(() => {
+    return `${pendientes} pendientes de revisión · ${observados} con ajustes en proceso · ${aprobados} aprobados`;
+  }, [pendientes, observados, aprobados]);
 
   const safeIndex =
     filteredReports.length > 0 ? Math.min(current, filteredReports.length - 1) : 0;
@@ -233,8 +267,13 @@ export default function ReportReview() {
         <div>
           <h1 className="text-gray-900">Revisión de Reportes</h1>
           <p className="text-gray-500 text-sm mt-0.5">
-            No hay avances enviados por revisar.
+            No hay reportes pendientes de revisión.
+            Los reportes con ajustes solicitados reaparecerán aquí
+            cuando el docente los reenvíe.
           </p>
+          {metricas && (
+            <p className="text-xs text-gray-400 mt-2">{headerBadge}</p>
+          )}
         </div>
       </div>
     );
@@ -254,6 +293,9 @@ export default function ReportReview() {
             {filteredReports.length} reporte
             {filteredReports.length !== 1 ? "s" : ""} pendientes de revisión
           </p>
+          {metricas && (
+            <p className="text-xs text-gray-400 mt-1">{headerBadge}</p>
+          )}
         </div>
 
         {/* Navegación entre reportes */}
