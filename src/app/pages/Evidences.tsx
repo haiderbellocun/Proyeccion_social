@@ -7,7 +7,8 @@ import {
   Circle,
 } from "lucide-react";
 import { useCurrentUser } from "../hooks/useCurrentUser";
-import { API_BASE } from "../config/api";
+import { API_BASE, apiFetch as fetch } from "../config/api";
+import { notify } from "../lib/notify";
 
 const API_BASE_URL = API_BASE;
 
@@ -46,7 +47,6 @@ export default function Evidences() {
   const currentUser = useCurrentUser();
   const [rows, setRows] = useState<EvidenceRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const docenteId = currentUser?.id ?? null;
@@ -59,7 +59,6 @@ export default function Evidences() {
     const load = async () => {
       try {
         setLoading(true);
-        setError(null);
         const res = await fetch(`${API_BASE_URL}/docente/${docenteId}/cronograma`);
         if (!res.ok) throw new Error("Error al cargar cronograma del docente");
         const data = await res.json();
@@ -87,7 +86,7 @@ export default function Evidences() {
         setRows(evidences);
       } catch (err) {
         console.error(err);
-        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
         setRows([]);
       } finally {
         setLoading(false);
@@ -108,11 +107,6 @@ export default function Evidences() {
 
   return (
     <div className="p-6 space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-          {error}
-        </div>
-      )}
       <div>
         <h1 className="text-gray-900">Mis Evidencias</h1>
         <p className="text-gray-500 text-sm mt-0.5">

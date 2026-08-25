@@ -1,7 +1,10 @@
 import { useEffect, useState, useMemo, useCallback, Fragment } from "react";
-import { ChevronDown, ChevronUp, ExternalLink, Plus, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Edit2, ExternalLink, Plus, Trash2, X } from "lucide-react";
 import { Badge } from "../../components/Badge";
-import { API_BASE } from "../../config/api";
+import { AppSelect } from "../../components/AppSelect";
+import { useConfirmationDialog } from "../../components/ConfirmationDialog";
+import { API_BASE, apiFetch as fetch } from "../../config/api";
+import { notify } from "../../lib/notify";
 
 const API_BASE_URL = API_BASE;
 
@@ -12,11 +15,16 @@ type CatalogSchool = { name: string; programs: CatalogProgram[] };
 type ApiProject = {
   id: number;
   name: string;
+  description?: string | null;
+  programId?: number | null;
+  schoolId?: number | null;
+  school?: string;
   coordinatorId?: number | null;
   coordinator: string;
   program: string;
   type: "project" | "agreement" | "activity";
   status: "active" | "delayed" | "inactive";
+  state?: "en_ejecucion" | "finalizado" | "suspendido";
   startDate?: string | null;
   endDate?: string | null;
   totalHours?: number | null;
@@ -44,6 +52,7 @@ type WeeklyProject = { id: number; name: string; weeks: WeekDetail[] };
 type AssignedDocente = { id: number; name: string; email?: string; programa?: string };
 
 export default function ProjectManagement() {
+  const requestConfirmation = useConfirmationDialog();
   const [schools, setSchools] = useState<CatalogSchool[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [projects, setProjects] = useState<ApiProject[]>([]);
@@ -52,13 +61,14 @@ export default function ProjectManagement() {
   const [limit] = useState(20);
   const [total, setTotal] = useState(0);
   const [loadingList, setLoadingList] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const [showCreate, setShowCreate] = useState(false);
+  const [editingProject, setEditingProject] = useState<ApiProject | null>(null);
   const [titulo, setTitulo] = useState("");
   const [descripcion, setDescripcion] = useState("");
   const [tipoVisual, setTipoVisual] = useState<"project" | "agreement" | "activity">("project");
+  const [projectState, setProjectState] = useState<"en_ejecucion" | "finalizado" | "suspendido">("en_ejecucion");
   const [escuelaName, setEscuelaName] = useState("");
   const [programaId, setProgramaId] = useState<number | "">("");
   const [docenteId, setDocenteId] = useState<number | "">("");
@@ -68,6 +78,7 @@ export default function ProjectManagement() {
   const [numSemanas, setNumSemanas] = useState("");
   const [weeksDraft, setWeeksDraft] = useState<WeekDetail[]>([]);
   const [savingCreate, setSavingCreate] = useState(false);
+  const [deletingProjectId, setDeletingProjectId] = useState<number | null>(null);
 
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignProjectId, setAssignProjectId] = useState<number | null>(null);
@@ -111,7 +122,7 @@ export default function ProjectManagement() {
       const data = await res.json();
       setSchools(data.schools || []);
     } catch {
-      setErr("No se pudo cargar el catálogo (escuelas/programas/docentes).");
+      notify.error("No se pudo cargar el catálogo (escuelas/programas/docentes).");
     } finally {
       setLoadingCatalog(false);
     }
@@ -120,7 +131,6 @@ export default function ProjectManagement() {
   const loadProjects = useCallback(async () => {
     try {
       setLoadingList(true);
-      setErr(null);
       const res = await fetch(`${API_BASE_URL}/admin/proyectos?page=${page}&limit=${limit}`);
       if (!res.ok) throw new Error();
       const data = await res.json();
@@ -128,7 +138,7 @@ export default function ProjectManagement() {
       setProjects(rows);
       setTotal(Number(data.pagination?.total ?? rows.length));
     } catch {
-      setErr("No se pudo cargar la lista de proyectos.");
+      notify.error("No se pudo cargar la lista de proyectos.");
     } finally {
       setLoadingList(false);
     }
@@ -158,7 +168,7 @@ export default function ProjectManagement() {
   }, [loadWeekly]);
 
   const regenerateWeeks = (nStr: string, startStr: string) => {
-    const n = Math.min(16, Math.max(1, Number(nStr) || 0));
+    const n = Math.min(53, Math.max(1, Number(nStr) || 0));
     if (!n || !startStr) {
       setWeeksDraft([]);
       return;
@@ -182,9 +192,11 @@ export default function ProjectManagement() {
   };
 
   const openCreate = () => {
+    setEditingProject(null);
     setTitulo("");
     setDescripcion("");
     setTipoVisual("project");
+    setProjectState("en_ejecucion");
     setEscuelaName("");
     setProgramaId("");
     setDocenteId("");
@@ -196,46 +208,153 @@ export default function ProjectManagement() {
     setShowCreate(true);
   };
 
+  const openEdit = (project: ApiProject) => {
+    const school = schools.find((item) =>
+      item.programs.some((program) => program.id === project.programId)
+    );
+    setEditingProject(project);
+    setTitulo(project.name);
+    setDescripcion(project.description || "");
+    setTipoVisual(project.type);
+    setProjectState(project.state || (project.status === "inactive" ? "finalizado" : project.status === "delayed" ? "suspendido" : "en_ejecucion"));
+    setEscuelaName(school?.name || project.school || "");
+    setProgramaId(project.programId || "");
+    setDocenteId(project.coordinatorId || "");
+    setFechaInicio(String(project.startDate || "").slice(0, 10));
+    setFechaFin(String(project.endDate || "").slice(0, 10));
+    setHorasTotales(project.totalHours == null ? "" : String(project.totalHours));
+    setNumSemanas(project.weeks == null ? "" : String(project.weeks));
+    regenerateWeeks(
+      project.weeks == null ? "" : String(project.weeks),
+      String(project.startDate || "").slice(0, 10)
+    );
+    setShowCreate(true);
+  };
+
   const guardarCreate = async () => {
-    if (!titulo.trim() || !programaNombreSeleccionado || !docenteId) {
-      alert("Complete título, programa y docente responsable.");
+    const missingFields = [
+      !titulo.trim() ? "título" : null,
+      programaId === "" ? "programa" : null,
+      docenteId === "" ? "docente responsable" : null,
+      !fechaInicio ? "fecha inicial" : null,
+      !numSemanas ? "número de semanas" : null,
+    ].filter(Boolean);
+    if (missingFields.length > 0) {
+      notify.warning(`Completa: ${missingFields.join(", ")}.`);
       return;
     }
     const ns = Number(numSemanas);
-    if (numSemanas && (ns < 1 || ns > 16)) {
-      alert("Número de semanas debe estar entre 1 y 16.");
+    if (numSemanas && (ns < 1 || ns > 53)) {
+      notify.warning("Número de semanas debe estar entre 1 y 53.");
+      return;
+    }
+    if (fechaFin && fechaFin < fechaInicio) {
+      notify.warning("La fecha final no puede ser anterior a la fecha inicial.");
       return;
     }
     try {
       setSavingCreate(true);
-      const res = await fetch(`${API_BASE_URL}/admin/proyectos`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const payload = {
           titulo: titulo.trim(),
           descripcion: descripcion.trim(),
+          programaId,
           programaNombre: programaNombreSeleccionado,
           docenteId,
           tipoVisual,
+          estado: projectState,
           horasTotales: horasTotales ? Number(horasTotales) : undefined,
-          semanas: numSemanas ? Number(numSemanas) : undefined,
-          fechaInicio: fechaInicio || undefined,
-          fechaFin: fechaFin || undefined,
-          semanasDetalle: weeksDraft.length ? weeksDraft : undefined,
-        }),
-      });
+          semanas: Number(numSemanas),
+          fechaInicio,
+          fechaFin: fechaFin || null,
+          semanasDetalle: !editingProject && weeksDraft.length ? weeksDraft : undefined,
+          forzar_cronograma: false,
+      };
+      const save = (forceSchedule: boolean) =>
+        fetch(
+          editingProject
+            ? `${API_BASE_URL}/admin/proyectos/${editingProject.id}`
+            : `${API_BASE_URL}/admin/proyectos`,
+          {
+            method: editingProject ? "PUT" : "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...payload, forzar_cronograma: forceSchedule }),
+          }
+        );
+
+      let res = await save(false);
+      let data = await res.json().catch(() => ({}));
+      if (editingProject && res.status === 409 && data.requiere_confirmacion) {
+        const summary = data.resumen || {};
+        const accepted = await requestConfirmation({
+          title: "Reconstruir cronograma",
+          description:
+            `El cambio eliminará ${summary.total || 0} entregables existentes ` +
+            `(${summary.con_avance || 0} con avance). Esta acción no se puede deshacer.`,
+          confirmLabel: "Reconstruir",
+          tone: "warning",
+        });
+        if (!accepted) return;
+        res = await save(true);
+        data = await res.json().catch(() => ({}));
+      }
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        alert(j.error || "No se pudo crear el proyecto.");
+        notify.error(data.error || `No se pudo ${editingProject ? "actualizar" : "crear"} la iniciativa.`);
         return;
       }
       setShowCreate(false);
       await loadProjects();
       await loadWeekly();
+      notify.success(editingProject ? "Iniciativa actualizada" : "Iniciativa creada");
     } catch {
-      alert("Error de conexión.");
+      notify.error("Error de conexión.");
     } finally {
       setSavingCreate(false);
+    }
+  };
+
+  const deleteProject = async (project: ApiProject) => {
+    const accepted = await requestConfirmation({
+      title: "Eliminar iniciativa",
+      description: `¿Deseas eliminar «${project.name}»?`,
+      confirmLabel: "Eliminar",
+      tone: "danger",
+    });
+    if (!accepted) return;
+    try {
+      setDeletingProjectId(project.id);
+      let response = await fetch(`${API_BASE_URL}/admin/proyectos/${project.id}`, {
+        method: "DELETE",
+      });
+      let data = await response.json().catch(() => ({}));
+      if (response.status === 409 && data.requiere_confirmacion) {
+        const summary = data.resumen || {};
+        const forceAccepted = await requestConfirmation({
+          title: "Eliminar iniciativa y reportes",
+          description:
+            `La iniciativa tiene ${summary.reportes || 0} reportes o evidencias, ` +
+            `${summary.entregables || 0} entregables y ${summary.semanas || 0} semanas. ` +
+            "La eliminación será permanente.",
+          confirmLabel: "Eliminar todo",
+          tone: "danger",
+        });
+        if (!forceAccepted) return;
+        response = await fetch(`${API_BASE_URL}/admin/proyectos/${project.id}?forzar=true`, {
+          method: "DELETE",
+        });
+        data = await response.json().catch(() => ({}));
+      }
+      if (!response.ok) {
+        notify.error(data.error || "No se pudo eliminar la iniciativa.");
+        return;
+      }
+      setExpandedId((current) => (current === project.id ? null : current));
+      await loadProjects();
+      await loadWeekly();
+      notify.success("Iniciativa eliminada");
+    } catch {
+      notify.error("Error de conexión al eliminar la iniciativa.");
+    } finally {
+      setDeletingProjectId(null);
     }
   };
 
@@ -288,12 +407,14 @@ export default function ProjectManagement() {
         }),
       });
       if (!res.ok) {
-        alert("No se pudo guardar la asignación.");
+        notify.error("No se pudo guardar la asignación.");
         return;
       }
       setAssignOpen(false);
       await loadProjects();
+      notify.success("Asignación guardada");
     } catch {
+      notify.error("Error de conexión.");
     } finally {
       setAssignSaving(false);
     }
@@ -308,10 +429,6 @@ export default function ProjectManagement() {
 
   return (
     <div className="space-y-4">
-      {err && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">{err}</div>
-      )}
-
       <div className="flex justify-end">
         <button
           type="button"
@@ -374,8 +491,8 @@ export default function ProjectManagement() {
                             p.status === "active"
                               ? "En ejecución"
                               : p.status === "inactive"
-                              ? "Completado"
-                              : "Otros estados"
+                              ? "Finalizado"
+                              : "Suspendido"
                           }
                         />
                       </td>
@@ -386,10 +503,27 @@ export default function ProjectManagement() {
                       <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
                         <button
                           type="button"
+                          className="text-blue-700 hover:text-blue-900 inline-flex"
+                          onClick={() => openEdit(p)}
+                          aria-label={`Editar ${p.name}`}
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
                           className="text-[#1d4ed8] hover:underline text-xs font-medium"
                           onClick={() => void openAssign(p.id)}
                         >
                           Asignar docentes
+                        </button>
+                        <button
+                          type="button"
+                          disabled={deletingProjectId === p.id}
+                          className="text-gray-400 hover:text-red-600 inline-flex disabled:opacity-40"
+                          onClick={() => void deleteProject(p)}
+                          aria-label={`Eliminar ${p.name}`}
+                        >
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </td>
                     </tr>
@@ -486,7 +620,7 @@ export default function ProjectManagement() {
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
               <h3 className="text-gray-800" style={{ fontWeight: 700 }}>
-                Nueva iniciativa
+                {editingProject ? "Editar iniciativa" : "Nueva iniciativa"}
               </h3>
               <button type="button" onClick={() => setShowCreate(false)} className="text-gray-400 hover:text-gray-600">
                 <X className="w-5 h-5" />
@@ -503,15 +637,31 @@ export default function ProjectManagement() {
               </div>
               <div>
                 <label className="text-xs font-semibold text-gray-600">Tipo *</label>
-                <select
-                  className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                <AppSelect
+                  className="mt-1 w-full"
                   value={tipoVisual}
-                  onChange={(e) => setTipoVisual(e.target.value as "project" | "agreement" | "activity")}
-                >
-                  <option value="project">Proyecto</option>
-                  <option value="agreement">Convenio</option>
-                  <option value="activity">Actividad</option>
-                </select>
+                  onValueChange={(v) => setTipoVisual(v as "project" | "agreement" | "activity")}
+                  options={[
+                    { value: "project", label: "Proyecto" },
+                    { value: "agreement", label: "Convenio" },
+                    { value: "activity", label: "Actividad" },
+                  ]}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-600">Estado *</label>
+                <AppSelect
+                  className="mt-1 w-full"
+                  value={projectState}
+                  onValueChange={(value) =>
+                    setProjectState(value as "en_ejecucion" | "finalizado" | "suspendido")
+                  }
+                  options={[
+                    { value: "en_ejecucion", label: "En ejecución" },
+                    { value: "finalizado", label: "Finalizado" },
+                    { value: "suspendido", label: "Suspendido" },
+                  ]}
+                />
               </div>
               <div>
                 <label className="text-xs font-semibold text-gray-600">Descripción</label>
@@ -524,62 +674,52 @@ export default function ProjectManagement() {
               </div>
               <div>
                 <label className="text-xs font-semibold text-gray-600">Escuela</label>
-                <select
-                  className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                <AppSelect
+                  className="mt-1 w-full"
                   value={escuelaName}
-                  onChange={(e) => {
-                    setEscuelaName(e.target.value);
+                  onValueChange={(v) => {
+                    setEscuelaName(v);
                     setProgramaId("");
                     setDocenteId("");
                   }}
-                >
-                  <option value="">Seleccione…</option>
-                  {schools.map((s) => (
-                    <option key={s.name} value={s.name}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Seleccione…"
+                  options={schools.map((s) => ({ value: s.name, label: s.name }))}
+                />
               </div>
               <div>
                 <label className="text-xs font-semibold text-gray-600">Programa *</label>
-                <select
-                  className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                  value={programaId === "" ? "" : programaId}
-                  onChange={(e) => {
-                    const v = e.target.value;
+                <AppSelect
+                  className="mt-1 w-full"
+                  value={programaId === "" ? "" : String(programaId)}
+                  onValueChange={(v) => {
                     setProgramaId(v === "" ? "" : Number(v));
                     setDocenteId("");
                   }}
+                  placeholder="Seleccione…"
                   disabled={!escuelaName}
-                >
-                  <option value="">Seleccione…</option>
-                  {programasDeEscuela.map((pr) => (
-                    <option key={pr.id} value={pr.id}>
-                      {pr.name}
-                    </option>
-                  ))}
-                </select>
+                  options={programasDeEscuela.map((pr) => ({
+                    value: String(pr.id),
+                    label: pr.name,
+                  }))}
+                />
               </div>
               <div>
                 <label className="text-xs font-semibold text-gray-600">Docente responsable *</label>
-                <select
-                  className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                  value={docenteId === "" ? "" : docenteId}
-                  onChange={(e) => setDocenteId(e.target.value === "" ? "" : Number(e.target.value))}
+                <AppSelect
+                  className="mt-1 w-full"
+                  value={docenteId === "" ? "" : String(docenteId)}
+                  onValueChange={(v) => setDocenteId(v === "" ? "" : Number(v))}
+                  placeholder="Seleccione…"
                   disabled={programaId === ""}
-                >
-                  <option value="">Seleccione…</option>
-                  {docentesDePrograma.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.fullName}
-                    </option>
-                  ))}
-                </select>
+                  options={docentesDePrograma.map((d) => ({
+                    value: String(d.id),
+                    label: d.fullName,
+                  }))}
+                />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs font-semibold text-gray-600">Fecha inicio</label>
+                  <label className="text-xs font-semibold text-gray-600">Fecha inicio *</label>
                   <input
                     type="date"
                     className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
@@ -594,6 +734,7 @@ export default function ProjectManagement() {
                   <label className="text-xs font-semibold text-gray-600">Fecha fin estimada</label>
                   <input
                     type="date"
+                    min={fechaInicio || undefined}
                     className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
                     value={fechaFin}
                     onChange={(e) => setFechaFin(e.target.value)}
@@ -612,11 +753,11 @@ export default function ProjectManagement() {
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-semibold text-gray-600">Nº semanas (1–16)</label>
+                  <label className="text-xs font-semibold text-gray-600">Nº semanas (1–53) *</label>
                   <input
                     type="number"
                     min={1}
-                    max={16}
+                    max={53}
                     className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
                     value={numSemanas}
                     onChange={(e) => {
@@ -629,7 +770,9 @@ export default function ProjectManagement() {
               </div>
               {weeksDraft.length > 0 && (
                 <p className="text-xs text-gray-500">
-                  Se generarán {weeksDraft.length} semana(s) en el cronograma al guardar.
+                  {editingProject
+                    ? `El cronograma tendrá ${weeksDraft.length} semana(s). Si cambias su inicio o cantidad, se reconstruirá.`
+                    : `Se generarán ${weeksDraft.length} semana(s) en el cronograma al guardar.`}
                 </p>
               )}
             </div>
@@ -647,7 +790,7 @@ export default function ProjectManagement() {
                 onClick={() => void guardarCreate()}
                 className="flex-1 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white py-2.5 rounded-lg text-sm font-semibold disabled:opacity-60"
               >
-                {savingCreate ? "Guardando…" : "Crear"}
+                {savingCreate ? "Guardando…" : editingProject ? "Guardar cambios" : "Crear"}
               </button>
             </div>
           </div>
@@ -688,18 +831,16 @@ export default function ProjectManagement() {
               <div className="flex gap-2 items-end">
                 <div className="flex-1">
                   <label className="text-xs font-semibold text-gray-600">Agregar docente</label>
-                  <select
-                    className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                    value={assignPick === "" ? "" : assignPick}
-                    onChange={(e) => setAssignPick(e.target.value === "" ? "" : Number(e.target.value))}
-                  >
-                    <option value="">Seleccione…</option>
-                    {allTeachersFlat.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.fullName}
-                      </option>
-                    ))}
-                  </select>
+                  <AppSelect
+                    className="mt-1 w-full"
+                    value={assignPick === "" ? "" : String(assignPick)}
+                    onValueChange={(v) => setAssignPick(v === "" ? "" : Number(v))}
+                    placeholder="Seleccione…"
+                    options={allTeachersFlat.map((t) => ({
+                      value: String(t.id),
+                      label: t.fullName,
+                    }))}
+                  />
                 </div>
                 <button
                   type="button"

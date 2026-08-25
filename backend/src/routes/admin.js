@@ -1,28 +1,18 @@
 import express from "express";
 import { pool } from "../db.js";
+import {
+  buildMatrixStats,
+  loadAssignedInitiatives,
+  mapMatrixRows,
+} from "../services/matrizService.js";
+import { markNotificationsAsRead } from "../services/notificationService.js";
+import {
+  emailConfiguration,
+  enqueueDailyDigests,
+  processEmailQueue,
+} from "../services/emailService.js";
 
 const router = express.Router();
-
-let reportFieldsColumnsEnsured = false;
-
-async function ensureReportFieldsColumns(client) {
-  if (reportFieldsColumnsEnsured) return;
-  await client.query(`
-    ALTER TABLE proyecto_entregables
-      ADD COLUMN IF NOT EXISTS actividad_reportada TEXT,
-      ADD COLUMN IF NOT EXISTS descripcion_reporte TEXT,
-      ADD COLUMN IF NOT EXISTS porcentaje_avance INTEGER;
-  `);
-  reportFieldsColumnsEnsured = true;
-}
-
-const mesFromSemana = (semana) => {
-  const w = Number(semana) || 0;
-  if (w <= 4) return "Febrero";
-  if (w <= 8) return "Marzo";
-  if (w <= 12) return "Abril";
-  return "Mayo";
-};
 
 const round1 = (x) => Math.round(Number(x) * 10) / 10;
 
@@ -33,34 +23,58 @@ const toDateOnlyISO = (d) => {
   return dt.toISOString().slice(0, 10);
 };
 
+const monthLabelFromDate = (value) => {
+  const iso = toDateOnlyISO(value);
+  if (!iso) return "";
+  const label = new Date(`${iso}T12:00:00`).toLocaleDateString("es-CO", {
+    month: "long",
+  });
+  return label ? `${label.charAt(0).toUpperCase()}${label.slice(1)}` : "";
+};
+
+const monthLabelFromWeek = (semesterStart, week) => {
+  const iso = toDateOnlyISO(semesterStart);
+  if (!iso) return "";
+  const date = new Date(`${iso}T12:00:00`);
+  date.setDate(date.getDate() + (Math.max(1, Number(week) || 1) - 1) * 7);
+  return monthLabelFromDate(date);
+};
+
 const ADMIN_MATRIZ_PLANTILLA_JOIN = `
   FROM plantilla_entregables tpl
+  INNER JOIN grupos_matriz gm_cal ON gm_cal.id = tpl.grupo_id
+  INNER JOIN semestres sem_cal ON sem_cal.codigo = gm_cal.semestre
   INNER JOIN usuarios u
     ON u.id = $1
    AND u.rol = 'docente'
    AND u.grupo_matriz_id = tpl.grupo_id
+  LEFT JOIN docente_entregable_excepciones dex
+    ON dex.docente_id = u.id
+   AND dex.plantilla_id = tpl.id
+  LEFT JOIN proyectos p_override ON p_override.id = dex.proyecto_id
   LEFT JOIN LATERAL (
     SELECT
       e.id,
       e.completado,
       e.fecha_real_entrega,
+      e.fecha_cargue_evidencia,
       e.url_evidencia,
       e.estado_revision,
       e.comentario_revision,
       e.porcentaje_avance,
       e.actividad_reportada,
-      e.horas
+      e.horas,
+      p.id AS proyecto_id,
+      p.titulo AS proyecto_titulo,
+      p.tipo AS proyecto_tipo
     FROM proyecto_entregables e
     INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
     INNER JOIN proyectos p ON p.id = s.proyecto_id
-    WHERE s.numero = tpl.semana_numero
+    WHERE e.plantilla_id = tpl.id
+      AND e.docente_id = u.id
       AND (
         p.docente_responsable_id = u.id
         OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-      )
-      AND (
-        TRIM(e.descripcion) = TRIM(tpl.entregable)
-        OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
       )
     ORDER BY e.id DESC
     LIMIT 1
@@ -69,14 +83,14 @@ const ADMIN_MATRIZ_PLANTILLA_JOIN = `
 
 const ADMIN_MATRIZ_ORDER = `
   ORDER BY
-    CASE LOWER(TRIM(tpl.mes))
-      WHEN 'febrero' THEN 1
-      WHEN 'marzo' THEN 2
-      WHEN 'abril' THEN 3
-      WHEN 'mayo' THEN 4
-      ELSE 5
-    END,
-    tpl.semana_numero NULLS LAST,
+    COALESCE(
+      dex.fecha_inicio_override,
+      (sem_cal.fecha_inicio + COALESCE(tpl.dias_inicio_desde_feb, 0) * INTERVAL '1 day')::date
+    ) NULLS LAST,
+    COALESCE(
+      dex.fecha_fin_override,
+      (sem_cal.fecha_inicio + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date
+    ) NULLS LAST,
     tpl.numero
 `;
 
@@ -99,15 +113,163 @@ const mapCategorySlug = (categoria, fase) => {
   return "proyecto";
 };
 
+async function loadAdminMatrixItems(docenteId, db = pool) {
+  const [tplRes, initiatives] = await Promise.all([
+    db.query(
+      `
+      SELECT
+        tpl.id,
+        tpl.numero,
+        tpl.categoria AS categoria_raw,
+        tpl.fase AS fase_raw,
+        tpl.mes,
+        tpl.semana_numero,
+        sem_cal.fecha_inicio AS semestre_fecha_inicio,
+        tpl.entregable,
+        tpl.descripcion_evidencia,
+        COALESCE(dex.entregable_override, tpl.entregable) AS entregable_effective,
+        COALESCE(
+          dex.descripcion_evidencia_override,
+          tpl.descripcion_evidencia
+        ) AS descripcion_evidencia_effective,
+        COALESCE(
+          dex.enlace_referencia_override,
+          tpl.enlace_referencia
+        ) AS enlace_referencia_effective,
+        COALESCE(pe.horas, tpl.horas) AS horas_effective,
+        COALESCE(
+          dex.fecha_inicio_override,
+          (sem_cal.fecha_inicio + COALESCE(tpl.dias_inicio_desde_feb, 0) * INTERVAL '1 day')::date
+        ) AS fecha_inicio_calculada,
+        COALESCE(
+          dex.fecha_fin_override,
+          (sem_cal.fecha_inicio + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date
+        ) AS fecha_fin_calculada,
+        dex.id AS exception_id,
+        dex.motivo AS exception_reason,
+        dex.proyecto_id AS override_project_id,
+        p_override.titulo AS override_project_title,
+        p_override.tipo AS override_project_type,
+        pe.proyecto_id AS report_project_id,
+        pe.proyecto_titulo AS report_project_title,
+        pe.proyecto_tipo AS report_project_type,
+        pe.id AS entregable_id,
+        COALESCE(pe.completado, false) AS completado,
+        pe.fecha_real_entrega,
+        pe.fecha_cargue_evidencia,
+        pe.url_evidencia,
+        pe.estado_revision,
+        pe.comentario_revision,
+        pe.porcentaje_avance,
+        pe.actividad_reportada
+      ${ADMIN_MATRIZ_PLANTILLA_JOIN}
+      ${ADMIN_MATRIZ_ORDER}
+      `,
+      [docenteId]
+    ),
+    loadAssignedInitiatives(docenteId, db),
+  ]);
+
+  return mapMatrixRows(tplRes.rows, initiatives, mapCategorySlug);
+}
+
 const SEMESTRE_REGEX = /^\d{4}[AB]$/;
 function isValidSemestreValue(s) {
   return typeof s === "string" && SEMESTRE_REGEX.test(String(s).trim());
+}
+
+function parseProgramaInput(body) {
+  const nombre = typeof body?.nombre === "string" ? body.nombre.trim() : "";
+  const codigo = typeof body?.codigo === "string" ? body.codigo.trim().toUpperCase() : "";
+  const escuelaId = Number(body?.escuela_id);
+
+  if (!nombre || !codigo || !Number.isInteger(escuelaId) || escuelaId <= 0) {
+    return { error: "Código, nombre y escuela son obligatorios." };
+  }
+  if (nombre.length > 200 || codigo.length > 50) {
+    return { error: "El programa excede la longitud permitida." };
+  }
+
+  return { value: { nombre, codigo, escuela_id: escuelaId } };
+}
+
+function parseEscuelaInput(body) {
+  const nombre = typeof body?.nombre === "string" ? body.nombre.trim() : "";
+  const codigoRaw = typeof body?.codigo === "string" ? body.codigo.trim().toUpperCase() : "";
+  const codigo = codigoRaw || null;
+
+  if (!nombre) {
+    return { error: "El nombre de la escuela es obligatorio." };
+  }
+  if (nombre.length > 200 || (codigo && codigo.length > 50)) {
+    return { error: "La escuela excede la longitud permitida." };
+  }
+
+  return { value: { nombre, codigo } };
+}
+
+function parseDateOnly(value) {
+  const text = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const date = new Date(`${text}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === text
+    ? text
+    : null;
+}
+
+function daysBetweenDateOnly(from, to) {
+  const fromDate = parseDateOnly(from);
+  const toDate = parseDateOnly(to);
+  if (!fromDate || !toDate) return null;
+  return Math.round(
+    (new Date(`${toDate}T00:00:00Z`).getTime() -
+      new Date(`${fromDate}T00:00:00Z`).getTime()) /
+      86_400_000
+  );
+}
+
+function normalizeOptionalHttpsUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return { value: null };
+  try {
+    const parsed = new URL(text);
+    if (parsed.protocol !== "https:") return { error: "El enlace debe usar HTTPS" };
+    return { value: parsed.toString() };
+  } catch {
+    return { error: "El enlace no es una URL válida" };
+  }
+}
+
+function validateSemesterFields(body) {
+  const codigo = String(body?.codigo || "").trim().toUpperCase();
+  const fechaInicio = parseDateOnly(body?.fecha_inicio);
+  const fechaFin = parseDateOnly(body?.fecha_fin);
+  const numeroSemanas = Number(body?.numero_semanas);
+
+  if (!isValidSemestreValue(codigo)) {
+    return { error: "El semestre debe tener formato YYYYA o YYYYB" };
+  }
+  if (!fechaInicio || !fechaFin || fechaFin < fechaInicio) {
+    return { error: "Las fechas del semestre no son válidas" };
+  }
+  if (!Number.isInteger(numeroSemanas) || numeroSemanas < 1 || numeroSemanas > 53) {
+    return { error: "numero_semanas debe ser un entero entre 1 y 53" };
+  }
+  return { codigo, fechaInicio, fechaFin, numeroSemanas };
 }
 
 // Dashboard admin (expuesto: stats, progreso_semanal, cumplimiento_por_programa, docentes_recientes)
 router.get("/dashboard", async (_req, res) => {
   const client = await pool.connect();
   try {
+    const semesterR = await client.query(`
+      SELECT fecha_inicio, numero_semanas
+      FROM semestres
+      WHERE activo = TRUE
+      ORDER BY fecha_inicio DESC
+      LIMIT 1
+    `);
+    const activeSemester = semesterR.rows[0] || null;
     const totalDocentesR = await client.query(
       `SELECT COUNT(*)::int AS total FROM usuarios WHERE rol = 'docente'`
     );
@@ -146,12 +308,17 @@ router.get("/dashboard", async (_req, res) => {
         aprobados: Number(r.aprobados || 0),
       });
     }
+    const configuredWeeks = Number(activeSemester?.numero_semanas || 0);
+    const reportedWeeks = [...semanaMap.keys()].sort((a, b) => a - b);
+    const weekNumbers = configuredWeeks > 0
+      ? Array.from({ length: configuredWeeks }, (_, index) => index + 1)
+      : reportedWeeks;
     const progreso_semanal = [];
-    for (let semana = 1; semana <= 16; semana++) {
+    for (const semana of weekNumbers) {
       const row = semanaMap.get(semana) || { enviados: 0, aprobados: 0 };
       progreso_semanal.push({
         semana,
-        mes: mesFromSemana(semana),
+        mes: monthLabelFromWeek(activeSemester?.fecha_inicio, semana),
         enviados: row.enviados,
         aprobados: row.aprobados,
       });
@@ -178,10 +345,8 @@ router.get("/dashboard", async (_req, res) => {
               p.docente_responsable_id = u.id
               OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
             )
-            AND (
-              TRIM(e.descripcion) = TRIM(tpl.entregable)
-              OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-            )
+            AND e.plantilla_id = tpl.id
+            AND e.docente_id = u.id
           ORDER BY e.id DESC
           LIMIT 1
         ) pe ON true
@@ -255,10 +420,8 @@ router.get("/dashboard", async (_req, res) => {
               p.docente_responsable_id = u.id
               OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
             )
-            AND (
-              TRIM(e.descripcion) = TRIM(tpl.entregable)
-              OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-            )
+            AND e.plantilla_id = tpl.id
+            AND e.docente_id = u.id
           ORDER BY e.id DESC
           LIMIT 1
         ) pe ON true
@@ -321,61 +484,91 @@ router.get("/dashboard", async (_req, res) => {
   }
 });
 
-router.get("/notificaciones", async (_req, res) => {
+router.get("/notificaciones", async (req, res) => {
   try {
     const result = await pool.query(
       `
-      SELECT * FROM (
+      WITH origen AS (
         SELECT
-          'nuevo_reporte' AS tipo,
-          pe.id AS referencia_id,
+          'nuevo_reporte'::text AS tipo,
+          pe.id::bigint AS referencia_id,
           CONCAT(
             u.nombre, ' ', u.apellido,
             ' envió un reporte: ',
             COALESCE(pe.actividad_reportada, pe.descripcion)
           ) AS mensaje,
-          COALESCE(pe.revisado_en, pe.fecha_real_entrega, pe.fecha_completado, NOW()) AS fecha
+          evento.fecha_evento AS fecha,
+          CONCAT('nuevo_reporte:', pe.id, ':', evento.fecha_evento::text) AS clave,
+          CONCAT('/admin/revision?reporte=', pe.id) AS destino
         FROM proyecto_entregables pe
         JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id
         JOIN proyectos p ON p.id = ps.proyecto_id
-        JOIN usuarios u ON u.id = p.docente_responsable_id
+        JOIN usuarios u ON u.id = COALESCE(pe.docente_id, p.docente_responsable_id)
+        CROSS JOIN LATERAL (
+          SELECT COALESCE(
+            pe.fecha_cargue_evidencia,
+            pe.fecha_completado::timestamptz,
+            pe.fecha_real_entrega::timestamptz,
+            pe.creado_en::timestamptz
+          ) AS fecha_evento
+        ) evento
         WHERE COALESCE(pe.estado_revision, 'enviado') = 'enviado'
           AND COALESCE(pe.completado, false) = true
-          AND COALESCE(pe.fecha_real_entrega, pe.fecha_completado, pe.revisado_en)
-              >= NOW() - INTERVAL '48 hours'
+          AND evento.fecha_evento >= NOW() - INTERVAL '48 hours'
 
         UNION ALL
 
         SELECT
-          'sin_actividad' AS tipo,
-          u.id AS referencia_id,
+          'sin_actividad'::text AS tipo,
+          u.id::bigint AS referencia_id,
           CONCAT(u.nombre, ' ', u.apellido, ' lleva más de 14 días sin reportar') AS mensaje,
-          CURRENT_TIMESTAMP AS fecha
+          COALESCE(actividad.ultima_actividad, u.creado_en::timestamptz)
+            + INTERVAL '14 days' AS fecha,
+          CONCAT(
+            'sin_actividad:', u.id, ':',
+            COALESCE(actividad.ultima_actividad::text, 'sin-reportes')
+          ) AS clave,
+          CONCAT('/admin/docentes/', u.id, '/matriz') AS destino
         FROM usuarios u
+        LEFT JOIN LATERAL (
+          SELECT MAX(
+            COALESCE(
+              pe.fecha_cargue_evidencia,
+              pe.fecha_completado::timestamptz,
+              pe.fecha_real_entrega::timestamptz,
+              pe.creado_en::timestamptz
+            )
+          ) AS ultima_actividad
+          FROM proyecto_entregables pe
+          JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id
+          JOIN proyectos p ON p.id = ps.proyecto_id
+          WHERE COALESCE(pe.docente_id, p.docente_responsable_id) = u.id
+            AND COALESCE(pe.completado, false) = true
+        ) actividad ON TRUE
         WHERE u.rol = 'docente'
-          AND NOT EXISTS (
-            SELECT 1
-            FROM proyecto_entregables pe
-            JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id
-            JOIN proyectos p ON p.id = ps.proyecto_id
-            WHERE (
-                p.docente_responsable_id = u.id
-                OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-              )
-              AND COALESCE(pe.completado, false) = true
-              AND COALESCE(pe.fecha_completado, pe.fecha_real_entrega)
-                  >= CURRENT_DATE - INTERVAL '14 days'
-          )
-      ) AS sub
-      ORDER BY fecha DESC NULLS LAST
-      LIMIT 10
-      `
+          AND u.estado = 'activo'
+          AND COALESCE(actividad.ultima_actividad, u.creado_en::timestamptz)
+              < NOW() - INTERVAL '14 days'
+      ), pendientes AS (
+        SELECT origen.*
+        FROM origen
+        LEFT JOIN notificacion_lecturas lectura
+          ON lectura.usuario_id = $1 AND lectura.clave = origen.clave
+        WHERE lectura.clave IS NULL
+      )
+      SELECT tipo, referencia_id, mensaje, fecha, clave, destino
+      FROM pendientes
+      ORDER BY fecha DESC NULLS LAST, clave
+      `,
+      [req.user.id]
     );
 
     const notificaciones = (result.rows || []).map((row) => ({
       tipo: row.tipo,
       referencia_id: Number(row.referencia_id),
       mensaje: row.mensaje,
+      clave: row.clave,
+      destino: row.destino || null,
       fecha:
         row.fecha != null
           ? row.fecha instanceof Date
@@ -384,9 +577,100 @@ router.get("/notificaciones", async (_req, res) => {
           : null,
     }));
 
-    res.json({ notificaciones });
+    res.json({
+      notificaciones,
+      total_no_leidas: notificaciones.length,
+    });
   } catch (error) {
     console.error("Error en GET /admin/notificaciones", error);
+    res.status(500).json({ error: "Error interno" });
+  }
+});
+
+router.patch("/notificaciones/leer", async (req, res) => {
+  try {
+    const marked = await markNotificationsAsRead(
+      req.user.id,
+      req.body?.notificaciones ?? req.body
+    );
+    res.json({ marcadas: marked });
+  } catch (error) {
+    console.error("Error en PATCH /admin/notificaciones/leer", error);
+    res.status(Number(error?.status) || 500).json({
+      error: Number(error?.status)
+        ? error.message
+        : "No fue posible marcar la notificación",
+    });
+  }
+});
+
+router.get("/correos/estado", async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        COUNT(*) FILTER (WHERE estado = 'pendiente')::int AS pendientes,
+        COUNT(*) FILTER (WHERE estado = 'procesando')::int AS procesando,
+        COUNT(*) FILTER (WHERE estado = 'enviado')::int AS enviados,
+        COUNT(*) FILTER (WHERE estado = 'fallido')::int AS fallidos,
+        MAX(enviado_en) AS ultimo_envio
+      FROM notificacion_correos
+      `
+    );
+    const config = emailConfiguration();
+    res.json({
+      enabled: config.enabled,
+      configured: config.configured,
+      queue: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Error en GET /admin/correos/estado", error);
+    res.status(500).json({ error: "No fue posible consultar el estado de correos" });
+  }
+});
+
+router.post("/correos/procesar", async (_req, res) => {
+  try {
+    const digest = await enqueueDailyDigests();
+    const delivery = await processEmailQueue();
+    res.json({ digest, delivery });
+  } catch (error) {
+    console.error("Error en POST /admin/correos/procesar", error);
+    res.status(500).json({ error: "No fue posible procesar los correos" });
+  }
+});
+
+router.post("/notificaciones", async (req, res) => {
+  const docenteId = Number(req.body?.docente_id);
+  const mensaje = String(req.body?.mensaje || "").trim();
+  const referenciaId = req.body?.referencia_id == null ? null : Number(req.body.referencia_id);
+
+  if (!Number.isInteger(docenteId) || docenteId <= 0) {
+    return res.status(400).json({ error: "docente_id es inválido" });
+  }
+  if (!mensaje || mensaje.length > 1000) {
+    return res.status(400).json({ error: "El mensaje debe tener entre 1 y 1000 caracteres" });
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      INSERT INTO notificaciones (
+        usuario_id, creado_por_id, tipo, mensaje, referencia_tipo, referencia_id
+      )
+      SELECT id, $2, 'mensaje_admin', $3, 'reporte', $4
+      FROM usuarios
+      WHERE id = $1 AND rol = 'docente' AND estado = 'activo'
+      RETURNING id, usuario_id, tipo, mensaje, referencia_id, creado_en
+      `,
+      [docenteId, req.user.id, mensaje, Number.isInteger(referenciaId) ? referenciaId : null]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Docente activo no encontrado" });
+    }
+    res.status(201).json({ notificacion: result.rows[0] });
+  } catch (error) {
+    console.error("Error en POST /admin/notificaciones", error);
     res.status(500).json({ error: "Error interno" });
   }
 });
@@ -394,8 +678,6 @@ router.get("/notificaciones", async (_req, res) => {
 router.get("/metricas", async (_req, res) => {
   const client = await pool.connect();
   try {
-    await ensureReportFieldsColumns(client);
-
     const resumenR = await client.query(`
       SELECT
         COUNT(*) FILTER (WHERE COALESCE(completado, false) = true)::int AS total_reportes,
@@ -423,40 +705,49 @@ router.get("/metricas", async (_req, res) => {
       totalReportes > 0 ? round1((aprobados / totalReportes) * 100) : 0;
 
     const porMesR = await client.query(`
+      WITH periodo AS (
+        SELECT fecha_inicio, fecha_fin
+        FROM semestres
+        WHERE activo = TRUE
+        ORDER BY fecha_inicio DESC
+        LIMIT 1
+      ),
+      meses AS (
+        SELECT generate_series(
+          date_trunc('month', fecha_inicio),
+          date_trunc('month', fecha_fin),
+          INTERVAL '1 month'
+        )::date AS mes_inicio
+        FROM periodo
+      )
       SELECT
-        EXTRACT(MONTH FROM COALESCE(e.fecha_real_entrega, e.fecha_completado))::int AS mes_num,
-        COUNT(*)::int AS total,
-        COUNT(*) FILTER (
+        m.mes_inicio,
+        COUNT(e.id)::int AS total,
+        COUNT(e.id) FILTER (
           WHERE COALESCE(e.estado_revision, 'enviado') = 'aprobado'
         )::int AS aprobados,
-        COUNT(*) FILTER (
+        COUNT(e.id) FILTER (
           WHERE COALESCE(e.estado_revision, 'enviado') = 'observado'
         )::int AS observados,
-        COUNT(*) FILTER (
+        COUNT(e.id) FILTER (
           WHERE COALESCE(e.estado_revision, 'enviado') = 'enviado'
         )::int AS pendientes
-      FROM proyecto_entregables e
-      WHERE COALESCE(e.completado, false) = true
-        AND EXTRACT(MONTH FROM COALESCE(e.fecha_real_entrega, e.fecha_completado)) IN (2, 3, 4, 5)
-      GROUP BY mes_num
+      FROM meses m
+      LEFT JOIN proyecto_entregables e
+        ON COALESCE(e.completado, false) = true
+       AND COALESCE(e.fecha_real_entrega, e.fecha_completado) >= m.mes_inicio
+       AND COALESCE(e.fecha_real_entrega, e.fecha_completado) < m.mes_inicio + INTERVAL '1 month'
+      GROUP BY m.mes_inicio
+      ORDER BY m.mes_inicio
     `);
 
-    const mesNumToLabel = { 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo" };
-    const porMesMap = new Map();
-    for (const r of porMesR.rows || []) {
-      const label = mesNumToLabel[r.mes_num];
-      if (label) porMesMap.set(label, r);
-    }
-    const por_mes = ["Febrero", "Marzo", "Abril", "Mayo"].map((mes) => {
-      const r = porMesMap.get(mes) || {};
-      return {
-        mes,
-        total: Number(r.total || 0),
-        aprobados: Number(r.aprobados || 0),
-        observados: Number(r.observados || 0),
-        pendientes: Number(r.pendientes || 0),
-      };
-    });
+    const por_mes = (porMesR.rows || []).map((r) => ({
+      mes: monthLabelFromDate(r.mes_inicio),
+      total: Number(r.total || 0),
+      aprobados: Number(r.aprobados || 0),
+      observados: Number(r.observados || 0),
+      pendientes: Number(r.pendientes || 0),
+    }));
 
     const porGrupoR = await client.query(`
       WITH pairs AS (
@@ -477,10 +768,8 @@ router.get("/metricas", async (_req, res) => {
               p.docente_responsable_id = u.id
               OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
             )
-            AND (
-              TRIM(e.descripcion) = TRIM(tpl.entregable)
-              OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-            )
+            AND e.plantilla_id = tpl.id
+            AND e.docente_id = u.id
           ORDER BY e.id DESC
           LIMIT 1
         ) pe ON true
@@ -542,10 +831,8 @@ router.get("/metricas", async (_req, res) => {
               p.docente_responsable_id = u.id
               OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
             )
-            AND (
-              TRIM(e.descripcion) = TRIM(tpl.entregable)
-              OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-            )
+            AND e.plantilla_id = tpl.id
+            AND e.docente_id = u.id
           ORDER BY e.id DESC
           LIMIT 1
         ) pe ON true
@@ -600,10 +887,8 @@ router.get("/metricas", async (_req, res) => {
               p.docente_responsable_id = u.id
               OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
             )
-            AND (
-              TRIM(e.descripcion) = TRIM(tpl.entregable)
-              OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-            )
+            AND e.plantilla_id = tpl.id
+            AND e.docente_id = u.id
           ORDER BY e.id DESC
           LIMIT 1
         ) pe ON true
@@ -626,10 +911,12 @@ router.get("/metricas", async (_req, res) => {
         (
           SELECT COUNT(*)::int
           FROM plantilla_entregables tpl
+          INNER JOIN grupos_matriz gm_venc ON gm_venc.id = tpl.grupo_id
+          INNER JOIN semestres sem_venc ON sem_venc.codigo = gm_venc.semestre
           WHERE tpl.grupo_id = d.grupo_matriz_id
             AND d.grupo_matriz_id IS NOT NULL
             AND tpl.dias_fin_desde_feb IS NOT NULL
-            AND (DATE '2026-02-10' + tpl.dias_fin_desde_feb * INTERVAL '1 day')::date < CURRENT_DATE
+            AND (sem_venc.fecha_inicio + tpl.dias_fin_desde_feb * INTERVAL '1 day')::date < CURRENT_DATE
             AND NOT EXISTS (
               SELECT 1
               FROM proyecto_entregables e
@@ -642,10 +929,8 @@ router.get("/metricas", async (_req, res) => {
                     SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = d.docente_id
                   )
                 )
-                AND (
-                  TRIM(e.descripcion) = TRIM(tpl.entregable)
-                  OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-                )
+                AND e.plantilla_id = tpl.id
+                AND e.docente_id = d.docente_id
                 AND COALESCE(e.completado, false) = true
             )
         ) AS entregables_vencidos
@@ -690,17 +975,28 @@ router.get("/metricas", async (_req, res) => {
 router.get("/reportes-revision", async (req, res) => {
   const page = Math.max(1, Number.parseInt(String(req.query.page || "1"), 10) || 1);
   const limit = Math.max(1, Number.parseInt(String(req.query.limit || "20"), 10) || 20);
+  const requestedReportId =
+    req.query.reporte == null
+      ? null
+      : Number.parseInt(String(req.query.reporte), 10);
+  if (
+    requestedReportId != null &&
+    (!Number.isInteger(requestedReportId) || requestedReportId <= 0)
+  ) {
+    return res.status(400).json({ error: "reporte inválido" });
+  }
   const offset = (page - 1) * limit;
   const client = await pool.connect();
   try {
-    await ensureReportFieldsColumns(client);
     const countResult = await client.query(
       `
       SELECT COUNT(*)::int AS total
       FROM proyecto_entregables e
       WHERE COALESCE(e.completado, false) = true
         AND COALESCE(e.estado_revision, 'enviado') = 'enviado'
-      `
+        AND ($1::integer IS NULL OR e.id = $1)
+      `,
+      [requestedReportId]
     );
     const result = await client.query(
       `
@@ -710,6 +1006,7 @@ router.get("/reportes-revision", async (req, res) => {
         e.comentario_revision,
         e.fecha_real_entrega,
         e.fecha_completado,
+        e.fecha_cargue_evidencia,
         e.url_evidencia,
         COALESCE(e.actividad_reportada, e.descripcion) AS actividad_reportada,
         COALESCE(e.descripcion_reporte, '') AS descripcion_reporte,
@@ -719,6 +1016,7 @@ router.get("/reportes-revision", async (req, res) => {
         p.id AS proyecto_id,
         p.titulo AS proyecto_titulo,
         prog.nombre AS programa_nombre,
+        COALESCE(esc.nombre, 'Sin escuela') AS escuela_nombre,
         u.id AS docente_id,
         u.nombre,
         u.apellido,
@@ -727,9 +1025,11 @@ router.get("/reportes-revision", async (req, res) => {
       JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
       JOIN proyectos p ON p.id = s.proyecto_id
       LEFT JOIN programas prog ON prog.id = p.programa_id
-      LEFT JOIN usuarios u ON u.id = p.docente_responsable_id
+      LEFT JOIN escuelas esc ON esc.id = prog.escuela_id
+      LEFT JOIN usuarios u ON u.id = COALESCE(e.docente_id, p.docente_responsable_id)
       WHERE COALESCE(e.completado, false) = true
         AND COALESCE(e.estado_revision, 'enviado') = 'enviado'
+        AND ($1::integer IS NULL OR e.id = $1)
       ORDER BY
         CASE COALESCE(e.estado_revision, 'enviado')
           WHEN 'enviado' THEN 0
@@ -739,10 +1039,10 @@ router.get("/reportes-revision", async (req, res) => {
         END,
         COALESCE(e.fecha_real_entrega, e.fecha_completado) DESC NULLS LAST,
         e.id DESC
-      LIMIT $1 OFFSET $2
+      LIMIT $2 OFFSET $3
       `
       ,
-      [limit, offset]
+      [requestedReportId, limit, offset]
     );
 
     const reportes = (result.rows || []).map((r) => ({
@@ -751,6 +1051,7 @@ router.get("/reportes-revision", async (req, res) => {
       comentario_revision: r.comentario_revision || "",
       fecha_real_entrega: r.fecha_real_entrega,
       fecha_completado: r.fecha_completado,
+      fecha_cargue_evidencia: r.fecha_cargue_evidencia,
       url_evidencia: r.url_evidencia || "",
       actividad_reportada: r.actividad_reportada || "Entregable",
       descripcion_reporte: r.descripcion_reporte || "",
@@ -760,6 +1061,7 @@ router.get("/reportes-revision", async (req, res) => {
       proyecto_id: r.proyecto_id,
       proyecto_titulo: r.proyecto_titulo || "Iniciativa",
       programa_nombre: r.programa_nombre || "Sin programa",
+      escuela_nombre: r.escuela_nombre || "Sin escuela",
       docente_id: r.docente_id,
       docente_nombre: [r.nombre, r.apellido].filter(Boolean).join(" "),
       docente_correo: r.correo || "",
@@ -863,15 +1165,13 @@ router.get("/docentes", async (req, res) => {
         u.correo,
         u.rol,
         u.estado,
-        u.perfil_indicador_id,
         u.tipo_docente,
         u.regional,
         u.link_drive,
         u.grupo_matriz_id,
         p.nombre   AS programa_nombre,
         p.codigo   AS programa_codigo,
-        COALESCE(p.facultad, 'Sin escuela') AS escuela_nombre,
-        pi.nombre AS perfil_nombre,
+        COALESCE(e.nombre, 'Sin escuela') AS escuela_nombre,
         gm.nombre AS grupo_matriz_nombre,
         COALESCE(
           ROUND(
@@ -901,8 +1201,7 @@ router.get("/docentes", async (req, res) => {
       FROM usuarios u
       LEFT JOIN programas p
         ON p.id = u.programa_id
-      LEFT JOIN perfiles_indicador pi
-        ON pi.id = u.perfil_indicador_id
+      LEFT JOIN escuelas e ON e.id = p.escuela_id
       LEFT JOIN grupos_matriz gm
         ON gm.id = u.grupo_matriz_id
       WHERE u.rol = 'docente'
@@ -921,8 +1220,6 @@ router.get("/docentes", async (req, res) => {
       program: row.programa_nombre || "Sin programa",
       school: row.escuela_nombre,
       status: row.estado === "activo" ? "active" : "delayed",
-      perfil_id: row.perfil_indicador_id || null,
-      perfil_nombre: row.perfil_nombre || null,
       tipo_docente: row.tipo_docente || null,
       regional: row.regional || null,
       link_drive: row.link_drive || null,
@@ -950,13 +1247,29 @@ router.get("/semestres", async (_req, res) => {
   try {
     const result = await pool.query(
       `
-      SELECT DISTINCT semestre
-      FROM grupos_matriz
-      ORDER BY semestre DESC
+      SELECT
+        s.codigo,
+        s.fecha_inicio,
+        s.fecha_fin,
+        s.numero_semanas,
+        s.activo,
+        COUNT(DISTINCT gm.id)::int AS num_grupos,
+        COUNT(DISTINCT tpl.id)::int AS num_plantillas,
+        COUNT(DISTINCT u.id)::int AS num_docentes,
+        COUNT(DISTINCT pe.id)::int AS num_reportes
+      FROM semestres s
+      LEFT JOIN grupos_matriz gm ON gm.semestre = s.codigo
+      LEFT JOIN plantilla_entregables tpl ON tpl.grupo_id = gm.id
+      LEFT JOIN usuarios u ON u.grupo_matriz_id = gm.id AND u.rol = 'docente'
+      LEFT JOIN proyecto_entregables pe ON pe.plantilla_id = tpl.id
+      GROUP BY s.codigo, s.fecha_inicio, s.fecha_fin, s.numero_semanas, s.activo
+      ORDER BY s.fecha_inicio DESC
       `
     );
-    const semestres = (result.rows || []).map((r) => r.semestre).filter(Boolean);
-    res.json({ semestres });
+    const detalle = result.rows || [];
+    const semestres = detalle.map((r) => r.codigo).filter(Boolean);
+    const activo = detalle.find((r) => r.activo) || null;
+    res.json({ semestres, detalle, activo });
   } catch (error) {
     console.error("Error en GET /admin/semestres", error);
     res.status(500).json({ error: "Error interno" });
@@ -964,6 +1277,342 @@ router.get("/semestres", async (_req, res) => {
 });
 
 // Listado de grupos/plantillas de matriz (para asignación admin)
+router.post("/semestres", async (req, res) => {
+  const validated = validateSemesterFields(req.body);
+  if (validated.error) return res.status(400).json({ error: validated.error });
+  const { codigo, fechaInicio, fechaFin, numeroSemanas } = validated;
+  const active = req.body?.activo === true;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    if (active) await client.query("UPDATE semestres SET activo = FALSE WHERE activo = TRUE");
+    const result = await client.query(
+      `
+      INSERT INTO semestres (codigo, fecha_inicio, fecha_fin, numero_semanas, activo)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING codigo, fecha_inicio, fecha_fin, numero_semanas, activo
+      `,
+      [codigo, fechaInicio, fechaFin, numeroSemanas, active]
+    );
+    await client.query("COMMIT");
+    res.status(201).json({ semestre: result.rows[0] });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: `El semestre ${codigo} ya existe` });
+    }
+    console.error("Error en POST /admin/semestres", error);
+    res.status(500).json({ error: "Error interno" });
+  } finally {
+    client.release();
+  }
+});
+
+router.put("/semestres/:codigo/activar", async (req, res) => {
+  const codigo = String(req.params.codigo || "").trim().toUpperCase();
+  if (!isValidSemestreValue(codigo)) {
+    return res.status(400).json({ error: "Semestre inválido" });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const exists = await client.query("SELECT 1 FROM semestres WHERE codigo = $1 FOR UPDATE", [codigo]);
+    if (exists.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Semestre no encontrado" });
+    }
+    await client.query("UPDATE semestres SET activo = FALSE WHERE activo = TRUE");
+    const result = await client.query(
+      `
+      UPDATE semestres
+      SET activo = TRUE
+      WHERE codigo = $1
+      RETURNING codigo, fecha_inicio, fecha_fin, numero_semanas, activo
+      `,
+      [codigo]
+    );
+    await client.query("COMMIT");
+    res.json({ semestre: result.rows[0] });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Error en PUT /admin/semestres/:codigo/activar", error);
+    res.status(500).json({ error: "Error interno" });
+  } finally {
+    client.release();
+  }
+});
+
+router.put("/semestres/:codigo", async (req, res) => {
+  const codigoActual = String(req.params.codigo || "").trim().toUpperCase();
+  if (!isValidSemestreValue(codigoActual)) {
+    return res.status(400).json({ error: "Semestre inválido" });
+  }
+
+  const validated = validateSemesterFields({
+    codigo: req.body?.codigo ?? codigoActual,
+    fecha_inicio: req.body?.fecha_inicio,
+    fecha_fin: req.body?.fecha_fin,
+    numero_semanas: req.body?.numero_semanas,
+  });
+  if (validated.error) return res.status(400).json({ error: validated.error });
+
+  const {
+    codigo: codigoNuevo,
+    fechaInicio,
+    fechaFin,
+    numeroSemanas,
+  } = validated;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const current = await client.query(
+      "SELECT codigo FROM semestres WHERE codigo = $1 FOR UPDATE",
+      [codigoActual]
+    );
+    if (current.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Semestre no encontrado" });
+    }
+
+    const maxWeek = await client.query(
+      `
+      SELECT COALESCE(MAX(tpl.semana_numero), 0)::int AS maxima
+      FROM grupos_matriz gm
+      LEFT JOIN plantilla_entregables tpl ON tpl.grupo_id = gm.id
+      WHERE gm.semestre = $1
+      `,
+      [codigoActual]
+    );
+    if (Number(maxWeek.rows[0]?.maxima || 0) > numeroSemanas) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: `No se puede reducir a ${numeroSemanas} semanas: existen plantillas hasta la semana ${maxWeek.rows[0].maxima}.`,
+      });
+    }
+
+    const updated = await client.query(
+      `
+      UPDATE semestres
+      SET codigo = $1,
+          fecha_inicio = $2,
+          fecha_fin = $3,
+          numero_semanas = $4
+      WHERE codigo = $5
+      RETURNING codigo, fecha_inicio, fecha_fin, numero_semanas, activo
+      `,
+      [codigoNuevo, fechaInicio, fechaFin, numeroSemanas, codigoActual]
+    );
+    await client.query("COMMIT");
+    res.json({ semestre: updated.rows[0] });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: `El semestre ${codigoNuevo} ya existe` });
+    }
+    console.error("Error en PUT /admin/semestres/:codigo", error);
+    res.status(500).json({ error: "Error interno al actualizar el semestre" });
+  } finally {
+    client.release();
+  }
+});
+
+router.delete("/semestres/:codigo", async (req, res) => {
+  const codigo = String(req.params.codigo || "").trim().toUpperCase();
+  const forzar = String(req.query.forzar || "") === "true";
+  if (!isValidSemestreValue(codigo)) {
+    return res.status(400).json({ error: "Semestre inválido" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const semester = await client.query(
+      "SELECT codigo, activo FROM semestres WHERE codigo = $1 FOR UPDATE",
+      [codigo]
+    );
+    if (semester.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Semestre no encontrado" });
+    }
+    if (semester.rows[0].activo) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "No se puede eliminar el semestre activo. Activa otro semestre primero.",
+      });
+    }
+
+    const related = await client.query(
+      `
+      SELECT
+        COUNT(DISTINCT gm.id)::int AS grupos,
+        COUNT(DISTINCT tpl.id)::int AS plantillas,
+        COUNT(DISTINCT u.id)::int AS docentes,
+        COUNT(DISTINCT pe.id)::int AS reportes
+      FROM semestres s
+      LEFT JOIN grupos_matriz gm ON gm.semestre = s.codigo
+      LEFT JOIN plantilla_entregables tpl ON tpl.grupo_id = gm.id
+      LEFT JOIN usuarios u ON u.grupo_matriz_id = gm.id AND u.rol = 'docente'
+      LEFT JOIN proyecto_entregables pe ON pe.plantilla_id = tpl.id
+      WHERE s.codigo = $1
+      `,
+      [codigo]
+    );
+    const counts = related.rows[0];
+    const hasRelated =
+      counts.grupos > 0 ||
+      counts.plantillas > 0 ||
+      counts.docentes > 0 ||
+      counts.reportes > 0;
+    if (hasRelated && !forzar) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "El semestre tiene información relacionada. Confirma la eliminación completa.",
+        requiere_confirmacion: true,
+        resumen: counts,
+      });
+    }
+
+    if (forzar) {
+      await client.query(
+        `
+        UPDATE usuarios
+        SET grupo_matriz_id = NULL
+        WHERE grupo_matriz_id IN (
+          SELECT id FROM grupos_matriz WHERE semestre = $1
+        )
+        `,
+        [codigo]
+      );
+      await client.query("DELETE FROM grupos_matriz WHERE semestre = $1", [codigo]);
+    }
+    await client.query("DELETE FROM semestres WHERE codigo = $1", [codigo]);
+    await client.query("COMMIT");
+    res.json({ ok: true, eliminado: codigo, resumen: counts });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Error en DELETE /admin/semestres/:codigo", error);
+    res.status(500).json({ error: "Error interno al eliminar el semestre" });
+  } finally {
+    client.release();
+  }
+});
+
+router.post("/semestres/clonar", async (req, res) => {
+  const origen = String(req.body?.semestre_origen || "").trim().toUpperCase();
+  const validated = validateSemesterFields({
+    codigo: req.body?.semestre_destino,
+    fecha_inicio: req.body?.fecha_inicio,
+    fecha_fin: req.body?.fecha_fin,
+    numero_semanas: req.body?.numero_semanas,
+  });
+  if (!isValidSemestreValue(origen)) {
+    return res.status(400).json({ error: "semestre_origen es inválido" });
+  }
+  if (validated.error) return res.status(400).json({ error: validated.error });
+  const { codigo: destino, fechaInicio, fechaFin, numeroSemanas } = validated;
+  if (origen === destino) {
+    return res.status(400).json({ error: "El semestre destino debe ser distinto al origen" });
+  }
+  const copiarPlantillas = req.body?.clonar_plantillas !== false;
+  const activar = req.body?.activar === true;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const sourceSemester = await client.query(
+      "SELECT 1 FROM semestres WHERE codigo = $1 FOR SHARE",
+      [origen]
+    );
+    if (sourceSemester.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "El semestre origen no existe" });
+    }
+    const sourceGroups = await client.query(
+      "SELECT * FROM grupos_matriz WHERE semestre = $1 ORDER BY id FOR SHARE",
+      [origen]
+    );
+    if (sourceGroups.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "El semestre origen no tiene grupos para clonar" });
+    }
+    if (activar) await client.query("UPDATE semestres SET activo = FALSE WHERE activo = TRUE");
+    await client.query(
+      `
+      INSERT INTO semestres (codigo, fecha_inicio, fecha_fin, numero_semanas, activo)
+      VALUES ($1, $2, $3, $4, $5)
+      `,
+      [destino, fechaInicio, fechaFin, numeroSemanas, activar]
+    );
+
+    let templatesCloned = 0;
+    for (const group of sourceGroups.rows) {
+      const inserted = await client.query(
+        `
+        INSERT INTO grupos_matriz (
+          nombre, descripcion, tipo_docente, horas_totales,
+          num_proyectos, num_actividades, num_convenios_nuevos,
+          num_convenios_dinamizados, semestre, activo
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING id
+        `,
+        [
+          group.nombre,
+          group.descripcion,
+          group.tipo_docente,
+          group.horas_totales,
+          group.num_proyectos,
+          group.num_actividades,
+          group.num_convenios_nuevos,
+          group.num_convenios_dinamizados,
+          destino,
+          group.activo,
+        ]
+      );
+      if (copiarPlantillas) {
+        const templates = await client.query(
+          `
+          INSERT INTO plantilla_entregables (
+            grupo_id, numero, categoria, fase, mes,
+            semana_numero, entregable, descripcion_evidencia, horas,
+            dias_inicio_desde_feb, dias_fin_desde_feb
+          )
+          SELECT
+            $1, numero, categoria, fase, mes,
+            semana_numero, entregable, descripcion_evidencia, horas,
+            dias_inicio_desde_feb, dias_fin_desde_feb
+          FROM plantilla_entregables
+          WHERE grupo_id = $2
+          `,
+          [inserted.rows[0].id, group.id]
+        );
+        templatesCloned += templates.rowCount || 0;
+      }
+    }
+
+    await client.query("COMMIT");
+    res.status(201).json({
+      semestre: {
+        codigo: destino,
+        fecha_inicio: fechaInicio,
+        fecha_fin: fechaFin,
+        numero_semanas: numeroSemanas,
+        activo: activar,
+      },
+      grupos_clonados: sourceGroups.rowCount,
+      plantillas_clonadas: templatesCloned,
+    });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: `El semestre ${destino} ya existe` });
+    }
+    console.error("Error en POST /admin/semestres/clonar", error);
+    res.status(500).json({ error: "Error interno" });
+  } finally {
+    client.release();
+  }
+});
+
 router.get("/grupos-matriz", async (req, res) => {
   const semestreQ = req.query.semestre;
   const params = [];
@@ -1024,6 +1673,11 @@ router.post("/grupos-matriz/:id/clonar", async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const semester = await client.query("SELECT 1 FROM semestres WHERE codigo = $1", [dest]);
+    if (semester.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "El semestre destino no tiene calendario configurado" });
+    }
     const src = await client.query(`SELECT * FROM grupos_matriz WHERE id = $1`, [grupoId]);
     if (src.rowCount === 0) {
       await client.query("ROLLBACK");
@@ -1075,7 +1729,10 @@ router.post("/grupos-matriz/:id/clonar", async (req, res) => {
     await client.query("COMMIT");
     res.status(201).json({ grupo: nuevo, plantillas_clonadas });
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query("ROLLBACK").catch(() => {});
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Ese grupo ya existe en el semestre destino" });
+    }
     console.error("Error en POST /admin/grupos-matriz/:id/clonar", error);
     res.status(500).json({ error: "Error interno" });
   } finally {
@@ -1132,7 +1789,8 @@ router.post("/grupos-matriz", async (req, res) => {
         num_proyectos, num_actividades, num_convenios_nuevos,
         num_convenios_dinamizados, semestre, activo
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
+      SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9::varchar, true
+      WHERE EXISTS (SELECT 1 FROM semestres WHERE codigo = $9::varchar)
       RETURNING *
       `,
       [
@@ -1147,8 +1805,14 @@ router.post("/grupos-matriz", async (req, res) => {
         String(semestre).trim(),
       ]
     );
+    if (r.rowCount === 0) {
+      return res.status(409).json({ error: "El semestre no tiene calendario configurado" });
+    }
     res.status(201).json({ grupo: r.rows[0] });
   } catch (error) {
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Ya existe un grupo con ese nombre en el semestre" });
+    }
     console.error("Error en POST /admin/grupos-matriz", error);
     res.status(500).json({ error: "Error interno" });
   }
@@ -1175,6 +1839,13 @@ router.put("/grupos-matriz/:id", async (req, res) => {
       const nuevoS = String(b.semestre).trim();
       if (!isValidSemestreValue(nuevoS)) {
         return res.status(400).json({ error: "semestre inválido (formato YYYYA o YYYYB)" });
+      }
+      const semesterExists = await pool.query(
+        "SELECT 1 FROM semestres WHERE codigo = $1",
+        [nuevoS]
+      );
+      if (semesterExists.rowCount === 0) {
+        return res.status(409).json({ error: "El semestre no tiene calendario configurado" });
       }
       if (nuevoS !== semestreActual) {
         const docC = await pool.query(
@@ -1272,6 +1943,9 @@ router.put("/grupos-matriz/:id", async (req, res) => {
     );
     res.json({ grupo: upd.rows[0] });
   } catch (error) {
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Ya existe un grupo con ese nombre en el semestre" });
+    }
     console.error("Error en PUT /admin/grupos-matriz/:id", error);
     res.status(500).json({ error: "Error interno" });
   }
@@ -1401,10 +2075,13 @@ router.put("/docentes/:id/tipo-docente", async (req, res) => {
   }
 
   try {
-    await pool.query(
-      `UPDATE usuarios SET tipo_docente = $1 WHERE id = $2 AND rol = 'docente'`,
+    const result = await pool.query(
+      `UPDATE usuarios SET tipo_docente = $1 WHERE id = $2 AND rol = 'docente' RETURNING id`,
       [tipo_docente, docenteId]
     );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Docente no encontrado" });
+    }
     res.json({ ok: true });
   } catch (error) {
     console.error("Error en PUT /admin/docentes/:id/tipo-docente", error);
@@ -1419,6 +2096,10 @@ router.put("/docentes/:id/info-contacto", async (req, res) => {
   if (!docenteId) {
     return res.status(400).json({ error: "id de docente inválido" });
   }
+  const normalizedLink = normalizeOptionalHttpsUrl(link_drive);
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "link_drive") && normalizedLink.error) {
+    return res.status(400).json({ error: normalizedLink.error });
+  }
 
   const sets = [];
   const vals = [];
@@ -1429,7 +2110,7 @@ router.put("/docentes/:id/info-contacto", async (req, res) => {
   }
   if (Object.prototype.hasOwnProperty.call(req.body || {}, "link_drive")) {
     sets.push(`link_drive = $${i++}`);
-    vals.push(link_drive ?? null);
+    vals.push(normalizedLink.value);
   }
   if (sets.length === 0) {
     return res.status(400).json({ error: "Debes enviar regional y/o link_drive" });
@@ -1437,14 +2118,18 @@ router.put("/docentes/:id/info-contacto", async (req, res) => {
   vals.push(docenteId);
 
   try {
-    await pool.query(
+    const result = await pool.query(
       `
       UPDATE usuarios
       SET ${sets.join(", ")}
       WHERE id = $${i} AND rol = 'docente'
+      RETURNING id
       `,
       vals
     );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Docente no encontrado" });
+    }
     res.json({ ok: true });
   } catch (error) {
     console.error("Error en PUT /admin/docentes/:id/info-contacto", error);
@@ -1459,16 +2144,32 @@ router.put("/docentes/:id/grupo-matriz", async (req, res) => {
   if (!docenteId) {
     return res.status(400).json({ error: "id de docente inválido" });
   }
+  const groupId = grupo_matriz_id == null || grupo_matriz_id === ""
+    ? null
+    : Number(grupo_matriz_id);
+  if (groupId !== null && (!Number.isInteger(groupId) || groupId <= 0)) {
+    return res.status(400).json({ error: "grupo_matriz_id es inválido" });
+  }
 
   try {
-    await pool.query(
+    if (groupId !== null) {
+      const group = await pool.query("SELECT 1 FROM grupos_matriz WHERE id = $1", [groupId]);
+      if (group.rowCount === 0) {
+        return res.status(404).json({ error: "Grupo matriz no encontrado" });
+      }
+    }
+    const result = await pool.query(
       `
       UPDATE usuarios
       SET grupo_matriz_id = $1
       WHERE id = $2 AND rol = 'docente'
+      RETURNING id
       `,
-      [grupo_matriz_id || null, docenteId]
+      [groupId, docenteId]
     );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Docente no encontrado" });
+    }
     res.json({ ok: true });
   } catch (error) {
     console.error("Error en PUT /admin/docentes/:id/grupo-matriz", error);
@@ -1500,12 +2201,15 @@ router.get("/usuarios", async (req, res) => {
         u.estado,
         u.programa_id,
         u.tipo_docente,
+        u.regional,
+        u.link_drive,
         u.grupo_matriz_id,
         p.nombre   AS programa_nombre,
-        COALESCE(p.facultad, 'Sin escuela') AS escuela_nombre,
+        COALESCE(e.nombre, 'Sin escuela') AS escuela_nombre,
         gm.nombre AS grupo_matriz_nombre
       FROM usuarios u
       LEFT JOIN programas p ON p.id = u.programa_id
+      LEFT JOIN escuelas e ON e.id = p.escuela_id
       LEFT JOIN grupos_matriz gm ON gm.id = u.grupo_matriz_id
       WHERE u.rol IN ('docente', 'admin')
       ORDER BY escuela_nombre, programa_nombre, u.apellido, u.nombre
@@ -1523,7 +2227,10 @@ router.get("/usuarios", async (req, res) => {
       program: row.programa_nombre || "Sin programa",
       school: row.escuela_nombre,
       status: row.estado === "activo" ? "active" : "delayed",
+      estado: row.estado,
       tipo_docente: row.tipo_docente || null,
+      regional: row.regional || null,
+      link_drive: row.link_drive || null,
       programa_id: row.programa_id || null,
       grupo_matriz_id: row.grupo_matriz_id || null,
       grupo_matriz_nombre: row.grupo_matriz_nombre || null,
@@ -1546,7 +2253,18 @@ router.get("/usuarios", async (req, res) => {
 
 router.put("/usuarios/:id", async (req, res) => {
   const userId = Number(req.params.id);
-  const { nombre, apellido, correo, rol, programa_id } = req.body || {};
+  const {
+    nombre,
+    apellido,
+    correo,
+    rol,
+    programa_id,
+    estado,
+    tipo_docente,
+    regional,
+    link_drive,
+    grupo_matriz_id,
+  } = req.body || {};
 
   if (!userId) {
     return res.status(400).json({ error: "id de usuario inválido" });
@@ -1557,56 +2275,187 @@ router.put("/usuarios/:id", async (req, res) => {
   if (!correo || !String(correo).trim()) {
     return res.status(400).json({ error: "correo es obligatorio" });
   }
+  const normalizedEmail = String(correo).trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    return res.status(400).json({ error: "correo no es válido" });
+  }
   const rolDb = rol === "admin" ? "admin" : rol === "docente" ? "docente" : null;
   if (!rolDb) {
     return res.status(400).json({ error: "rol debe ser admin o docente" });
   }
 
   const progId =
-    programa_id === null || programa_id === ""
+    programa_id === undefined
+      ? undefined
+      : programa_id === null || programa_id === ""
       ? null
       : Number(programa_id);
+  if (progId !== undefined && progId !== null && (!Number.isInteger(progId) || progId <= 0)) {
+    return res.status(400).json({ error: "programa_id es inválido" });
+  }
 
+  const groupId =
+    grupo_matriz_id === undefined || grupo_matriz_id === null || grupo_matriz_id === ""
+      ? null
+      : Number(grupo_matriz_id);
+  if (groupId !== null && (!Number.isInteger(groupId) || groupId <= 0)) {
+    return res.status(400).json({ error: "grupo_matriz_id es inválido" });
+  }
+  const normalizedLink = link_drive === undefined
+    ? null
+    : normalizeOptionalHttpsUrl(link_drive);
+  if (normalizedLink?.error) {
+    return res.status(400).json({ error: normalizedLink.error });
+  }
+
+  const client = await pool.connect();
   try {
-    const r = await pool.query(
+    await client.query("BEGIN");
+    const currentResult = await client.query(
+      `
+      SELECT id, correo, rol, estado, programa_id, tipo_docente, regional, link_drive, grupo_matriz_id
+      FROM usuarios
+      WHERE id = $1 AND rol IN ('docente', 'admin')
+      FOR UPDATE
+      `,
+      [userId]
+    );
+    if (currentResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+    const current = currentResult.rows[0];
+    const finalProgramId = progId === undefined ? current.programa_id : progId;
+    const finalGroupId = grupo_matriz_id === undefined ? current.grupo_matriz_id : groupId;
+    const stateDb = estado === undefined ? current.estado : String(estado).trim().toLowerCase();
+    if (!["activo", "inactivo"].includes(stateDb)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "estado debe ser activo o inactivo" });
+    }
+    if (userId === Number(req.user.id) && (rolDb !== "admin" || stateDb !== "activo")) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "No puedes retirar tu propio rol ni desactivar tu cuenta administrativa",
+      });
+    }
+
+    const removesActiveAdmin =
+      current.rol === "admin" &&
+      current.estado === "activo" &&
+      (rolDb !== "admin" || stateDb !== "activo");
+    if (removesActiveAdmin) {
+      const otherAdmins = await client.query(
+        `
+        SELECT COUNT(*)::int AS total
+        FROM usuarios
+        WHERE rol = 'admin' AND estado = 'activo' AND id <> $1
+        `,
+        [userId]
+      );
+      if (Number(otherAdmins.rows[0]?.total || 0) === 0) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "Debe permanecer al menos un administrador activo" });
+      }
+    }
+
+    const teacherType = tipo_docente === undefined
+      ? current.tipo_docente || "ANTIGUO"
+      : String(tipo_docente).trim().toUpperCase();
+    if (rolDb === "docente" && !["ANTIGUO", "NUEVO"].includes(teacherType)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "tipo_docente debe ser ANTIGUO o NUEVO" });
+    }
+
+    if (finalProgramId !== null) {
+      const program = await client.query("SELECT 1 FROM programas WHERE id = $1", [finalProgramId]);
+      if (program.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Programa no encontrado" });
+      }
+    }
+    if (rolDb === "docente" && finalGroupId !== null) {
+      const group = await client.query(
+        "SELECT tipo_docente FROM grupos_matriz WHERE id = $1 AND activo = true",
+        [finalGroupId]
+      );
+      if (group.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Grupo matriz no encontrado o inactivo" });
+      }
+      if (group.rows[0].tipo_docente !== teacherType) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: "El tipo del docente no coincide con el grupo matriz seleccionado",
+        });
+      }
+    }
+    const regionalValue = regional === undefined
+      ? current.regional
+      : String(regional || "").trim() || null;
+    const linkValue = link_drive === undefined ? current.link_drive : normalizedLink.value;
+
+    const r = await client.query(
       `
       UPDATE usuarios
       SET
         nombre = $1,
         apellido = $2,
-        correo = $3,
+        correo = LOWER(TRIM($3)),
         rol = $4,
-        programa_id = $5
-      WHERE id = $6
+        programa_id = $5,
+        estado = $6,
+        tipo_docente = $7,
+        regional = $8,
+        link_drive = $9,
+        grupo_matriz_id = $10,
+        google_sub = CASE WHEN correo <> LOWER(TRIM($3)) THEN NULL ELSE google_sub END,
+        foto_url = CASE WHEN correo <> LOWER(TRIM($3)) THEN NULL ELSE foto_url END,
+        ultimo_acceso = CASE WHEN correo <> LOWER(TRIM($3)) THEN NULL ELSE ultimo_acceso END
+      WHERE id = $11
         AND rol IN ('docente', 'admin')
       RETURNING id, nombre, apellido, correo, rol, programa_id, estado,
-                tipo_docente, grupo_matriz_id
+                tipo_docente, regional, link_drive, grupo_matriz_id
       `,
-      [String(nombre).trim(), String(apellido).trim(), String(correo).trim(), rolDb, progId, userId]
+      [
+        String(nombre).trim(),
+        String(apellido).trim(),
+        normalizedEmail,
+        rolDb,
+        finalProgramId,
+        stateDb,
+        rolDb === "docente" ? teacherType : null,
+        rolDb === "docente" ? regionalValue : null,
+        rolDb === "docente" ? linkValue : null,
+        rolDb === "docente" ? finalGroupId : null,
+        userId,
+      ]
     );
-    if (r.rowCount === 0) {
-      return res.status(404).json({ error: "Usuario no encontrado" });
-    }
     const u = r.rows[0];
     let programaNombre = null;
     let escuelaNombre = null;
     if (u.programa_id) {
-      const p = await pool.query(
-        "SELECT nombre, facultad FROM programas WHERE id = $1",
+      const p = await client.query(
+        `
+        SELECT p.nombre, e.id AS escuela_id, COALESCE(e.nombre, 'Sin escuela') AS escuela_nombre
+        FROM programas p
+        LEFT JOIN escuelas e ON e.id = p.escuela_id
+        WHERE p.id = $1
+        `,
         [u.programa_id]
       );
       if (p.rowCount > 0) {
         programaNombre = p.rows[0].nombre;
-        escuelaNombre = p.rows[0].facultad || "Sin escuela";
+        escuelaNombre = p.rows[0].escuela_nombre || "Sin escuela";
       }
     }
     let grupoNombre = null;
     if (u.grupo_matriz_id) {
-      const g = await pool.query("SELECT nombre FROM grupos_matriz WHERE id = $1", [
+      const g = await client.query("SELECT nombre FROM grupos_matriz WHERE id = $1", [
         u.grupo_matriz_id,
       ]);
       if (g.rowCount > 0) grupoNombre = g.rows[0].nombre;
     }
+    await client.query("COMMIT");
     res.json({
       id: u.id,
       nombre: u.nombre,
@@ -1619,13 +2468,22 @@ router.put("/usuarios/:id", async (req, res) => {
       program: programaNombre || "Sin programa",
       school: escuelaNombre || "Sin escuela",
       status: u.estado === "activo" ? "active" : "delayed",
+      estado: u.estado,
       tipo_docente: u.tipo_docente || null,
+      regional: u.regional || null,
+      link_drive: u.link_drive || null,
       grupo_matriz_id: u.grupo_matriz_id || null,
       grupo_matriz_nombre: grupoNombre || null,
     });
   } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Ya existe un usuario con ese correo" });
+    }
     console.error("Error en PUT /admin/usuarios/:id", error);
     res.status(500).json({ error: "Error interno" });
+  } finally {
+    client.release();
   }
 });
 
@@ -1633,6 +2491,9 @@ router.delete("/usuarios/:id", async (req, res) => {
   const userId = Number(req.params.id);
   if (!userId) {
     return res.status(400).json({ error: "id de usuario inválido" });
+  }
+  if (userId === Number(req.user.id)) {
+    return res.status(409).json({ error: "No puedes eliminar tu propia cuenta activa" });
   }
 
   const client = await pool.connect();
@@ -1643,6 +2504,14 @@ router.delete("/usuarios/:id", async (req, res) => {
     );
     if (u.rowCount === 0) {
       return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+    if (u.rows[0].rol === "admin") {
+      const admins = await client.query(
+        "SELECT COUNT(*)::int AS total FROM usuarios WHERE rol = 'admin' AND estado = 'activo'"
+      );
+      if (Number(admins.rows[0]?.total || 0) <= 1) {
+        return res.status(409).json({ error: "Debe permanecer al menos un administrador activo" });
+      }
     }
 
     const asResp = await client.query(
@@ -1684,6 +2553,27 @@ router.post("/usuarios", async (req, res) => {
       .status(400)
       .json({ error: "nombres, apellidos, correo y rol son obligatorios" });
   }
+  const normalizedEmail = String(correo).trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    return res.status(400).json({ error: "correo no es válido" });
+  }
+  if (!["admin", "docente"].includes(rol)) {
+    return res.status(400).json({ error: "rol debe ser admin o docente" });
+  }
+  const normalizedLink = normalizeOptionalHttpsUrl(link_drive);
+  if (normalizedLink.error) {
+    return res.status(400).json({ error: normalizedLink.error });
+  }
+  const teacherType = tipo_docente || "ANTIGUO";
+  if (rol === "docente" && !["ANTIGUO", "NUEVO"].includes(teacherType)) {
+    return res.status(400).json({ error: "tipo_docente debe ser ANTIGUO o NUEVO" });
+  }
+  const groupId = grupo_matriz_id == null || grupo_matriz_id === ""
+    ? null
+    : Number(grupo_matriz_id);
+  if (groupId !== null && (!Number.isInteger(groupId) || groupId <= 0)) {
+    return res.status(400).json({ error: "grupo_matriz_id es inválido" });
+  }
 
   try {
     let programaId = null;
@@ -1694,6 +2584,24 @@ router.post("/usuarios", async (req, res) => {
       );
       if (programa.rowCount > 0) {
         programaId = programa.rows[0].id;
+      } else {
+        return res.status(400).json({ error: "El programa seleccionado no existe" });
+      }
+    }
+    if (rol === "docente" && groupId !== null) {
+      const group = await pool.query(
+        "SELECT tipo_docente FROM grupos_matriz WHERE id = $1 AND activo = true",
+        [groupId]
+      );
+      if (group.rowCount === 0) {
+        return res.status(400).json({
+          error: "El grupo matriz seleccionado no existe o está inactivo",
+        });
+      }
+      if (group.rows[0].tipo_docente !== teacherType) {
+        return res.status(409).json({
+          error: "El tipo del docente no coincide con el grupo matriz seleccionado",
+        });
       }
     }
 
@@ -1703,7 +2611,6 @@ router.post("/usuarios", async (req, res) => {
         nombre,
         apellido,
         correo,
-        password_hash,
         rol,
         programa_id,
         estado,
@@ -1712,21 +2619,20 @@ router.post("/usuarios", async (req, res) => {
         link_drive,
         grupo_matriz_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, 'activo', $7, $8, $9, $10)
+      VALUES ($1, $2, LOWER(TRIM($3)), $4, $5, 'activo', $6, $7, $8, $9)
       RETURNING id, nombre, apellido, correo, rol, estado, programa_id,
                 tipo_docente, regional, link_drive, grupo_matriz_id
       `,
       [
-        nombres,
-        apellidos,
-        correo,
-        "cun123",
-        rol === "admin" ? "admin" : "docente",
+        String(nombres).trim(),
+        String(apellidos).trim(),
+        normalizedEmail,
+        rol,
         programaId,
-        tipo_docente || "ANTIGUO",
+        rol === "docente" ? teacherType : null,
         regional || null,
-        link_drive || null,
-        grupo_matriz_id || null,
+        normalizedLink.value,
+        rol === "docente" ? groupId : null,
       ]
     );
 
@@ -1736,12 +2642,17 @@ router.post("/usuarios", async (req, res) => {
     let escuelaNombreCreada = null;
     if (created.programa_id) {
       const programa = await pool.query(
-        "SELECT nombre, facultad FROM programas WHERE id = $1",
+        `
+        SELECT p.nombre, e.id AS escuela_id, COALESCE(e.nombre, 'Sin escuela') AS escuela_nombre
+        FROM programas p
+        LEFT JOIN escuelas e ON e.id = p.escuela_id
+        WHERE p.id = $1
+        `,
         [created.programa_id]
       );
       if (programa.rowCount > 0) {
         programaNombreCreado = programa.rows[0].nombre;
-        escuelaNombreCreada = programa.rows[0].facultad || "Sin escuela";
+        escuelaNombreCreada = programa.rows[0].escuela_nombre || "Sin escuela";
       }
     }
 
@@ -1753,9 +2664,12 @@ router.post("/usuarios", async (req, res) => {
       program: programaNombreCreado || "Sin programa",
       school: escuelaNombreCreada || "Sin escuela",
       status: created.estado === "activo" ? "active" : "delayed",
-      passwordTemporal: "cun123",
+      acceso: "El usuario debe ingresar con esta cuenta de Google",
     });
   } catch (error) {
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Ya existe un usuario con ese correo" });
+    }
     console.error("Error en /admin/usuarios", error);
     res.status(500).json({ error: "Error interno" });
   }
@@ -1784,12 +2698,16 @@ router.get("/proyectos", async (req, res) => {
         p.fecha_fin_estimada,
         p.horas_totales,
         p.semanas,
+        p.programa_id,
         u.id AS coordinador_id,
         u.nombre || ' ' || u.apellido AS coordinador,
-        prog.nombre AS programa
+        prog.nombre AS programa,
+        prog.escuela_id,
+        esc.nombre AS escuela
       FROM proyectos p
       LEFT JOIN usuarios u ON u.id = p.docente_responsable_id
       LEFT JOIN programas prog ON prog.id = p.programa_id
+      LEFT JOIN escuelas esc ON esc.id = prog.escuela_id
       ORDER BY p.fecha_inicio DESC, p.id DESC
       LIMIT $1 OFFSET $2
       `
@@ -1801,9 +2719,13 @@ router.get("/proyectos", async (req, res) => {
       id: row.id,
       name: row.titulo,
       description: row.descripcion,
+      programId: row.programa_id,
+      schoolId: row.escuela_id,
+      school: row.escuela || "Sin escuela",
       coordinatorId: row.coordinador_id,
       coordinator: row.coordinador || "Sin asignar",
       program: row.programa || "Sin programa",
+      state: row.estado,
       type:
         row.tipo === "convenio"
           ? "agreement"
@@ -1813,7 +2735,7 @@ router.get("/proyectos", async (req, res) => {
       status:
         row.estado === "en_ejecucion"
           ? "active"
-          : row.estado === "completado"
+          : row.estado === "finalizado"
           ? "inactive"
           : "delayed",
       startDate: row.fecha_inicio,
@@ -1978,9 +2900,88 @@ router.put("/proyectos/:id/docentes", async (req, res) => {
     });
   }
 
+  const uniqueTeachers = new Map();
+  for (const row of lista) {
+    if (!uniqueTeachers.has(row.id) || row.grupo_matriz_id) {
+      uniqueTeachers.set(row.id, row);
+    }
+  }
+  lista = Array.from(uniqueTeachers.values());
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+
+    const project = await client.query(
+      "SELECT id FROM proyectos WHERE id = $1 FOR UPDATE",
+      [proyectoId]
+    );
+    if (project.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Proyecto no encontrado" });
+    }
+
+    if (lista.length > 0) {
+      const teacherIds = lista.map((row) => row.id);
+      const teachers = await client.query(
+        `
+        SELECT id, COALESCE(tipo_docente, 'ANTIGUO') AS tipo_docente
+        FROM usuarios
+        WHERE id = ANY($1::int[]) AND rol = 'docente' AND estado = 'activo'
+        FOR UPDATE
+        `,
+        [teacherIds]
+      );
+      const teacherById = new Map(
+        teachers.rows.map((row) => [Number(row.id), row])
+      );
+      const missingIds = teacherIds.filter((id) => !teacherById.has(id));
+      if (missingIds.length > 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "Solo se pueden asignar docentes activos existentes",
+          docente_ids_invalidos: missingIds,
+        });
+      }
+
+      const groupIds = Array.from(
+        new Set(lista.map((row) => row.grupo_matriz_id).filter(Boolean))
+      );
+      if (groupIds.length > 0) {
+        const groups = await client.query(
+          `
+          SELECT id, tipo_docente
+          FROM grupos_matriz
+          WHERE id = ANY($1::int[]) AND activo = true
+          `,
+          [groupIds]
+        );
+        const groupById = new Map(groups.rows.map((row) => [Number(row.id), row]));
+        const missingGroups = groupIds.filter((id) => !groupById.has(id));
+        if (missingGroups.length > 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: "Uno o más grupos matriz no existen o están inactivos",
+            grupo_ids_invalidos: missingGroups,
+          });
+        }
+        const incompatible = lista.find((row) => {
+          if (!row.grupo_matriz_id) return false;
+          return (
+            groupById.get(row.grupo_matriz_id)?.tipo_docente !==
+            teacherById.get(row.id)?.tipo_docente
+          );
+        });
+        if (incompatible) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: "El tipo del docente no coincide con el grupo matriz seleccionado",
+            docente_id: incompatible.id,
+            grupo_matriz_id: incompatible.grupo_matriz_id,
+          });
+        }
+      }
+    }
 
     await client.query("DELETE FROM proyecto_docentes WHERE proyecto_id = $1", [
       proyectoId,
@@ -1999,12 +3000,6 @@ router.put("/proyectos/:id/docentes", async (req, res) => {
 
     for (const row of lista) {
       if (!row.grupo_matriz_id) continue;
-
-      const existsGrupo = await client.query(
-        `SELECT 1 FROM grupos_matriz WHERE id = $1`,
-        [row.grupo_matriz_id]
-      );
-      if (existsGrupo.rowCount === 0) continue;
 
       const uRes = await client.query(
         `
@@ -2112,6 +3107,7 @@ router.post("/proyectos", async (req, res) => {
   const {
     titulo,
     descripcion,
+    programaId,
     programaNombre,
     docenteId,
     tipoVisual,
@@ -2124,10 +3120,35 @@ router.post("/proyectos", async (req, res) => {
     semanasEntregables,
   } = req.body || {};
 
-  if (!titulo || !programaNombre || !docenteId) {
+  if (
+    !titulo ||
+    !String(titulo).trim() ||
+    (!programaId && !programaNombre) ||
+    !docenteId
+  ) {
     return res
       .status(400)
-      .json({ error: "titulo, programaNombre y docenteId son obligatorios" });
+      .json({ error: "titulo, programa y docenteId son obligatorios" });
+  }
+  const startDate = parseDateOnly(fechaInicio);
+  const endDate = fechaFin ? parseDateOnly(fechaFin) : null;
+  const weekCount = Number(semanas);
+  const teacherId = Number(docenteId);
+  if (!startDate) {
+    return res.status(400).json({ error: "fechaInicio es obligatoria y debe ser válida" });
+  }
+  if (fechaFin && (!endDate || endDate < startDate)) {
+    return res.status(400).json({ error: "fechaFin no es válida" });
+  }
+  if (!Number.isInteger(weekCount) || weekCount < 1 || weekCount > 53) {
+    return res.status(400).json({ error: "semanas debe ser un entero entre 1 y 53" });
+  }
+  if (!Number.isInteger(teacherId) || teacherId <= 0) {
+    return res.status(400).json({ error: "docenteId no es válido" });
+  }
+  const totalHours = horasTotales == null || horasTotales === "" ? null : Number(horasTotales);
+  if (totalHours !== null && (!Number.isFinite(totalHours) || totalHours < 0)) {
+    return res.status(400).json({ error: "horasTotales no es válido" });
   }
 
   const tipo =
@@ -2137,25 +3158,35 @@ router.post("/proyectos", async (req, res) => {
       ? "actividad"
       : "proyecto";
   const estadoProyecto = estado || "en_ejecucion";
+  if (!["en_ejecucion", "finalizado", "suspendido"].includes(estadoProyecto)) {
+    return res.status(400).json({ error: "estado no es válido" });
+  }
 
+  const client = await pool.connect();
   try {
-    const prog = await pool.query(
-      "SELECT id FROM programas WHERE nombre = $1 LIMIT 1",
-      [programaNombre]
-    );
+    await client.query("BEGIN");
+    const programIdNumber = Number(programaId);
+    const prog = Number.isInteger(programIdNumber) && programIdNumber > 0
+      ? await client.query("SELECT id FROM programas WHERE id = $1", [programIdNumber])
+      : await client.query(
+          "SELECT id FROM programas WHERE nombre = $1 LIMIT 1",
+          [String(programaNombre || "").trim()]
+        );
     if (prog.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ error: "Programa no encontrado" });
     }
 
-    const docente = await pool.query(
-      "SELECT id, nombre, apellido FROM usuarios WHERE id = $1 LIMIT 1",
-      [docenteId]
+    const docente = await client.query(
+      "SELECT id, nombre, apellido FROM usuarios WHERE id = $1 AND rol = 'docente' AND estado = 'activo' LIMIT 1",
+      [teacherId]
     );
     if (docente.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ error: "Docente no encontrado" });
     }
 
-    const insert = await pool.query(
+    const insert = await client.query(
       `
       INSERT INTO proyectos
         (titulo, descripcion, programa_id, docente_responsable_id, tipo, estado, fecha_inicio, fecha_fin_estimada, horas_totales, semanas)
@@ -2164,16 +3195,16 @@ router.post("/proyectos", async (req, res) => {
       RETURNING id, titulo, tipo, estado, fecha_inicio, fecha_fin_estimada, horas_totales, semanas
       `,
       [
-        titulo,
-        descripcion || "",
+        String(titulo).trim(),
+        String(descripcion || "").trim(),
         prog.rows[0].id,
         docente.rows[0].id,
         tipo,
         estadoProyecto,
-        fechaInicio || new Date().toISOString().slice(0, 10),
-        fechaFin || null,
-        horasTotales != null ? Number(horasTotales) : null,
-        semanas != null ? Number(semanas) : null,
+        startDate,
+        endDate,
+        totalHours,
+        weekCount,
       ]
     );
 
@@ -2199,7 +3230,7 @@ router.post("/proyectos", async (req, res) => {
       }
 
       if (values.length > 0) {
-        await pool.query(
+        await client.query(
           `
           INSERT INTO proyecto_semanas (proyecto_id, numero, fecha_inicio, fecha_fin)
           VALUES ${values.join(", ")}
@@ -2232,7 +3263,7 @@ router.post("/proyectos", async (req, res) => {
       }
 
       if (values.length > 0) {
-        await pool.query(
+        await client.query(
           `
           INSERT INTO proyecto_semanas (proyecto_id, numero, fecha_inicio, fecha_fin)
           VALUES ${values.join(", ")}
@@ -2247,7 +3278,7 @@ router.post("/proyectos", async (req, res) => {
       : null;
 
     if (entregablesIniciales && entregablesIniciales.length > 0) {
-      const semanasRows = await pool.query(
+      const semanasRows = await client.query(
         "SELECT id, numero FROM proyecto_semanas WHERE proyecto_id = $1",
         [created.id]
       );
@@ -2277,7 +3308,7 @@ router.post("/proyectos", async (req, res) => {
             horasRaw !== null && horasRaw !== undefined && horasRaw !== ""
               ? Number(horasRaw)
               : null;
-          await pool.query(
+          await client.query(
             `
             INSERT INTO proyecto_entregables (proyecto_semana_id, descripcion, horas)
             VALUES ($1, $2, $3)
@@ -2288,6 +3319,7 @@ router.post("/proyectos", async (req, res) => {
       }
     }
 
+    await client.query("COMMIT");
     res.status(201).json({
       id: created.id,
       name: created.titulo,
@@ -2297,265 +3329,402 @@ router.post("/proyectos", async (req, res) => {
           : tipo === "actividad"
           ? "activity"
           : "project",
-      status: estadoProyecto === "en_ejecucion" ? "active" : "delayed",
+      status:
+        estadoProyecto === "en_ejecucion"
+          ? "active"
+          : estadoProyecto === "finalizado"
+          ? "inactive"
+          : "delayed",
       startDate: created.fecha_inicio,
       endDate: created.fecha_fin_estimada,
       totalHours: created.horas_totales,
       weeks: created.semanas,
     });
   } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
     console.error("Error en /admin/proyectos (POST)", {
       mensaje: (error && error.message) || String(error),
       body: req.body,
     });
     res.status(500).json({ error: "Error interno en creación de proyecto" });
+  } finally {
+    client.release();
   }
 });
 
 router.put("/proyectos/:id", async (req, res) => {
   const proyectoId = Number(req.params.id);
-  const { fechaInicio, fechaFin } = req.body || {};
-  if (!proyectoId) {
+  if (!Number.isInteger(proyectoId) || proyectoId <= 0) {
     return res.status(400).json({ error: "id de proyecto inválido" });
   }
+
+  const body = req.body || {};
+  const client = await pool.connect();
   try {
-    const fields = [];
-    const params = [];
-    let i = 1;
-    if (fechaInicio !== undefined) {
-      fields.push(`fecha_inicio = $${i++}`);
-      params.push(fechaInicio || null);
-    }
-    if (fechaFin !== undefined) {
-      fields.push(`fecha_fin_estimada = $${i++}`);
-      params.push(fechaFin || null);
-    }
-    if (fields.length === 0) {
-      return res.json({ ok: true });
-    }
-    params.push(proyectoId);
-    await pool.query(
-      `UPDATE proyectos SET ${fields.join(", ")} WHERE id = $${i}`,
-      params
+    await client.query("BEGIN");
+    const currentResult = await client.query(
+      "SELECT * FROM proyectos WHERE id = $1 FOR UPDATE",
+      [proyectoId]
     );
-    res.json({ ok: true });
-  } catch (error) {
-    console.error("Error en PUT /admin/proyectos/:id", error);
-    res.status(500).json({ error: "Error interno" });
-  }
-});
+    if (currentResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Iniciativa no encontrada" });
+    }
+    const current = currentResult.rows[0];
 
-router.get("/perfiles-indicador", async (_req, res) => {
-  try {
-    const [perfilesResult, asignacionesResult] = await Promise.all([
-      pool.query(
-        `
-        SELECT
-          id,
-          nombre,
-          num_proyectos,
-          num_actividades,
-          num_convenios_nuevos,
-          num_convenios_dinamizados,
-          (COALESCE(num_convenios_nuevos,0) + COALESCE(num_convenios_dinamizados,0)) AS num_convenios
-        FROM perfiles_indicador
-        ORDER BY nombre
-        `
-      ),
-      pool.query(
-        `
-        SELECT
-          ppi.programa_id,
-          ppi.perfil_id,
-          ppi.semestre,
-          p.nombre AS programa_nombre
-        FROM programa_perfil_indicador ppi
-        JOIN programas p ON p.id = ppi.programa_id
-        ORDER BY p.nombre
-        `
-      ),
+    const titulo = body.titulo === undefined
+      ? current.titulo
+      : String(body.titulo || "").trim();
+    const descripcion = body.descripcion === undefined
+      ? current.descripcion
+      : String(body.descripcion || "").trim();
+    if (!titulo) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "El título es obligatorio" });
+    }
+
+    let programaId = current.programa_id;
+    if (body.programaId !== undefined || body.programa_id !== undefined) {
+      programaId = Number(body.programaId ?? body.programa_id);
+    } else if (body.programaNombre !== undefined) {
+      const byName = await client.query(
+        "SELECT id FROM programas WHERE nombre = $1 LIMIT 1",
+        [String(body.programaNombre || "").trim()]
+      );
+      programaId = byName.rows[0]?.id ?? null;
+    }
+    if (!Number.isInteger(Number(programaId)) || Number(programaId) <= 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Programa no válido" });
+    }
+    const programExists = await client.query("SELECT id FROM programas WHERE id = $1", [
+      programaId,
     ]);
+    if (programExists.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Programa no encontrado" });
+    }
 
-    res.json({
-      perfiles: perfilesResult.rows || [],
-      asignaciones: asignacionesResult.rows || [],
-    });
+    const teacherId = body.docenteId === undefined
+      ? Number(current.docente_responsable_id)
+      : Number(body.docenteId);
+    if (!Number.isInteger(teacherId) || teacherId <= 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Docente responsable no válido" });
+    }
+    const teacherExists = await client.query(
+      "SELECT id FROM usuarios WHERE id = $1 AND rol = 'docente' AND estado = 'activo'",
+      [teacherId]
+    );
+    if (teacherExists.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Docente responsable no encontrado o inactivo" });
+    }
+
+    const tipoVisual = body.tipoVisual;
+    const tipo = tipoVisual === undefined && body.tipo === undefined
+      ? current.tipo
+      : tipoVisual === "agreement" || body.tipo === "convenio"
+      ? "convenio"
+      : tipoVisual === "activity" || body.tipo === "actividad"
+      ? "actividad"
+      : "proyecto";
+    const estado = body.estado === undefined ? current.estado : String(body.estado);
+    if (!["en_ejecucion", "finalizado", "suspendido"].includes(estado)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Estado no válido" });
+    }
+
+    const fechaInicio = body.fechaInicio === undefined
+      ? toDateOnlyISO(current.fecha_inicio)
+      : parseDateOnly(body.fechaInicio);
+    const fechaFin = body.fechaFin === undefined
+      ? toDateOnlyISO(current.fecha_fin_estimada)
+      : body.fechaFin
+      ? parseDateOnly(body.fechaFin)
+      : null;
+    if (!fechaInicio || (body.fechaFin && !fechaFin) || (fechaFin && fechaFin < fechaInicio)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Las fechas de la iniciativa no son válidas" });
+    }
+
+    const semanas = body.semanas === undefined ? Number(current.semanas) : Number(body.semanas);
+    if (!Number.isInteger(semanas) || semanas < 1 || semanas > 53) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "semanas debe ser un entero entre 1 y 53" });
+    }
+    const horasTotales = body.horasTotales === undefined
+      ? current.horas_totales
+      : body.horasTotales === "" || body.horasTotales === null
+      ? null
+      : Number(body.horasTotales);
+    if (horasTotales !== null && (!Number.isFinite(Number(horasTotales)) || Number(horasTotales) < 0)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "horasTotales no es válido" });
+    }
+
+    const scheduleChanged =
+      toDateOnlyISO(current.fecha_inicio) !== fechaInicio || Number(current.semanas) !== semanas;
+    if (scheduleChanged) {
+      const deliverables = await client.query(
+        `
+        SELECT
+          COUNT(pe.id)::int AS total,
+          COUNT(pe.id) FILTER (
+            WHERE COALESCE(pe.completado, FALSE)
+               OR pe.url_evidencia IS NOT NULL
+               OR pe.descripcion_reporte IS NOT NULL
+               OR pe.actividad_reportada IS NOT NULL
+          )::int AS con_avance
+        FROM proyecto_semanas ps
+        LEFT JOIN proyecto_entregables pe ON pe.proyecto_semana_id = ps.id
+        WHERE ps.proyecto_id = $1
+        `,
+        [proyectoId]
+      );
+      const counts = deliverables.rows[0];
+      if (counts.total > 0 && body.forzar_cronograma !== true) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: "Cambiar la fecha inicial o las semanas reconstruirá el cronograma y sus entregables.",
+          requiere_confirmacion: true,
+          resumen: counts,
+        });
+      }
+
+      await client.query("DELETE FROM proyecto_semanas WHERE proyecto_id = $1", [proyectoId]);
+      const start = new Date(`${fechaInicio}T00:00:00Z`);
+      const values = [];
+      const params = [];
+      let index = 1;
+      for (let offset = 0; offset < semanas; offset += 1) {
+        const weekStart = new Date(start);
+        weekStart.setUTCDate(start.getUTCDate() + offset * 7);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setUTCDate(weekStart.getUTCDate() + 6);
+        values.push(`($${index++}, $${index++}, $${index++}, $${index++})`);
+        params.push(
+          proyectoId,
+          offset + 1,
+          weekStart.toISOString().slice(0, 10),
+          weekEnd.toISOString().slice(0, 10)
+        );
+      }
+      await client.query(
+        `
+        INSERT INTO proyecto_semanas (proyecto_id, numero, fecha_inicio, fecha_fin)
+        VALUES ${values.join(", ")}
+        `,
+        params
+      );
+    }
+
+    const updated = await client.query(
+      `
+      UPDATE proyectos
+      SET titulo = $1,
+          descripcion = $2,
+          programa_id = $3,
+          docente_responsable_id = $4,
+          tipo = $5,
+          estado = $6,
+          fecha_inicio = $7,
+          fecha_fin_estimada = $8,
+          horas_totales = $9,
+          semanas = $10
+      WHERE id = $11
+      RETURNING *
+      `,
+      [
+        titulo,
+        descripcion,
+        programaId,
+        teacherId,
+        tipo,
+        estado,
+        fechaInicio,
+        fechaFin,
+        horasTotales,
+        semanas,
+        proyectoId,
+      ]
+    );
+    await client.query("COMMIT");
+    res.json({ ok: true, proyecto: updated.rows[0] });
   } catch (error) {
-    console.error("Error en /admin/perfiles-indicador (GET)", error);
-    res.status(500).json({ error: "Error interno" });
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Error en PUT /admin/proyectos/:id", error);
+    res.status(500).json({ error: "Error interno al actualizar la iniciativa" });
+  } finally {
+    client.release();
   }
 });
 
-router.post("/perfiles-indicador", async (req, res) => {
-  const {
-    nombre,
-    num_proyectos,
-    num_actividades,
-    num_convenios_nuevos,
-    num_convenios_dinamizados,
-    num_convenios,
-  } = req.body || {};
-
-  const nProy = Number(num_proyectos ?? 0);
-  const nAct = Number(num_actividades ?? 0);
-  const nConvNuevos =
-    num_convenios_nuevos !== undefined && num_convenios_nuevos !== null
-      ? Number(num_convenios_nuevos ?? 0)
-      : Number(num_convenios ?? 0);
-  const nConvDinamizados =
-    num_convenios_dinamizados !== undefined && num_convenios_dinamizados !== null
-      ? Number(num_convenios_dinamizados ?? 0)
-      : 0;
-
-  if (!nombre || typeof nombre !== "string" || !nombre.trim()) {
-    return res.status(400).json({ error: "El nombre del perfil es obligatorio." });
+router.delete("/proyectos/:id", async (req, res) => {
+  const proyectoId = Number(req.params.id);
+  const forzar = String(req.query.forzar || "") === "true";
+  if (!Number.isInteger(proyectoId) || proyectoId <= 0) {
+    return res.status(400).json({ error: "id de proyecto inválido" });
   }
-  if (nProy < 0 || nAct < 0 || nConvNuevos < 0 || nConvDinamizados < 0) {
-    return res
-      .status(400)
-      .json({
-        error:
-          "Los números de proyectos, actividades y convenios deben ser mayores o iguales a 0.",
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const project = await client.query(
+      "SELECT id, titulo FROM proyectos WHERE id = $1 FOR UPDATE",
+      [proyectoId]
+    );
+    if (project.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Iniciativa no encontrada" });
+    }
+
+    const related = await client.query(
+      `
+      SELECT
+        COUNT(DISTINCT ps.id)::int AS semanas,
+        COUNT(DISTINCT pe.id)::int AS entregables,
+        COUNT(DISTINCT pe.id) FILTER (
+          WHERE COALESCE(pe.completado, FALSE)
+             OR pe.url_evidencia IS NOT NULL
+             OR pe.descripcion_reporte IS NOT NULL
+             OR pe.actividad_reportada IS NOT NULL
+        )::int AS reportes,
+        COUNT(DISTINCT pd.docente_id)::int AS colaboradores
+      FROM proyectos p
+      LEFT JOIN proyecto_semanas ps ON ps.proyecto_id = p.id
+      LEFT JOIN proyecto_entregables pe ON pe.proyecto_semana_id = ps.id
+      LEFT JOIN proyecto_docentes pd ON pd.proyecto_id = p.id
+      WHERE p.id = $1
+      `,
+      [proyectoId]
+    );
+    const counts = related.rows[0];
+    if (counts.reportes > 0 && !forzar) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "La iniciativa contiene reportes o evidencias. Confirma la eliminación permanente.",
+        requiere_confirmacion: true,
+        resumen: counts,
       });
-  }
+    }
 
+    await client.query("DELETE FROM proyectos WHERE id = $1", [proyectoId]);
+    await client.query("COMMIT");
+    res.json({ ok: true, eliminado: project.rows[0], resumen: counts });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Error en DELETE /admin/proyectos/:id", error);
+    res.status(500).json({ error: "Error interno al eliminar la iniciativa" });
+  } finally {
+    client.release();
+  }
+});
+
+router.get("/escuelas", async (_req, res) => {
   try {
     const result = await pool.query(
       `
-      INSERT INTO perfiles_indicador (
-        nombre,
-        num_proyectos,
-        num_actividades,
-        num_convenios_nuevos,
-        num_convenios_dinamizados
-      )
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING
-        id,
-        nombre,
-        num_proyectos,
-        num_actividades,
-        num_convenios_nuevos,
-        num_convenios_dinamizados,
-        (COALESCE(num_convenios_nuevos,0) + COALESCE(num_convenios_dinamizados,0)) AS num_convenios
-      `,
-      [nombre.trim(), nProy, nAct, nConvNuevos, nConvDinamizados]
+      SELECT
+        e.id,
+        e.nombre,
+        e.codigo,
+        COUNT(p.id)::int AS num_programas
+      FROM escuelas e
+      LEFT JOIN programas p ON p.escuela_id = e.id
+      GROUP BY e.id
+      ORDER BY e.nombre
+      `
     );
+    res.json({ escuelas: result.rows || [] });
+  } catch (error) {
+    console.error("Error en /admin/escuelas (GET)", error);
+    res.status(500).json({ error: "Error interno" });
+  }
+});
 
+router.post("/escuelas", async (req, res) => {
+  const parsed = parseEscuelaInput(req.body);
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+  const { nombre, codigo } = parsed.value;
+  try {
+    const result = await pool.query(
+      `
+      INSERT INTO escuelas (nombre, codigo)
+      VALUES ($1, $2)
+      RETURNING id, nombre, codigo
+      `,
+      [nombre, codigo]
+    );
     res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error("Error en /admin/perfiles-indicador (POST)", {
-      mensaje: (error && error.message) || String(error),
-      body: req.body,
-    });
-    res.status(500).json({ error: "Error interno al crear perfil" });
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Ya existe una escuela con ese nombre o código." });
+    }
+    console.error("Error en /admin/escuelas (POST)", error);
+    res.status(500).json({ error: "Error interno al crear la escuela" });
   }
 });
 
-router.put("/perfiles-indicador/:id", async (req, res) => {
-  const id = Number(req.params.id);
-  const {
-    nombre,
-    num_proyectos,
-    num_actividades,
-    num_convenios_nuevos,
-    num_convenios_dinamizados,
-    num_convenios,
-  } = req.body || {};
-
-  if (!id) {
-    return res.status(400).json({ error: "ID de perfil inválido." });
+router.put("/escuelas/:id", async (req, res) => {
+  const escuelaId = Number(req.params.id);
+  if (!Number.isInteger(escuelaId) || escuelaId <= 0) {
+    return res.status(400).json({ error: "ID de escuela inválido." });
   }
-
-  const nProy = Number(num_proyectos ?? 0);
-  const nAct = Number(num_actividades ?? 0);
-  const nConvNuevos =
-    num_convenios_nuevos !== undefined && num_convenios_nuevos !== null
-      ? Number(num_convenios_nuevos ?? 0)
-      : Number(num_convenios ?? 0);
-  const nConvDinamizados =
-    num_convenios_dinamizados !== undefined && num_convenios_dinamizados !== null
-      ? Number(num_convenios_dinamizados ?? 0)
-      : 0;
-
-  if (!nombre || typeof nombre !== "string" || !nombre.trim()) {
-    return res.status(400).json({ error: "El nombre del perfil es obligatorio." });
+  const parsed = parseEscuelaInput(req.body);
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
   }
-  if (nProy < 0 || nAct < 0 || nConvNuevos < 0 || nConvDinamizados < 0) {
-    return res
-      .status(400)
-      .json({
-        error:
-          "Los números de proyectos, actividades y convenios deben ser mayores o iguales a 0.",
-      });
-  }
-
+  const { nombre, codigo } = parsed.value;
   try {
     const result = await pool.query(
       `
-      UPDATE perfiles_indicador
-      SET nombre = $1,
-          num_proyectos = $2,
-          num_actividades = $3,
-          num_convenios_nuevos = $4,
-          num_convenios_dinamizados = $5
-      WHERE id = $6
-      RETURNING
-        id,
-        nombre,
-        num_proyectos,
-        num_actividades,
-        num_convenios_nuevos,
-        num_convenios_dinamizados,
-        (COALESCE(num_convenios_nuevos,0) + COALESCE(num_convenios_dinamizados,0)) AS num_convenios
+      UPDATE escuelas
+      SET nombre = $1, codigo = $2
+      WHERE id = $3
+      RETURNING id, nombre, codigo
       `,
-      [nombre.trim(), nProy, nAct, nConvNuevos, nConvDinamizados, id]
+      [nombre, codigo, escuelaId]
     );
-
     if (result.rowCount === 0) {
-      return res.status(404).json({ error: "Perfil no encontrado." });
+      return res.status(404).json({ error: "Escuela no encontrada." });
     }
-
     res.json(result.rows[0]);
   } catch (error) {
-    console.error("Error en /admin/perfiles-indicador/:id (PUT)", {
-      mensaje: (error && error.message) || String(error),
-      body: req.body,
-    });
-    res.status(500).json({ error: "Error interno al actualizar perfil" });
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Ya existe una escuela con ese nombre o código." });
+    }
+    console.error("Error en /admin/escuelas/:id (PUT)", error);
+    res.status(500).json({ error: "Error interno al actualizar la escuela" });
   }
 });
 
-router.delete("/perfiles-indicador/:id", async (req, res) => {
-  const id = Number(req.params.id);
-  if (!id) {
-    return res.status(400).json({ error: "ID de perfil inválido." });
+router.delete("/escuelas/:id", async (req, res) => {
+  const escuelaId = Number(req.params.id);
+  if (!Number.isInteger(escuelaId) || escuelaId <= 0) {
+    return res.status(400).json({ error: "ID de escuela inválido." });
   }
-
   try {
-    const asignaciones = await pool.query(
-      `
-      SELECT COUNT(*)::int AS total
-      FROM programa_perfil_indicador
-      WHERE perfil_id = $1
-      `,
-      [id]
+    const refs = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM programas WHERE escuela_id = $1`,
+      [escuelaId]
     );
-
-    const total = asignaciones.rows[0]?.total ?? 0;
-    if (total > 0) {
-      return res.status(409).json({
-        error: "No se puede eliminar el perfil porque tiene programas asignados.",
+    if ((refs.rows[0]?.n || 0) > 0) {
+      return res.status(400).json({
+        error: "No se puede eliminar: hay programas asociados a esta escuela.",
+        usos: refs.rows[0].n,
       });
     }
-
-    await pool.query("DELETE FROM perfiles_indicador WHERE id = $1", [id]);
+    const result = await pool.query(`DELETE FROM escuelas WHERE id = $1 RETURNING id`, [escuelaId]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Escuela no encontrada." });
+    }
     res.status(204).send();
   } catch (error) {
-    console.error("Error en /admin/perfiles-indicador/:id (DELETE)", {
-      mensaje: (error && error.message) || String(error),
-    });
-    res.status(500).json({ error: "Error interno al eliminar perfil" });
+    console.error("Error en /admin/escuelas/:id (DELETE)", error);
+    res.status(500).json({ error: "Error interno al eliminar la escuela" });
   }
 });
 
@@ -2567,16 +3736,10 @@ router.get("/programas", async (_req, res) => {
         p.id,
         p.nombre,
         p.codigo,
-        COALESCE(p.facultad, 'Sin escuela') AS escuela,
-        ppi.perfil_id,
-        ppi.semestre,
-        pi.nombre AS perfil_nombre
+        p.escuela_id,
+        COALESCE(e.nombre, 'Sin escuela') AS escuela
       FROM programas p
-      LEFT JOIN programa_perfil_indicador ppi
-        ON ppi.programa_id = p.id
-       AND ppi.semestre = '2025C'
-      LEFT JOIN perfiles_indicador pi
-        ON pi.id = ppi.perfil_id
+      LEFT JOIN escuelas e ON e.id = p.escuela_id
       ORDER BY escuela, p.nombre
       `
     );
@@ -2588,69 +3751,131 @@ router.get("/programas", async (_req, res) => {
   }
 });
 
-router.put("/programas/:id/perfil", async (req, res) => {
-  const programaId = Number(req.params.id);
-  const { perfil_id, semestre } = req.body || {};
-
-  if (!programaId) {
-    return res.status(400).json({ error: "ID de programa inválido." });
-  }
-  if (!semestre || typeof semestre !== "string" || !semestre.trim()) {
-    return res.status(400).json({ error: "El semestre es obligatorio." });
+router.post("/programas", async (req, res) => {
+  const parsed = parseProgramaInput(req.body);
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
   }
 
+  const { nombre, codigo, escuela_id } = parsed.value;
   try {
-    if (perfil_id === null || perfil_id === undefined) {
-      await pool.query(
-        `
-        DELETE FROM programa_perfil_indicador
-        WHERE programa_id = $1 AND semestre = $2
-        `,
-        [programaId, semestre]
-      );
-      return res.json({ ok: true });
+    const escuela = await pool.query(`SELECT id, nombre FROM escuelas WHERE id = $1`, [escuela_id]);
+    if (escuela.rowCount === 0) {
+      return res.status(400).json({ error: "La escuela indicada no existe." });
     }
-
-    const perfilIdNum = Number(perfil_id);
-    if (!perfilIdNum) {
-      return res.status(400).json({ error: "perfil_id inválido." });
-    }
-
-    await pool.query(
+    const result = await pool.query(
       `
-      INSERT INTO programa_perfil_indicador (programa_id, perfil_id, semestre)
+      INSERT INTO programas (nombre, codigo, escuela_id)
       VALUES ($1, $2, $3)
-      ON CONFLICT (programa_id, semestre)
-      DO UPDATE SET perfil_id = EXCLUDED.perfil_id
+      RETURNING id, nombre, codigo, escuela_id
       `,
-      [programaId, perfilIdNum, semestre]
+      [nombre, codigo, escuela_id]
     );
-
-    res.json({ ok: true });
-  } catch (error) {
-    console.error("Error en /admin/programas/:id/perfil (PUT)", {
-      mensaje: (error && error.message) || String(error),
-      body: req.body,
+    res.status(201).json({
+      ...result.rows[0],
+      escuela: escuela.rows[0].nombre,
     });
-    res.status(500).json({ error: "Error interno al asignar perfil al programa" });
+  } catch (error) {
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Ya existe un programa con ese nombre o código." });
+    }
+    if (error?.code === "23514") {
+      return res.status(400).json({ error: "Los datos del programa no son válidos." });
+    }
+    console.error("Error en /admin/programas (POST)", error);
+    res.status(500).json({ error: "Error interno al crear el programa" });
   }
 });
 
-router.put("/docentes/:id/perfil", async (req, res) => {
-  const docenteId = Number(req.params.id);
-  const { perfil_id } = req.body || {};
-  if (!docenteId) {
-    return res.status(400).json({ error: "id de docente inválido" });
+router.put("/programas/:id", async (req, res) => {
+  const programaId = Number(req.params.id);
+  if (!Number.isInteger(programaId) || programaId <= 0) {
+    return res.status(400).json({ error: "ID de programa inválido." });
   }
+
+  const parsed = parseProgramaInput(req.body);
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+
+  const { nombre, codigo, escuela_id } = parsed.value;
   try {
-    await pool.query(
-      "UPDATE usuarios SET perfil_indicador_id = $1 WHERE id = $2",
-      [perfil_id || null, docenteId]
+    const escuela = await pool.query(`SELECT id, nombre FROM escuelas WHERE id = $1`, [escuela_id]);
+    if (escuela.rowCount === 0) {
+      return res.status(400).json({ error: "La escuela indicada no existe." });
+    }
+    const result = await pool.query(
+      `
+      UPDATE programas
+      SET nombre = $1, codigo = $2, escuela_id = $3
+      WHERE id = $4
+      RETURNING id, nombre, codigo, escuela_id
+      `,
+      [nombre, codigo, escuela_id, programaId]
     );
-    res.json({ ok: true });
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Programa no encontrado." });
+    }
+    res.json({
+      ...result.rows[0],
+      escuela: escuela.rows[0].nombre,
+    });
   } catch (error) {
-    console.error("Error en PUT /admin/docentes/:id/perfil", error);
-    res.status(500).json({ error: "Error interno" });
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Ya existe un programa con ese nombre o código." });
+    }
+    if (error?.code === "23514") {
+      return res.status(400).json({ error: "Los datos del programa no son válidos." });
+    }
+    console.error("Error en /admin/programas/:id (PUT)", error);
+    res.status(500).json({ error: "Error interno al actualizar el programa" });
+  }
+});
+
+router.delete("/programas/:id", async (req, res) => {
+  const programaId = Number(req.params.id);
+  if (!Number.isInteger(programaId) || programaId <= 0) {
+    return res.status(400).json({ error: "ID de programa inválido." });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const programa = await client.query(
+      "SELECT id FROM programas WHERE id = $1 FOR UPDATE",
+      [programaId]
+    );
+    if (programa.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Programa no encontrado." });
+    }
+
+    const referencias = await client.query(
+      `
+      SELECT
+        (SELECT COUNT(*)::int FROM usuarios WHERE programa_id = $1) AS usuarios,
+        (SELECT COUNT(*)::int FROM proyectos WHERE programa_id = $1) AS proyectos
+      `,
+      [programaId]
+    );
+    const counts = referencias.rows[0];
+    if (counts.usuarios > 0 || counts.proyectos > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "No se puede eliminar: el programa tiene usuarios o iniciativas asociados.",
+        referencias: counts,
+      });
+    }
+
+    await client.query("DELETE FROM programas WHERE id = $1", [programaId]);
+    await client.query("COMMIT");
+    res.status(204).send();
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error en /admin/programas/:id (DELETE)", error);
+    res.status(500).json({ error: "Error interno al eliminar el programa" });
+  } finally {
+    client.release();
   }
 });
 
@@ -2675,26 +3900,20 @@ router.get("/docentes/:docenteId/perfil", async (req, res) => {
         u.link_drive,
         u.programa_id,
         u.grupo_matriz_id,
-        u.perfil_indicador_id,
         p.nombre AS programa_nombre,
-        COALESCE(p.facultad, 'Sin escuela') AS escuela_nombre,
+        e.id AS escuela_id,
+        COALESCE(e.nombre, 'Sin escuela') AS escuela_nombre,
         gm.id AS gm_id,
         gm.nombre AS gm_nombre,
         gm.horas_totales AS gm_horas,
         gm.num_proyectos AS gm_num_proyectos,
         gm.num_actividades AS gm_num_actividades,
         gm.num_convenios_nuevos AS gm_num_convenios_nuevos,
-        gm.num_convenios_dinamizados AS gm_num_convenios_dinamizados,
-        pi.id AS pi_id,
-        pi.nombre AS pi_nombre,
-        pi.num_proyectos AS pi_num_proyectos,
-        pi.num_actividades AS pi_num_actividades,
-        pi.num_convenios_nuevos AS pi_num_convenios_nuevos,
-        pi.num_convenios_dinamizados AS pi_num_convenios_dinamizados
+        gm.num_convenios_dinamizados AS gm_num_convenios_dinamizados
       FROM usuarios u
       LEFT JOIN programas p ON p.id = u.programa_id
+      LEFT JOIN escuelas e ON e.id = p.escuela_id
       LEFT JOIN grupos_matriz gm ON gm.id = u.grupo_matriz_id
-      LEFT JOIN perfiles_indicador pi ON pi.id = u.perfil_indicador_id
       WHERE u.id = $1 AND u.rol = 'docente'
       `,
       [docenteId]
@@ -2721,8 +3940,14 @@ router.get("/docentes/:docenteId/perfil", async (req, res) => {
       JOIN proyectos p ON p.id = s.proyecto_id
       WHERE COALESCE(e.completado, false) = true
         AND (
-          p.docente_responsable_id = $1
-          OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
+          e.docente_id = $1
+          OR (
+            e.docente_id IS NULL
+            AND (
+              p.docente_responsable_id = $1
+              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
+            )
+          )
         )
       `,
       [docenteId]
@@ -2745,7 +3970,7 @@ router.get("/docentes/:docenteId/perfil", async (req, res) => {
         nombre: row.programa_nombre || "Sin programa",
       },
       escuela: {
-        id: null,
+        id: row.escuela_id ?? null,
         nombre: row.escuela_nombre || "Sin escuela",
       },
       grupo_matriz:
@@ -2760,16 +3985,6 @@ router.get("/docentes/:docenteId/perfil", async (req, res) => {
               num_convenios_dinamizados: Number(row.gm_num_convenios_dinamizados ?? 0),
             }
           : null,
-      perfil_indicador: row.pi_id
-        ? {
-            id: row.pi_id,
-            nombre: row.pi_nombre,
-            num_proyectos: Number(row.pi_num_proyectos ?? 0),
-            num_actividades: Number(row.pi_num_actividades ?? 0),
-            num_convenios_nuevos: Number(row.pi_num_convenios_nuevos ?? 0),
-            num_convenios_dinamizados: Number(row.pi_num_convenios_dinamizados ?? 0),
-          }
-        : null,
       stats: {
         total_plantillas: totalPlantillas,
         completados,
@@ -2793,13 +4008,14 @@ router.get("/docentes/:docenteId/matriz-stats", async (req, res) => {
       total_entregables: 0,
       completados: 0,
       porcentaje_semestral: 0,
+      porcentaje_real: 0,
+      porcentaje_esperado: 0,
+      cumplimiento_esperado: 100,
+      exigibles_a_fecha: 0,
+      completados_exigibles: 0,
+      brecha: 0,
     },
-    por_mes: ["Febrero", "Marzo", "Abril", "Mayo"].map((mes) => ({
-      mes,
-      total: 0,
-      completados: 0,
-      porcentaje_mensual: 0,
-    })),
+    por_mes: [],
     por_semana: [],
   });
 
@@ -2817,78 +4033,8 @@ router.get("/docentes/:docenteId/matriz-stats", async (req, res) => {
       return res.json(emptyPayload());
     }
 
-    const baseRes = await pool.query(
-      `
-      SELECT
-        tpl.mes,
-        tpl.semana_numero,
-        COALESCE(pe.completado, false) AS completado
-      ${ADMIN_MATRIZ_PLANTILLA_JOIN}
-      ${ADMIN_MATRIZ_ORDER}
-      `,
-      [docenteId]
-    );
-
-    const rows = baseRes.rows || [];
-    const total = rows.length;
-    const completados = rows.filter((r) => r.completado).length;
-    const porcentaje_semestral = total > 0 ? round1((completados / total) * 100) : 0;
-
-    const mesLabels = ["Febrero", "Marzo", "Abril", "Mayo"];
-    const mesKeyToLabel = {
-      febrero: "Febrero",
-      marzo: "Marzo",
-      abril: "Abril",
-      mayo: "Mayo",
-    };
-
-    const por_mes = mesLabels.map((label) => {
-      const sub = rows.filter(
-        (r) => mesKeyToLabel[String(r.mes || "").toLowerCase()] === label
-      );
-      const t = sub.length;
-      const c = sub.filter((r) => r.completado).length;
-      return {
-        mes: label,
-        total: t,
-        completados: c,
-        porcentaje_mensual: t > 0 ? round1((c / t) * 100) : 0,
-      };
-    });
-
-    const weekNums = [...new Set(rows.map((r) => Number(r.semana_numero)).filter(Boolean))].sort(
-      (a, b) => a - b
-    );
-
-    const por_semana = weekNums.map((w) => {
-      const sub = rows.filter((r) => Number(r.semana_numero) === w);
-      const t = sub.length;
-      const c = sub.filter((r) => r.completado).length;
-      const accDone = rows.filter(
-        (r) => Number(r.semana_numero) <= w && r.completado
-      ).length;
-      const sampleMes = sub[0]?.mes;
-      const mes =
-        mesKeyToLabel[String(sampleMes || "").toLowerCase()] || "Febrero";
-      return {
-        semana_numero: w,
-        mes,
-        total: t,
-        completados: c,
-        porcentaje_semanal: t > 0 ? round1((c / t) * 100) : 0,
-        porcentaje_acumulado: total > 0 ? round1((accDone / total) * 100) : 0,
-      };
-    });
-
-    res.json({
-      resumen: {
-        total_entregables: total,
-        completados,
-        porcentaje_semestral,
-      },
-      por_mes,
-      por_semana,
-    });
+    const items = await loadAdminMatrixItems(docenteId);
+    res.json(buildMatrixStats(items));
   } catch (error) {
     console.error("Error en GET /admin/docentes/:docenteId/matriz-stats", error);
     res.status(500).json({ error: "Error interno" });
@@ -2915,73 +4061,248 @@ router.get("/docentes/:docenteId/matriz", async (req, res) => {
       return res.json({ items: [] });
     }
 
-    const tplRes = await pool.query(
-      `
-      SELECT
-        tpl.id,
-        tpl.numero,
-        tpl.categoria AS categoria_raw,
-        tpl.fase AS fase_raw,
-        tpl.mes,
-        tpl.semana_numero,
-        tpl.entregable,
-        tpl.descripcion_evidencia,
-        COALESCE(pe.horas, tpl.horas) AS horas_effective,
-        (DATE '2026-02-10' + COALESCE(tpl.dias_inicio_desde_feb, 0) * INTERVAL '1 day')::date AS fecha_inicio_calculada,
-        (DATE '2026-02-10' + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date AS fecha_fin_calculada,
-        pe.id AS entregable_id,
-        COALESCE(pe.completado, false) AS completado,
-        pe.fecha_real_entrega,
-        pe.url_evidencia,
-        pe.estado_revision,
-        pe.comentario_revision,
-        pe.porcentaje_avance,
-        pe.actividad_reportada
-      ${ADMIN_MATRIZ_PLANTILLA_JOIN}
-      ${ADMIN_MATRIZ_ORDER}
-      `,
-      [docenteId]
-    );
-
-    const monthKeyMap = {
-      febrero: "Febrero",
-      marzo: "Marzo",
-      abril: "Abril",
-      mayo: "Mayo",
-    };
-
-    const items = (tplRes.rows || []).map((row) => {
-      const mesKey = String(row.mes || "").toLowerCase();
-      return {
-        id: Number(row.id),
-        numero: row.numero != null ? Number(row.numero) : 0,
-        categoria: mapCategorySlug(row.categoria_raw, row.fase_raw),
-        fase: row.fase_raw ? String(row.fase_raw).trim() : "",
-        mes: monthKeyMap[mesKey] || row.mes || "",
-        semana_numero: row.semana_numero != null ? Number(row.semana_numero) : 0,
-        entregable: row.entregable,
-        descripcion_evidencia: row.descripcion_evidencia || "",
-        horas: row.horas_effective != null ? Number(row.horas_effective) : 0,
-        fecha_inicio_calculada: toDateOnlyISO(row.fecha_inicio_calculada),
-        fecha_fin_calculada: toDateOnlyISO(row.fecha_fin_calculada),
-        entregable_id: row.entregable_id != null ? Number(row.entregable_id) : null,
-        completado: Boolean(row.completado),
-        fecha_real_entrega: toDateOnlyISO(row.fecha_real_entrega),
-        url_evidencia: row.url_evidencia || null,
-        estado_revision: row.estado_revision || null,
-        comentario_revision: row.comentario_revision || null,
-        porcentaje_avance:
-          row.porcentaje_avance != null ? Number(row.porcentaje_avance) : null,
-        actividad_reportada: row.actividad_reportada || null,
-      };
-    });
-
+    const items = await loadAdminMatrixItems(docenteId);
     res.json({ items });
   } catch (error) {
     console.error("Error en GET /admin/docentes/:docenteId/matriz", error);
     res.status(500).json({ error: "Error interno" });
   }
 });
+
+router.get("/docentes/:docenteId/iniciativas", async (req, res) => {
+  const docenteId = Number(req.params.docenteId);
+  if (!Number.isInteger(docenteId) || docenteId <= 0) {
+    return res.status(400).json({ error: "id de docente inválido" });
+  }
+  try {
+    const docente = await pool.query(
+      `SELECT 1 FROM usuarios WHERE id = $1 AND rol = 'docente'`,
+      [docenteId]
+    );
+    if (docente.rowCount === 0) {
+      return res.status(404).json({ error: "Docente no encontrado" });
+    }
+    res.json({ iniciativas: await loadAssignedInitiatives(docenteId) });
+  } catch (error) {
+    console.error("Error en GET /admin/docentes/:docenteId/iniciativas", error);
+    res.status(500).json({ error: "Error interno" });
+  }
+});
+
+router.put(
+  "/docentes/:docenteId/plantillas/:plantillaId/excepcion",
+  async (req, res) => {
+    const docenteId = Number(req.params.docenteId);
+    const plantillaId = Number(req.params.plantillaId);
+    if (
+      !Number.isInteger(docenteId) ||
+      docenteId <= 0 ||
+      !Number.isInteger(plantillaId) ||
+      plantillaId <= 0
+    ) {
+      return res.status(400).json({ error: "Identificadores inválidos" });
+    }
+
+    const body = req.body || {};
+    const motivo = String(body.motivo || "").trim();
+    if (!motivo) {
+      return res.status(400).json({ error: "El motivo de la excepción es obligatorio" });
+    }
+
+    const optionalText = (value) => {
+      if (value == null) return null;
+      const text = String(value).trim();
+      return text || null;
+    };
+    const entregableOverride = optionalText(body.entregable_override);
+    const descripcionOverride = optionalText(body.descripcion_evidencia_override);
+    const fechaInicio = body.fecha_inicio_override
+      ? parseDateOnly(body.fecha_inicio_override)
+      : null;
+    const fechaFin = body.fecha_fin_override
+      ? parseDateOnly(body.fecha_fin_override)
+      : null;
+    if (
+      (body.fecha_inicio_override && !fechaInicio) ||
+      (body.fecha_fin_override && !fechaFin)
+    ) {
+      return res.status(400).json({ error: "Las fechas de la excepción no son válidas" });
+    }
+
+    let enlaceOverride = null;
+    if (body.enlace_referencia_override) {
+      const parsed = normalizeOptionalHttpsUrl(body.enlace_referencia_override);
+      if (parsed.error) return res.status(400).json({ error: parsed.error });
+      enlaceOverride = parsed.value;
+    }
+    const proyectoId =
+      body.proyecto_id == null || body.proyecto_id === ""
+        ? null
+        : Number(body.proyecto_id);
+    if (proyectoId != null && (!Number.isInteger(proyectoId) || proyectoId <= 0)) {
+      return res.status(400).json({ error: "La iniciativa seleccionada no es válida" });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const context = await client.query(
+        `
+        SELECT
+          tpl.semana_numero,
+          (sem.fecha_inicio + COALESCE(tpl.dias_inicio_desde_feb, 0) * INTERVAL '1 day')::date AS fecha_inicio_base,
+          (sem.fecha_inicio + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date AS fecha_fin_base
+        FROM plantilla_entregables tpl
+        INNER JOIN grupos_matriz gm ON gm.id = tpl.grupo_id
+        INNER JOIN semestres sem ON sem.codigo = gm.semestre
+        INNER JOIN usuarios u
+          ON u.id = $1 AND u.rol = 'docente' AND u.grupo_matriz_id = tpl.grupo_id
+        WHERE tpl.id = $2
+        FOR UPDATE OF tpl
+        `,
+        [docenteId, plantillaId]
+      );
+      if (context.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          error: "El entregable no pertenece al grupo matriz de este docente",
+        });
+      }
+      const base = context.rows[0];
+      const effectiveStart = fechaInicio || toDateOnlyISO(base.fecha_inicio_base);
+      const effectiveEnd = fechaFin || toDateOnlyISO(base.fecha_fin_base);
+      if (effectiveStart && effectiveEnd && effectiveEnd < effectiveStart) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "La fecha límite no puede ser anterior a la fecha de inicio",
+        });
+      }
+
+      let targetWeekId = null;
+      if (proyectoId != null) {
+        const assigned = await client.query(
+          `
+          SELECT ps.id AS semana_id
+          FROM proyectos p
+          INNER JOIN proyecto_semanas ps
+            ON ps.proyecto_id = p.id AND ps.numero = $3
+          WHERE p.id = $1
+            AND (
+              p.docente_responsable_id = $2
+              OR p.id IN (
+                SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2
+              )
+            )
+          `,
+          [proyectoId, docenteId, Number(base.semana_numero)]
+        );
+        if (assigned.rowCount === 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error:
+              "La iniciativa no está asignada al docente o no tiene configurada esa semana",
+          });
+        }
+        targetWeekId = Number(assigned.rows[0].semana_id);
+      }
+
+      const saved = await client.query(
+        `
+        INSERT INTO docente_entregable_excepciones (
+          docente_id,
+          plantilla_id,
+          entregable_override,
+          descripcion_evidencia_override,
+          enlace_referencia_override,
+          fecha_inicio_override,
+          fecha_fin_override,
+          proyecto_id,
+          motivo,
+          creado_por
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (docente_id, plantilla_id)
+        DO UPDATE SET
+          entregable_override = EXCLUDED.entregable_override,
+          descripcion_evidencia_override = EXCLUDED.descripcion_evidencia_override,
+          enlace_referencia_override = EXCLUDED.enlace_referencia_override,
+          fecha_inicio_override = EXCLUDED.fecha_inicio_override,
+          fecha_fin_override = EXCLUDED.fecha_fin_override,
+          proyecto_id = EXCLUDED.proyecto_id,
+          motivo = EXCLUDED.motivo,
+          actualizado_en = CURRENT_TIMESTAMP
+        RETURNING *
+        `,
+        [
+          docenteId,
+          plantillaId,
+          entregableOverride,
+          descripcionOverride,
+          enlaceOverride,
+          fechaInicio,
+          fechaFin,
+          proyectoId,
+          motivo,
+          Number(req.user?.id) || null,
+        ]
+      );
+
+      if (targetWeekId != null) {
+        await client.query(
+          `
+          UPDATE proyecto_entregables
+          SET proyecto_semana_id = $1
+          WHERE docente_id = $2 AND plantilla_id = $3
+          `,
+          [targetWeekId, docenteId, plantillaId]
+        );
+      }
+
+      await client.query("COMMIT");
+      res.json({ excepcion: saved.rows[0] });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      console.error(
+        "Error en PUT /admin/docentes/:docenteId/plantillas/:plantillaId/excepcion",
+        error
+      );
+      res.status(500).json({ error: "Error interno" });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+router.delete(
+  "/docentes/:docenteId/plantillas/:plantillaId/excepcion",
+  async (req, res) => {
+    const docenteId = Number(req.params.docenteId);
+    const plantillaId = Number(req.params.plantillaId);
+    if (!Number.isInteger(docenteId) || !Number.isInteger(plantillaId)) {
+      return res.status(400).json({ error: "Identificadores inválidos" });
+    }
+    try {
+      const result = await pool.query(
+        `
+        DELETE FROM docente_entregable_excepciones
+        WHERE docente_id = $1 AND plantilla_id = $2
+        RETURNING id
+        `,
+        [docenteId, plantillaId]
+      );
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: "La excepción no existe" });
+      }
+      res.json({ ok: true });
+    } catch (error) {
+      console.error(
+        "Error en DELETE /admin/docentes/:docenteId/plantillas/:plantillaId/excepcion",
+        error
+      );
+      res.status(500).json({ error: "Error interno" });
+    }
+  }
+);
 
 router.get("/avance-consolidado", async (req, res) => {
   const semestreQ = req.query.semestre;
@@ -2998,123 +4319,147 @@ router.get("/avance-consolidado", async (req, res) => {
   try {
     const result = await pool.query(
       `
+      WITH base AS (
+        SELECT
+          u.id,
+          CONCAT_WS(' ', u.nombre, u.apellido) AS nombre,
+          pr.nombre AS programa,
+          u.regional,
+          u.grupo_matriz_id AS grupo_id,
+          gm.nombre AS grupo_nombre,
+          COALESCE(u.tipo_docente, 'ANTIGUO') AS tipo_docente,
+          tpl.id AS plantilla_id,
+          NULLIF(TRIM(tpl.mes), '') AS mes,
+          tpl.semana_numero,
+          pe.id AS entregable_id,
+          COALESCE(pe.completado, false) AS completado,
+          pe.fecha_cargue_evidencia,
+          (
+            tpl.id IS NOT NULL
+            AND COALESCE(
+              dex.fecha_fin_override,
+              (sem.fecha_inicio + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date
+            ) <= CURRENT_DATE
+          ) AS exigible,
+          (
+            tpl.id IS NOT NULL
+            AND COALESCE(
+              dex.fecha_fin_override,
+              (sem.fecha_inicio + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date
+            ) < CURRENT_DATE
+            AND NOT COALESCE(pe.completado, false)
+          ) AS vencido
+        FROM usuarios u
+        LEFT JOIN programas pr ON pr.id = u.programa_id
+        LEFT JOIN grupos_matriz gm ON gm.id = u.grupo_matriz_id
+        LEFT JOIN semestres sem ON sem.codigo = gm.semestre
+        LEFT JOIN plantilla_entregables tpl ON tpl.grupo_id = u.grupo_matriz_id
+        LEFT JOIN docente_entregable_excepciones dex
+          ON dex.docente_id = u.id AND dex.plantilla_id = tpl.id
+        LEFT JOIN LATERAL (
+          SELECT e.id, e.completado, e.fecha_cargue_evidencia
+          FROM proyecto_entregables e
+          INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
+          INNER JOIN proyectos p ON p.id = s.proyecto_id
+          WHERE s.numero = tpl.semana_numero
+            AND e.docente_id = u.id
+            AND (
+              p.docente_responsable_id = u.id
+              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
+            )
+            AND e.plantilla_id = tpl.id
+          ORDER BY e.id DESC
+          LIMIT 1
+        ) pe ON true
+        WHERE u.rol = 'docente'
+          AND ($1::text IS NULL OR gm.semestre = $1)
+          AND ($2::int IS NULL OR u.grupo_matriz_id = $2)
+      ),
+      summary AS (
+        SELECT
+          id, nombre, programa, regional, grupo_id, grupo_nombre, tipo_docente,
+          COUNT(plantilla_id)::int AS total_global,
+          COUNT(entregable_id) FILTER (WHERE completado)::int AS comp_global,
+          COUNT(plantilla_id) FILTER (WHERE exigible)::int AS exigibles_a_fecha,
+          COUNT(*) FILTER (WHERE vencido)::int AS entregables_vencidos,
+          MAX(fecha_cargue_evidencia) AS ultimo_reporte
+        FROM base
+        GROUP BY id, nombre, programa, regional, grupo_id, grupo_nombre, tipo_docente
+      ),
+      month_stats AS (
+        SELECT
+          id,
+          mes,
+          MIN(semana_numero) AS orden,
+          COUNT(plantilla_id)::int AS total,
+          COUNT(entregable_id) FILTER (WHERE completado)::int AS completados
+        FROM base
+        WHERE plantilla_id IS NOT NULL AND mes IS NOT NULL
+        GROUP BY id, mes
+      )
       SELECT
-        u.id,
-        u.nombre || ' ' || u.apellido AS nombre,
-        pr.nombre AS programa,
-        u.regional,
-        u.grupo_matriz_id AS grupo_id,
-        gm.nombre AS grupo_nombre,
-        COALESCE(u.tipo_docente, 'ANTIGUO') AS tipo_docente,
-        COUNT(tpl.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'febrero') AS total_feb,
-        COUNT(pe.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'febrero' AND COALESCE(pe.completado, false)) AS comp_feb,
-        COUNT(tpl.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'marzo') AS total_mar,
-        COUNT(pe.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'marzo' AND COALESCE(pe.completado, false)) AS comp_mar,
-        COUNT(tpl.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'abril') AS total_abr,
-        COUNT(pe.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'abril' AND COALESCE(pe.completado, false)) AS comp_abr,
-        COUNT(tpl.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'mayo') AS total_may,
-        COUNT(pe.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'mayo' AND COALESCE(pe.completado, false)) AS comp_may,
-        COUNT(tpl.id) AS total_global,
-        COUNT(pe.id) FILTER (WHERE COALESCE(pe.completado, false)) AS comp_global,
-        MAX(pe.fecha_completado) AS ultimo_reporte
-      FROM usuarios u
-      LEFT JOIN programas pr ON pr.id = u.programa_id
-      LEFT JOIN grupos_matriz gm ON gm.id = u.grupo_matriz_id
-      LEFT JOIN plantilla_entregables tpl ON tpl.grupo_id = u.grupo_matriz_id
-      LEFT JOIN LATERAL (
-        SELECT e.id, e.completado, e.fecha_completado
-        FROM proyecto_entregables e
-        INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-        INNER JOIN proyectos p ON p.id = s.proyecto_id
-        WHERE s.numero = tpl.semana_numero
-          AND (
-            p.docente_responsable_id = u.id
-            OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-          )
-          AND (
-            TRIM(e.descripcion) = TRIM(tpl.entregable)
-            OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-          )
-        ORDER BY e.id DESC
-        LIMIT 1
-      ) pe ON true
-      WHERE u.rol = 'docente'
-        AND ($1::text IS NULL OR gm.semestre = $1)
-        AND ($2::int IS NULL OR u.grupo_matriz_id = $2)
-      GROUP BY u.id, u.nombre, u.apellido, pr.nombre, u.regional,
-               u.grupo_matriz_id, gm.nombre, u.tipo_docente
-      ORDER BY u.nombre, u.apellido
+        s.*,
+        COALESCE(
+          (
+            SELECT JSONB_AGG(
+              JSONB_BUILD_OBJECT(
+                'mes', m.mes,
+                'total', m.total,
+                'completados', m.completados
+              )
+              ORDER BY m.orden, m.mes
+            )
+            FROM month_stats m
+            WHERE m.id = s.id
+          ),
+          '[]'::jsonb
+        ) AS meses
+      FROM summary s
+      ORDER BY s.nombre
       `,
       [semestre, grupoId != null && !Number.isNaN(grupoId) ? grupoId : null]
     );
 
     const rows = result.rows || [];
-
-    const docentesPayload = [];
-    for (const r of rows) {
-      const gid = r.grupo_id != null ? Number(r.grupo_id) : null;
-      let entregablesVencidos = 0;
-      if (gid != null) {
-        const venR = await pool.query(
-          `
-          SELECT COUNT(*)::int AS n
-          FROM plantilla_entregables tpl
-          WHERE tpl.grupo_id = $1
-            AND tpl.dias_fin_desde_feb IS NOT NULL
-            AND (DATE '2026-02-10' + tpl.dias_fin_desde_feb * INTERVAL '1 day')::date < CURRENT_DATE
-            AND NOT EXISTS (
-              SELECT 1
-              FROM proyecto_entregables e
-              INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-              INNER JOIN proyectos p ON p.id = s.proyecto_id
-              WHERE s.numero = tpl.semana_numero
-                AND (
-                  p.docente_responsable_id = $2
-                  OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
-                )
-                AND (
-                  TRIM(e.descripcion) = TRIM(tpl.entregable)
-                  OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-                )
-                AND COALESCE(e.completado, false) = true
-            )
-          `,
-          [gid, Number(r.id)]
-        );
-        entregablesVencidos = venR.rows[0]?.n ?? 0;
-      }
-
-      const pct = (c, t) => (t > 0 ? round1((c / t) * 100) : 0);
-      const tf = Number(r.total_feb || 0);
-      const cf = Number(r.comp_feb || 0);
-      const tm = Number(r.total_mar || 0);
-      const cm = Number(r.comp_mar || 0);
-      const ta = Number(r.total_abr || 0);
-      const ca = Number(r.comp_abr || 0);
-      const ty = Number(r.total_may || 0);
-      const cy = Number(r.comp_may || 0);
-      const tg = Number(r.total_global || 0);
-      const cg = Number(r.comp_global || 0);
-
-      docentesPayload.push({
+    const meses = [];
+    const docentesPayload = rows.map((r) => {
+      const monthRows = Array.isArray(r.meses) ? r.meses : [];
+      const avancePorMes = monthRows.map((month) => {
+        const mes = String(month.mes || "").trim();
+        if (mes && !meses.includes(mes)) meses.push(mes);
+        const total = Number(month.total || 0);
+        const completados = Number(month.completados || 0);
+        return {
+          mes,
+          completados,
+          total,
+          porcentaje: total > 0 ? round1((completados / total) * 100) : 0,
+        };
+      });
+      const total = Number(r.total_global || 0);
+      const completed = Number(r.comp_global || 0);
+      const due = Number(r.exigibles_a_fecha || 0);
+      const actualPct = total > 0 ? round1((completed / total) * 100) : 0;
+      const expectedPct = total > 0 ? round1((due / total) * 100) : 0;
+      return {
         id: Number(r.id),
         nombre: String(r.nombre || "").trim() || "—",
         programa: r.programa || "—",
         regional: r.regional || "—",
-        grupo_id: gid,
+        grupo_id: r.grupo_id != null ? Number(r.grupo_id) : null,
         grupo_nombre: r.grupo_nombre || "—",
         tipo_docente: r.tipo_docente === "NUEVO" ? "NUEVO" : "ANTIGUO",
-        avance_global: tg > 0 ? round1((cg / tg) * 100) : 0,
-        avance_por_mes: {
-          febrero: { completados: cf, total: tf, porcentaje: pct(cf, tf) },
-          marzo: { completados: cm, total: tm, porcentaje: pct(cm, tm) },
-          abril: { completados: ca, total: ta, porcentaje: pct(ca, ta) },
-          mayo: { completados: cy, total: ty, porcentaje: pct(cy, ty) },
-        },
-        entregables_vencidos: entregablesVencidos,
+        avance_global: actualPct,
+        avance_real: actualPct,
+        avance_esperado: expectedPct,
+        cumplimiento_esperado: due > 0 ? round1((completed / due) * 100) : 100,
+        brecha: round1(actualPct - expectedPct),
+        exigibles_a_fecha: due,
+        avance_por_mes: avancePorMes,
+        entregables_vencidos: Number(r.entregables_vencidos || 0),
         ultimo_reporte: toDateOnlyISO(r.ultimo_reporte),
-      });
-    }
+      };
+    });
 
     const n = docentesPayload.length;
     const avg = (arr) =>
@@ -3123,16 +4468,16 @@ router.get("/avance-consolidado", async (req, res) => {
     const promedio_global =
       n > 0 ? round1(docentesPayload.reduce((s, d) => s + d.avance_global, 0) / n) : 0;
 
-    const mesKeys = ["febrero", "marzo", "abril", "mayo"];
-    const por_mes = {};
-    for (const mk of mesKeys) {
+    const por_mes = meses.map((mes) => {
       const vals = docentesPayload
-        .filter((d) => d.grupo_id != null && d.avance_por_mes[mk].total > 0)
-        .map((d) => d.avance_por_mes[mk].porcentaje);
-      por_mes[mk] = avg(vals);
-    }
+        .map((d) => d.avance_por_mes.find((month) => month.mes === mes))
+        .filter((month) => month && month.total > 0)
+        .map((month) => month.porcentaje);
+      return { mes, porcentaje: avg(vals) };
+    });
 
     res.json({
+      meses,
       docentes: docentesPayload,
       totales: {
         docentes: n,
@@ -3154,9 +4499,15 @@ router.get("/grupos-matriz/:grupoId/plantillas", async (req, res) => {
   try {
     const r = await pool.query(
       `
-      SELECT * FROM plantilla_entregables
-      WHERE grupo_id = $1
-      ORDER BY semana_numero ASC NULLS LAST, numero ASC NULLS LAST
+      SELECT
+        tpl.*,
+        (sem.fecha_inicio + COALESCE(tpl.dias_inicio_desde_feb, 0) * INTERVAL '1 day')::date AS fecha_inicio_calculada,
+        (sem.fecha_inicio + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date AS fecha_fin_calculada
+      FROM plantilla_entregables tpl
+      INNER JOIN grupos_matriz gm ON gm.id = tpl.grupo_id
+      INNER JOIN semestres sem ON sem.codigo = gm.semestre
+      WHERE tpl.grupo_id = $1
+      ORDER BY fecha_inicio_calculada ASC NULLS LAST, tpl.numero ASC NULLS LAST
       `,
       [grupoId]
     );
@@ -3182,10 +4533,17 @@ router.post("/grupos-matriz/:grupoId/plantillas", async (req, res) => {
     semana_numero,
     entregable,
     descripcion_evidencia,
+    enlace_referencia,
     horas,
     dias_inicio_desde_feb,
     dias_fin_desde_feb,
+    fecha_inicio,
+    fecha_fin,
   } = b;
+
+  const hasExactDates = fecha_inicio != null || fecha_fin != null;
+  const exactStart = hasExactDates ? parseDateOnly(fecha_inicio) : null;
+  const exactEnd = hasExactDates ? parseDateOnly(fecha_fin) : null;
 
   if (
     numero == null ||
@@ -3195,26 +4553,49 @@ router.post("/grupos-matriz/:grupoId/plantillas", async (req, res) => {
     semana_numero == null ||
     !entregable ||
     horas == null ||
-    dias_inicio_desde_feb == null ||
-    dias_fin_desde_feb == null
+    (!hasExactDates &&
+      (dias_inicio_desde_feb == null || dias_fin_desde_feb == null)) ||
+    (hasExactDates && (!exactStart || !exactEnd || exactEnd < exactStart))
   ) {
     return res.status(400).json({ error: "Faltan campos obligatorios para la plantilla" });
   }
 
   try {
-    const ex = await pool.query(`SELECT id FROM grupos_matriz WHERE id = $1`, [grupoId]);
+    const parsedLink = normalizeOptionalHttpsUrl(enlace_referencia);
+    if (parsedLink.error) {
+      return res.status(400).json({ error: parsedLink.error });
+    }
+    const ex = await pool.query(
+      `
+      SELECT gm.id, sem.fecha_inicio
+      FROM grupos_matriz gm
+      INNER JOIN semestres sem ON sem.codigo = gm.semestre
+      WHERE gm.id = $1
+      `,
+      [grupoId]
+    );
     if (ex.rowCount === 0) {
       return res.status(404).json({ error: "Grupo no encontrado" });
+    }
+
+    const startOffset = hasExactDates
+      ? daysBetweenDateOnly(toDateOnlyISO(ex.rows[0].fecha_inicio), exactStart)
+      : Number(dias_inicio_desde_feb);
+    const endOffset = hasExactDates
+      ? daysBetweenDateOnly(toDateOnlyISO(ex.rows[0].fecha_inicio), exactEnd)
+      : Number(dias_fin_desde_feb);
+    if (!Number.isInteger(startOffset) || !Number.isInteger(endOffset)) {
+      return res.status(400).json({ error: "No fue posible calcular las fechas" });
     }
 
     const ins = await pool.query(
       `
       INSERT INTO plantilla_entregables (
         grupo_id, numero, categoria, fase, mes, semana_numero,
-        entregable, descripcion_evidencia, horas,
+        entregable, descripcion_evidencia, enlace_referencia, horas,
         dias_inicio_desde_feb, dias_fin_desde_feb
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING *
       `,
       [
@@ -3226,9 +4607,10 @@ router.post("/grupos-matriz/:grupoId/plantillas", async (req, res) => {
         Number(semana_numero),
         String(entregable),
         descripcion_evidencia != null ? String(descripcion_evidencia) : "",
+        parsedLink.value,
         Number(horas),
-        Number(dias_inicio_desde_feb),
-        Number(dias_fin_desde_feb),
+        startOffset,
+        endOffset,
       ]
     );
     res.status(201).json({ plantilla: ins.rows[0] });
@@ -3238,11 +4620,200 @@ router.post("/grupos-matriz/:grupoId/plantillas", async (req, res) => {
   }
 });
 
+router.post("/plantillas/actualizacion-masiva/preview", async (req, res) => {
+  const plantillaId = Number(req.body?.plantilla_id);
+  if (!Number.isInteger(plantillaId) || plantillaId <= 0) {
+    return res.status(400).json({ error: "plantilla_id es obligatorio" });
+  }
+  try {
+    const result = await pool.query(
+      `
+      WITH source AS (
+        SELECT
+          gm.semestre,
+          LOWER(REGEXP_REPLACE(TRIM(tpl.entregable), '\\s+', ' ', 'g')) AS clave
+        FROM plantilla_entregables tpl
+        INNER JOIN grupos_matriz gm ON gm.id = tpl.grupo_id
+        WHERE tpl.id = $1
+      )
+      SELECT
+        tpl.id AS plantilla_id,
+        tpl.grupo_id,
+        gm.nombre AS grupo_nombre,
+        gm.semestre,
+        tpl.entregable,
+        tpl.descripcion_evidencia,
+        tpl.enlace_referencia
+      FROM plantilla_entregables tpl
+      INNER JOIN grupos_matriz gm ON gm.id = tpl.grupo_id
+      CROSS JOIN source s
+      WHERE gm.semestre = s.semestre
+        AND LOWER(REGEXP_REPLACE(TRIM(tpl.entregable), '\\s+', ' ', 'g')) = s.clave
+      ORDER BY gm.nombre, tpl.id
+      `,
+      [plantillaId]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Plantilla no encontrada" });
+    }
+    const groups = new Set(result.rows.map((row) => Number(row.grupo_id)));
+    res.json({
+      semestre: result.rows[0].semestre,
+      entregable_clave: result.rows[0].entregable,
+      plantillas_afectadas: result.rowCount,
+      grupos_afectados: groups.size,
+      coincidencias: result.rows,
+    });
+  } catch (error) {
+    console.error("Error en POST /admin/plantillas/actualizacion-masiva/preview", error);
+    res.status(500).json({ error: "Error interno" });
+  }
+});
+
+router.put("/plantillas/actualizacion-masiva", async (req, res) => {
+  const plantillaId = Number(req.body?.plantilla_id);
+  const hasDescription = Object.prototype.hasOwnProperty.call(
+    req.body || {},
+    "descripcion_evidencia"
+  );
+  const hasLink = Object.prototype.hasOwnProperty.call(
+    req.body || {},
+    "enlace_referencia"
+  );
+  if (!Number.isInteger(plantillaId) || plantillaId <= 0) {
+    return res.status(400).json({ error: "plantilla_id es obligatorio" });
+  }
+  if (!hasDescription && !hasLink) {
+    return res.status(400).json({
+      error: "Debes indicar la descripción, el enlace o ambos campos",
+    });
+  }
+  const description = hasDescription
+    ? String(req.body.descripcion_evidencia || "").trim()
+    : null;
+  let link = null;
+  if (hasLink) {
+    const parsed = normalizeOptionalHttpsUrl(req.body.enlace_referencia);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    link = parsed.value;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const matches = await client.query(
+      `
+      WITH source AS (
+        SELECT
+          gm.semestre,
+          LOWER(REGEXP_REPLACE(TRIM(tpl.entregable), '\\s+', ' ', 'g')) AS clave,
+          tpl.entregable AS entregable_clave
+        FROM plantilla_entregables tpl
+        INNER JOIN grupos_matriz gm ON gm.id = tpl.grupo_id
+        WHERE tpl.id = $1
+      )
+      SELECT
+        tpl.id,
+        tpl.grupo_id,
+        s.semestre,
+        s.entregable_clave
+      FROM plantilla_entregables tpl
+      INNER JOIN grupos_matriz gm ON gm.id = tpl.grupo_id
+      CROSS JOIN source s
+      WHERE gm.semestre = s.semestre
+        AND LOWER(REGEXP_REPLACE(TRIM(tpl.entregable), '\\s+', ' ', 'g')) = s.clave
+      FOR UPDATE OF tpl
+      `,
+      [plantillaId]
+    );
+    if (matches.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Plantilla no encontrada" });
+    }
+    const ids = matches.rows.map((row) => Number(row.id));
+    await client.query(
+      `
+      UPDATE plantilla_entregables
+      SET descripcion_evidencia = CASE WHEN $2 THEN $3 ELSE descripcion_evidencia END,
+          enlace_referencia = CASE WHEN $4 THEN $5 ELSE enlace_referencia END
+      WHERE id = ANY($1::int[])
+      `,
+      [ids, hasDescription, description, hasLink, link]
+    );
+    const groups = new Set(matches.rows.map((row) => Number(row.grupo_id)));
+    await client.query(
+      `
+      INSERT INTO actualizaciones_masivas_entregables (
+        semestre,
+        entregable_clave,
+        descripcion_evidencia,
+        enlace_referencia,
+        plantillas_afectadas,
+        grupos_afectados,
+        creado_por
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `,
+      [
+        matches.rows[0].semestre,
+        matches.rows[0].entregable_clave,
+        hasDescription ? description : null,
+        hasLink ? link : null,
+        matches.rowCount,
+        groups.size,
+        Number(req.user?.id) || null,
+      ]
+    );
+    await client.query("COMMIT");
+    res.json({
+      ok: true,
+      semestre: matches.rows[0].semestre,
+      plantillas_afectadas: matches.rowCount,
+      grupos_afectados: groups.size,
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error en PUT /admin/plantillas/actualizacion-masiva", error);
+    res.status(500).json({ error: "Error interno" });
+  } finally {
+    client.release();
+  }
+});
+
 router.put("/plantillas/:id", async (req, res) => {
   const id = Number(req.params.id);
   const b = req.body || {};
   if (!id) {
     return res.status(400).json({ error: "id inválido" });
+  }
+
+  if (b.fecha_inicio !== undefined || b.fecha_fin !== undefined) {
+    const exactStart = parseDateOnly(b.fecha_inicio);
+    const exactEnd = parseDateOnly(b.fecha_fin);
+    if (!exactStart || !exactEnd || exactEnd < exactStart) {
+      return res.status(400).json({ error: "El periodo de entrega no es válido" });
+    }
+    try {
+      const context = await pool.query(
+        `
+        SELECT sem.fecha_inicio
+        FROM plantilla_entregables tpl
+        INNER JOIN grupos_matriz gm ON gm.id = tpl.grupo_id
+        INNER JOIN semestres sem ON sem.codigo = gm.semestre
+        WHERE tpl.id = $1
+        `,
+        [id]
+      );
+      if (context.rowCount === 0) {
+        return res.status(404).json({ error: "Plantilla no encontrada" });
+      }
+      const semesterStart = toDateOnlyISO(context.rows[0].fecha_inicio);
+      b.dias_inicio_desde_feb = daysBetweenDateOnly(semesterStart, exactStart);
+      b.dias_fin_desde_feb = daysBetweenDateOnly(semesterStart, exactEnd);
+    } catch (error) {
+      console.error("Error al calcular fechas de plantilla", error);
+      return res.status(500).json({ error: "Error interno" });
+    }
   }
 
   const sets = [];
@@ -3256,6 +4827,13 @@ router.put("/plantillas/:id", async (req, res) => {
   if (b.entregable !== undefined) add("entregable", String(b.entregable));
   if (b.descripcion_evidencia !== undefined) {
     add("descripcion_evidencia", b.descripcion_evidencia == null ? null : String(b.descripcion_evidencia));
+  }
+  if (b.enlace_referencia !== undefined) {
+    const parsedLink = normalizeOptionalHttpsUrl(b.enlace_referencia);
+    if (parsedLink.error) {
+      return res.status(400).json({ error: parsedLink.error });
+    }
+    add("enlace_referencia", parsedLink.value);
   }
   if (b.horas !== undefined) add("horas", b.horas == null ? null : Number(b.horas));
   if (b.semana_numero !== undefined) add("semana_numero", Number(b.semana_numero));
@@ -3299,40 +4877,35 @@ router.put("/plantillas/:id", async (req, res) => {
 
 router.delete("/plantillas/:id", async (req, res) => {
   const id = Number(req.params.id);
+  const forzar = String(req.query.forzar || "").toLowerCase() === "true";
   if (!id) {
     return res.status(400).json({ error: "id inválido" });
   }
 
   try {
-    const tplR = await pool.query(
-      `SELECT entregable FROM plantilla_entregables WHERE id = $1`,
-      [id]
-    );
-    if (tplR.rowCount === 0) {
-      return res.status(404).json({ error: "Plantilla no encontrada" });
-    }
-    const texto = String(tplR.rows[0].entregable || "").trim();
-
     const cnt = await pool.query(
       `
-      SELECT COUNT(*)::int AS n
-      FROM proyecto_entregables
-      WHERE TRIM(descripcion) = TRIM($1::text)
-         OR TRIM(COALESCE(actividad_reportada, '')) = TRIM($1::text)
+      SELECT
+        EXISTS(SELECT 1 FROM plantilla_entregables WHERE id = $1) AS existe,
+        (SELECT COUNT(*)::int FROM proyecto_entregables WHERE plantilla_id = $1) AS usos
       `,
-      [texto]
+      [id]
     );
-    const usos = cnt.rows[0]?.n ?? 0;
-    if (usos > 0) {
-      return res.status(400).json({
+    if (!cnt.rows[0]?.existe) {
+      return res.status(404).json({ error: "Plantilla no encontrada" });
+    }
+    const usos = cnt.rows[0]?.usos ?? 0;
+    if (usos > 0 && !forzar) {
+      return res.status(409).json({
         error:
-          "No se puede eliminar: existen entregables de proyectos vinculados por texto a esta plantilla.",
+          "La plantilla tiene reportes vinculados. Confirme para eliminarla conservando los reportes.",
         usos,
+        requiere_confirmacion: true,
       });
     }
 
     await pool.query(`DELETE FROM plantilla_entregables WHERE id = $1`, [id]);
-    res.json({ ok: true });
+    res.json({ ok: true, reportes_conservados: usos });
   } catch (error) {
     console.error("Error en DELETE /admin/plantillas/:id", error);
     res.status(500).json({ error: "Error interno" });

@@ -15,23 +15,21 @@ import {
   Shield,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useCurrentUser } from "../hooks/useCurrentUser";
-import { API_BASE } from "../config/api";
+import { useCurrentSemester, useCurrentUser } from "../hooks/useCurrentUser";
+import { API_BASE, apiFetch as fetch } from "../config/api";
 import { NotificationPanel } from "./NotificationPanel";
+import { clearSession } from "../config/auth";
+import { notify } from "../lib/notify";
+import { UserAvatar } from "./UserAvatar";
 
 const API_BASE_URL = API_BASE;
 
-function getSemanaActual(): { semana: number; ciclo: string } {
-  const INICIO_SEMESTRE = new Date("2026-02-10");
+function getSemanaActual(fechaInicio: string, numeroSemanas: number): number {
+  const inicioSemestre = new Date(`${fechaInicio}T00:00:00`);
   const hoy = new Date();
-  const diffMs = hoy.getTime() - INICIO_SEMESTRE.getTime();
+  const diffMs = hoy.getTime() - inicioSemestre.getTime();
   const diffDias = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  const semana = Math.max(1, Math.min(16, Math.floor(diffDias / 7) + 1));
-
-  const anio = hoy.getFullYear();
-  const mes = hoy.getMonth() + 1;
-  const periodo = mes <= 5 ? "A" : "B";
-  return { semana, ciclo: `${anio}${periodo}` };
+  return Math.max(1, Math.min(numeroSemanas, Math.floor(diffDias / 7) + 1));
 }
 
 const navItems = [
@@ -46,13 +44,31 @@ const navItems = [
 export function AdminLayout() {
   const navigate = useNavigate();
   const currentUser = useCurrentUser();
+  const currentSemester = useCurrentSemester();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [showNotifs, setShowNotifs] = useState(false);
   const [notifCount, setNotifCount] = useState(0);
   const notifRef = useRef<HTMLDivElement>(null);
 
-  const semanaActual = getSemanaActual();
+  const semanaActual = currentSemester
+    ? getSemanaActual(currentSemester.fecha_inicio, currentSemester.numero_semanas)
+    : null;
+  const displayName = [currentUser?.nombre, currentUser?.apellido].filter(Boolean).join(" ");
+  const initials = [currentUser?.nombre, currentUser?.apellido]
+    .filter(Boolean)
+    .map((part) => part?.[0]?.toUpperCase())
+    .join("") || "--";
+
+  const logout = async () => {
+    try {
+      await fetch(`${API_BASE_URL}/auth/logout`, { method: "POST" });
+    } finally {
+      clearSession();
+      notify.info("Sesión cerrada");
+      navigate("/", { replace: true });
+    }
+  };
 
   useEffect(() => {
     if (!currentUser?.id || currentUser.rol !== "admin") {
@@ -64,7 +80,10 @@ export function AdminLayout() {
       try {
         const res = await fetch(`${API_BASE_URL}/admin/notificaciones`);
         const data = await res.json().catch(() => ({}));
-        const n = Array.isArray(data.notificaciones) ? data.notificaciones.length : 0;
+        const n = Number(
+          data.total_no_leidas ??
+            (Array.isArray(data.notificaciones) ? data.notificaciones.length : 0)
+        );
         if (!cancelled) setNotifCount(n);
       } catch {
         if (!cancelled) setNotifCount(0);
@@ -146,13 +165,13 @@ export function AdminLayout() {
         <div className="px-4 py-4 border-t border-slate-700">
           <div className="flex items-center gap-3 px-3 py-2">
             <div className="w-8 h-8 bg-[#1d4ed8] rounded-full flex items-center justify-center text-white text-xs">
-              AD
+              {initials}
             </div>
             <div>
               <p className="text-white text-xs" style={{ fontWeight: 600 }}>
-                Admin. Sistema
+                {displayName || "Administrador"}
               </p>
-              <p className="text-slate-400 text-xs">admin@universidad.edu</p>
+              <p className="text-slate-400 text-xs truncate max-w-[160px]">{currentUser?.correo || "—"}</p>
             </div>
           </div>
         </div>
@@ -173,7 +192,9 @@ export function AdminLayout() {
               Panel de Administración
             </p>
             <p className="text-gray-500 text-xs">
-              Semana {semanaActual.semana} — Ciclo {semanaActual.ciclo}
+              {currentSemester && semanaActual
+                ? `Semana ${semanaActual} — Ciclo ${currentSemester.codigo}`
+                : "Sin semestre activo configurado"}
             </p>
           </div>
 
@@ -189,7 +210,7 @@ export function AdminLayout() {
                 <Bell className="w-5 h-5" />
                 {notifCount > 0 && (
                   <span className="absolute -top-0.5 -right-0.5 min-w-[1.125rem] h-[1.125rem] px-0.5 flex items-center justify-center bg-red-500 text-white text-[10px] font-bold rounded-full leading-none">
-                    {notifCount > 9 ? "9+" : notifCount}
+                    {notifCount}
                   </span>
                 )}
               </button>
@@ -198,6 +219,7 @@ export function AdminLayout() {
                   rol="admin"
                   userId={currentUser.id}
                   onClose={() => setShowNotifs(false)}
+                  onUnreadCountChange={setNotifCount}
                 />
               )}
             </div>
@@ -207,22 +229,26 @@ export function AdminLayout() {
                 onClick={() => setProfileOpen(!profileOpen)}
                 className="flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-lg hover:bg-gray-100 transition-colors"
               >
-                <div className="w-8 h-8 bg-[#0f172a] rounded-full flex items-center justify-center text-white text-sm">
-                  AD
-                </div>
+                <UserAvatar user={currentUser} className="w-8 h-8 shrink-0 bg-[#0f172a] text-sm" />
                 <span className="hidden sm:block text-sm text-gray-700">
-                  Admin
+                  {currentUser?.nombre || "Admin"}
                 </span>
                 <ChevronDown className="w-4 h-4 text-gray-400" />
               </button>
               {profileOpen && (
                 <div className="absolute right-0 top-full mt-1 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
-                  <button className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 w-full text-left">
-                    <User className="w-4 h-4" /> Mi perfil
+                  <button
+                    onClick={() => {
+                      setProfileOpen(false);
+                      navigate("/admin/sistema");
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 w-full text-left"
+                  >
+                    <User className="w-4 h-4" /> Administrar usuarios
                   </button>
                   <hr className="my-1 border-gray-100" />
                   <button
-                    onClick={() => navigate("/")}
+                    onClick={() => void logout()}
                     className="flex items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 w-full text-left"
                   >
                     <LogOut className="w-4 h-4" /> Cerrar sesión

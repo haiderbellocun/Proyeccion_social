@@ -9,8 +9,9 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { API_BASE } from "../config/api";
+import { API_BASE, apiFetch as fetch } from "../config/api";
 import { useCurrentUser } from "../hooks/useCurrentUser";
+import { notify } from "../lib/notify";
 
 interface MetricasPayload {
   resumen: {
@@ -65,19 +66,17 @@ export default function ReportsMetrics() {
   const session = useCurrentUser();
   const [data, setData] = useState<MetricasPayload | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
       try {
         setLoading(true);
-        setError(null);
         const res = await fetch(`${API_BASE}/admin/metricas`);
         if (!res.ok) throw new Error("Error métricas");
         setData(await res.json());
       } catch (e) {
         console.error(e);
-        setError("No se pudo cargar las métricas. Intente más tarde.");
+        notify.error("No se pudo cargar las métricas. Intente más tarde.");
         setData(null);
       } finally {
         setLoading(false);
@@ -121,10 +120,6 @@ export default function ReportsMetrics() {
 
   return (
     <div className="p-6 space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">{error}</div>
-      )}
-
       <div>
         <h1 className="text-gray-900" style={{ fontWeight: 700 }}>
           Reportes y Métricas
@@ -182,7 +177,7 @@ export default function ReportsMetrics() {
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
         <h3 className="text-gray-800 mb-4" style={{ fontWeight: 600 }}>
-          Reportes por mes (ciclo Feb–May)
+          Reportes por mes del semestre activo
         </h3>
         <ResponsiveContainer width="100%" height={320}>
           <BarChart data={chartPorMes}>

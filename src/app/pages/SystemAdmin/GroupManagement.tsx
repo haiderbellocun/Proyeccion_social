@@ -18,7 +18,10 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
-import { API_BASE } from "../../config/api";
+import { AppSelect } from "../../components/AppSelect";
+import { useConfirmationDialog } from "../../components/ConfirmationDialog";
+import { API_BASE, apiFetch as fetch } from "../../config/api";
+import { notify } from "../../lib/notify";
 
 const API_BASE_URL = API_BASE;
 
@@ -94,10 +97,12 @@ function TipoBadge({ tipo }: { tipo: string | null | undefined }) {
 }
 
 export default function GroupManagement() {
+  const requestConfirmation = useConfirmationDialog();
   const [semestres, setSemestres] = useState<string[]>([]);
   const [semestreActivo, setSemestreActivo] = useState<string>("");
+  const [semestreInstitucionalActivo, setSemestreInstitucionalActivo] = useState<string>("");
+  const [activatingSemester, setActivatingSemester] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [grupos, setGrupos] = useState<IndicadoresGrupoRow[]>([]);
   const [docentes, setDocentes] = useState<DocenteRow[]>([]);
   const [expandedGrupoId, setExpandedGrupoId] = useState<number | null>(null);
@@ -114,18 +119,22 @@ export default function GroupManagement() {
   const [savingEdit, setSavingEdit] = useState(false);
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [grupoForm, setGrupoForm] = useState<GrupoFormState>(() => emptyForm("2026A"));
+  const [grupoForm, setGrupoForm] = useState<GrupoFormState>(() => emptyForm(""));
   const [savingGrupo, setSavingGrupo] = useState(false);
 
   const [editGrupoOpen, setEditGrupoOpen] = useState(false);
   const [grupoEditId, setGrupoEditId] = useState<number | null>(null);
   const [grupoEditNumDocentes, setGrupoEditNumDocentes] = useState(0);
-  const [grupoEditForm, setGrupoEditForm] = useState<GrupoFormState>(emptyForm("2026A"));
+  const [grupoEditForm, setGrupoEditForm] = useState<GrupoFormState>(emptyForm(""));
 
   const [cloneOpen, setCloneOpen] = useState(false);
   const [cloneOrigen, setCloneOrigen] = useState("");
   const [cloneDestino, setCloneDestino] = useState("");
+  const [cloneFechaInicio, setCloneFechaInicio] = useState("");
+  const [cloneFechaFin, setCloneFechaFin] = useState("");
+  const [cloneNumeroSemanas, setCloneNumeroSemanas] = useState("16");
   const [clonePlantillas, setClonePlantillas] = useState(true);
+  const [cloneActivar, setCloneActivar] = useState(false);
   const [clonePreviewCount, setClonePreviewCount] = useState(0);
   const [cloning, setCloning] = useState(false);
 
@@ -134,18 +143,22 @@ export default function GroupManagement() {
     (async () => {
       try {
         const r = await fetch(`${API_BASE_URL}/admin/semestres`);
+        if (!r.ok) throw new Error("No se pudieron cargar los semestres");
         const d = await r.json();
         const list = Array.isArray(d.semestres) ? d.semestres : [];
         if (cancelled) return;
         setSemestres(list);
+        setSemestreInstitucionalActivo(String(d.activo?.codigo || ""));
         setSemestreActivo((prev) => {
           if (prev) return prev;
-          return list[0] ?? "2026A";
+          return d.activo?.codigo ?? list[0] ?? "";
         });
       } catch {
         if (!cancelled) {
           setSemestres([]);
-          setSemestreActivo((prev) => prev || "2026A");
+          setSemestreActivo("");
+          notify.error("No se pudieron cargar los calendarios de semestre.");
+          setLoading(false);
         }
       }
     })();
@@ -156,7 +169,6 @@ export default function GroupManagement() {
 
   const loadAll = useCallback(async () => {
     if (!semestreActivo) return;
-    setError(null);
     setLoading(true);
     try {
       const semQ = encodeURIComponent(semestreActivo);
@@ -186,7 +198,7 @@ export default function GroupManagement() {
       );
     } catch (e) {
       console.error(e);
-      setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+      notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
       setGrupos([]);
       setDocentes([]);
     } finally {
@@ -270,19 +282,29 @@ export default function GroupManagement() {
       );
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        alert(j.error || "No se pudo asignar.");
+        notify.error(j.error || "No se pudo asignar.");
         return;
       }
       setAssignOpen(false);
       await loadAll();
+      notify.success("Docente asignado");
     } catch (err) {
       console.error(err);
-      alert("Error de conexión.");
+      notify.error("Error de conexión.");
     }
   };
 
   const quitarDelGrupo = async (docenteId: number) => {
-    if (!confirm("¿Quitar a este docente del grupo?")) return;
+    const docente = docentes.find((item) => item.id === docenteId);
+    const accepted = await requestConfirmation({
+      title: "Quitar docente del grupo",
+      description: docente
+        ? `${docente.name} quedará sin grupo matriz asignado.`
+        : "El docente quedará sin grupo matriz asignado.",
+      confirmLabel: "Quitar del grupo",
+      tone: "warning",
+    });
+    if (!accepted) return;
     try {
       const res = await fetch(
         `${API_BASE_URL}/admin/docentes/${docenteId}/grupo-matriz`,
@@ -294,13 +316,14 @@ export default function GroupManagement() {
       );
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        alert(j.error || "No se pudo actualizar.");
+        notify.error(j.error || "No se pudo actualizar.");
         return;
       }
       await loadAll();
+      notify.success("Docente quitado del grupo");
     } catch (err) {
       console.error(err);
-      alert("Error de conexión.");
+      notify.error("Error de conexión.");
     }
   };
 
@@ -332,7 +355,7 @@ export default function GroupManagement() {
         );
         if (!r1.ok) {
           const j = await r1.json().catch(() => ({}));
-          alert(j.error || "No se pudo actualizar el tipo.");
+          notify.error(j.error || "No se pudo actualizar el tipo.");
           return;
         }
       }
@@ -348,33 +371,34 @@ export default function GroupManagement() {
         );
         if (!r2.ok) {
           const j = await r2.json().catch(() => ({}));
-          alert(j.error || "No se pudo actualizar contacto.");
+          notify.error(j.error || "No se pudo actualizar contacto.");
           return;
         }
       }
 
       setEditOpen(false);
       await loadAll();
+      notify.success("Cambios guardados");
     } catch (err) {
       console.error(err);
-      alert("Error de conexión.");
+      notify.error("Error de conexión.");
     } finally {
       setSavingEdit(false);
     }
   };
 
   const openCreateGrupo = () => {
-    setGrupoForm(emptyForm(semestreActivo || "2026A"));
+    setGrupoForm(emptyForm(semestreActivo));
     setCreateOpen(true);
   };
 
   const handleCrearGrupo = async () => {
     if (!grupoForm.nombre.trim()) {
-      alert("El nombre es obligatorio.");
+      notify.warning("El nombre es obligatorio.");
       return;
     }
     if (!SEMESTRE_HINT.test(grupoForm.semestre.trim())) {
-      alert("Semestre inválido. Use formato 2026A o 2026B.");
+      notify.warning("Semestre inválido. Use formato 2026A o 2026B.");
       return;
     }
     setSavingGrupo(true);
@@ -396,7 +420,7 @@ export default function GroupManagement() {
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        alert(j.error || "No se pudo crear el grupo.");
+        notify.error(j.error || "No se pudo crear el grupo.");
         return;
       }
       setCreateOpen(false);
@@ -406,9 +430,10 @@ export default function GroupManagement() {
       }
       if (creadoSem === semestreActivo) await loadAll();
       else setSemestreActivo(creadoSem);
+      notify.success("Grupo creado");
     } catch (err) {
       console.error(err);
-      alert("Error de conexión.");
+      notify.error("Error de conexión.");
     } finally {
       setSavingGrupo(false);
     }
@@ -434,11 +459,11 @@ export default function GroupManagement() {
   const handleGuardarGrupo = async () => {
     if (grupoEditId == null) return;
     if (!grupoEditForm.nombre.trim()) {
-      alert("El nombre es obligatorio.");
+      notify.warning("El nombre es obligatorio.");
       return;
     }
     if (!SEMESTRE_HINT.test(grupoEditForm.semestre.trim())) {
-      alert("Semestre inválido.");
+      notify.warning("Semestre inválido.");
       return;
     }
     setSavingGrupo(true);
@@ -460,14 +485,15 @@ export default function GroupManagement() {
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        alert(j.error || "No se pudo guardar.");
+        notify.error(j.error || "No se pudo guardar.");
         return;
       }
       setEditGrupoOpen(false);
       await loadAll();
+      notify.success("Cambios guardados");
     } catch (err) {
       console.error(err);
-      alert("Error de conexión.");
+      notify.error("Error de conexión.");
     } finally {
       setSavingGrupo(false);
     }
@@ -476,12 +502,18 @@ export default function GroupManagement() {
   const eliminarGrupo = async (g: IndicadoresGrupoRow) => {
     const nd = g.num_docentes ?? 0;
     if (nd > 0) {
-      alert(
+      notify.warning(
         `No puedes eliminar este grupo. Primero desasigna los ${nd} docente(s).`
       );
       return;
     }
-    if (!confirm(`¿Eliminar el grupo "${g.nombre}"?`)) return;
+    const accepted = await requestConfirmation({
+      title: "Eliminar grupo matriz",
+      description: `¿Deseas eliminar «${g.nombre}»?`,
+      confirmLabel: "Eliminar",
+      tone: "danger",
+    });
+    if (!accepted) return;
     try {
       let res = await fetch(`${API_BASE_URL}/admin/grupos-matriz/${g.id}`, {
         method: "DELETE",
@@ -489,93 +521,130 @@ export default function GroupManagement() {
       if (res.status === 400) {
         const j = await res.json().catch(() => ({}));
         if (j.tiene_plantillas && typeof j.num_plantillas === "number") {
-          const ok = window.confirm(
-            `Este grupo tiene ${j.num_plantillas} plantillas de entregables.\n¿Eliminar también las plantillas? Esta acción no se puede deshacer.`
-          );
-          if (!ok) return;
+          const forceAccepted = await requestConfirmation({
+            title: "Eliminar grupo y plantillas",
+            description:
+              `Este grupo tiene ${j.num_plantillas} plantillas de entregables. ` +
+              "También se eliminarán y esta acción no se puede deshacer.",
+            confirmLabel: "Eliminar todo",
+            tone: "danger",
+          });
+          if (!forceAccepted) return;
           res = await fetch(
             `${API_BASE_URL}/admin/grupos-matriz/${g.id}?forzar=true`,
             { method: "DELETE" }
           );
         } else {
-          alert(j.error || "No se pudo eliminar.");
+          notify.error(j.error || "No se pudo eliminar.");
           return;
         }
       }
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        alert(j.error || "No se pudo eliminar.");
+        notify.error(j.error || "No se pudo eliminar.");
         return;
       }
       setGrupos((prev) => prev.filter((x) => x.id !== g.id));
       setExpandedGrupoId((exp) => (exp === g.id ? null : exp));
+      notify.success("Grupo eliminado");
     } catch (err) {
       console.error(err);
-      alert("Error de conexión.");
+      notify.error("Error de conexión.");
     }
   };
 
   const openCloneSemestre = () => {
-    setCloneOrigen(semestreActivo || semestres[0] || "2026A");
+    setCloneOrigen(semestreActivo || semestres[0] || "");
     setCloneDestino("");
+    setCloneFechaInicio("");
+    setCloneFechaFin("");
+    setCloneNumeroSemanas("16");
     setClonePlantillas(true);
+    setCloneActivar(false);
     setCloneOpen(true);
   };
 
+  const handleActivarSemestre = async () => {
+    if (!semestreActivo || semestreActivo === semestreInstitucionalActivo) return;
+    const accepted = await requestConfirmation({
+      title: "Activar semestre",
+      description: `${semestreActivo} pasará a ser el semestre activo para toda la aplicación.`,
+      confirmLabel: "Activar",
+      tone: "primary",
+    });
+    if (!accepted) return;
+    setActivatingSemester(true);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/admin/semestres/${encodeURIComponent(semestreActivo)}/activar`,
+        { method: "PUT" }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "No se pudo activar el semestre");
+      setSemestreInstitucionalActivo(semestreActivo);
+      window.location.reload();
+    } catch (cause) {
+      notify.fromError(cause, "No se pudo activar el semestre");
+    } finally {
+      setActivatingSemester(false);
+    }
+  };
+
   const handleClonarSemestre = async () => {
-    const dest = cloneDestino.trim();
+    const dest = cloneDestino.trim().toUpperCase();
     if (!SEMESTRE_HINT.test(dest)) {
-      alert("Semestre destino inválido (ej: 2026B).");
+      notify.warning("Semestre destino inválido (ej: 2026B).");
       return;
     }
     if (!cloneOrigen) {
-      alert("Selecciona semestre origen.");
+      notify.warning("Selecciona semestre origen.");
       return;
     }
     if (dest === cloneOrigen) {
-      alert("El semestre destino debe ser distinto al origen.");
+      notify.warning("El semestre destino debe ser distinto al origen.");
       return;
     }
-    const listaRes = await fetch(
-      `${API_BASE_URL}/admin/grupos-matriz?semestre=${encodeURIComponent(cloneOrigen)}`
-    );
-    const listaData = await listaRes.json();
-    const ids: number[] = (Array.isArray(listaData.grupos) ? listaData.grupos : []).map(
-      (row: { id: number }) => Number(row.id)
-    );
-    if (ids.length === 0) {
-      alert("No hay grupos para clonar en ese semestre.");
+    if (!cloneFechaInicio || !cloneFechaFin || cloneFechaFin < cloneFechaInicio) {
+      notify.warning("Indica un rango de fechas válido para el nuevo semestre.");
+      return;
+    }
+    const weeks = Number(cloneNumeroSemanas);
+    if (!Number.isInteger(weeks) || weeks < 1 || weeks > 53) {
+      notify.warning("El número de semanas debe estar entre 1 y 53.");
       return;
     }
     setCloning(true);
     try {
-      const results = await Promise.all(
-        ids.map((gid) =>
-          fetch(`${API_BASE_URL}/admin/grupos-matriz/${gid}/clonar`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              semestre_destino: dest,
-              clonar_plantillas: clonePlantillas,
-            }),
-          })
-        )
+      const response = await fetch(`${API_BASE_URL}/admin/semestres/clonar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          semestre_origen: cloneOrigen,
+          semestre_destino: dest,
+          fecha_inicio: cloneFechaInicio,
+          fecha_fin: cloneFechaFin,
+          numero_semanas: weeks,
+          clonar_plantillas: clonePlantillas,
+          activar: cloneActivar,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "No se pudo clonar el semestre");
+      notify.success(
+        `Se crearon ${data.grupos_clonados ?? 0} grupos y ${data.plantillas_clonadas ?? 0} plantillas para ${dest}.`
       );
-      const failed = results.find((r) => !r.ok);
-      if (failed) {
-        const j = await failed.json().catch(() => ({}));
-        alert(j.error || "Falló la clonación de al menos un grupo.");
-        return;
-      }
-      alert(`Se crearon ${ids.length} grupos para el semestre ${dest}.`);
       setCloneOpen(false);
       if (!semestres.includes(dest)) {
         setSemestres((prev) => [...new Set([...prev, dest])].sort().reverse());
       }
+      if (cloneActivar) {
+        window.location.reload();
+        return;
+      }
       setSemestreActivo(dest);
-    } catch (err) {
-      console.error(err);
-      alert("Error de conexión.");
+    } catch (cause) {
+      console.error(cause);
+      notify.fromError(cause, "Error de conexión.");
     } finally {
       setCloning(false);
     }
@@ -611,13 +680,19 @@ export default function GroupManagement() {
       </div>
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">Semestre *</label>
-        <input
-          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 disabled:bg-gray-100 disabled:text-gray-600"
+        <AppSelect
+          className="w-full bg-gray-50"
           value={form.semestre}
-          readOnly={options.semestreReadonly}
-          onChange={(e) => setForm((f) => ({ ...f, semestre: e.target.value }))}
+          disabled={options.semestreReadonly}
+          onValueChange={(v) => setForm((f) => ({ ...f, semestre: v }))}
+          options={[
+            ...(!semestres.includes(form.semestre) && form.semestre
+              ? [{ value: form.semestre, label: form.semestre }]
+              : []),
+            ...semestres.map((semester) => ({ value: semester, label: semester })),
+          ]}
         />
-        <p className="text-xs text-gray-500 mt-1">Formato: 2026A, 2026B, 2027A…</p>
+        <p className="text-xs text-gray-500 mt-1">Solo se muestran calendarios registrados.</p>
       </div>
       <div>
         <span className="block text-sm font-medium text-gray-700 mb-2">Tipo docente</span>
@@ -702,37 +777,42 @@ export default function GroupManagement() {
   if (!semestreActivo) {
     return (
       <div className="flex items-center justify-center py-16 text-gray-500 gap-2">
-        <Loader2 className="w-5 h-5 animate-spin" /> Inicializando semestre…
+        {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : null}
+        {loading ? "Inicializando semestre…" : "No hay un semestre configurado."}
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
-          {error}
-        </div>
-      )}
-
       <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-3 bg-white rounded-xl border border-gray-100 shadow-sm p-4">
         <label className="flex items-center gap-2 text-sm text-gray-700 shrink-0">
           <span style={{ fontWeight: 600 }}>Semestre:</span>
-          <select
+          <AppSelect
             value={semestreActivo}
-            onChange={(e) => setSemestreActivo(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 min-w-[100px]"
-          >
-            {semestres.length === 0 && (
-              <option value={semestreActivo}>{semestreActivo}</option>
-            )}
-            {semestres.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+            onValueChange={(v) => setSemestreActivo(v)}
+            className="bg-gray-50 min-w-[100px]"
+            options={
+              semestres.length === 0
+                ? [{ value: semestreActivo, label: semestreActivo }]
+                : semestres.map((s) => ({ value: s, label: s }))
+            }
+          />
         </label>
+        {semestreActivo === semestreInstitucionalActivo ? (
+          <span className="inline-flex items-center justify-center rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
+            Semestre activo
+          </span>
+        ) : (
+          <button
+            type="button"
+            disabled={activatingSemester}
+            onClick={() => void handleActivarSemestre()}
+            className="inline-flex items-center justify-center rounded-lg border border-emerald-200 px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+          >
+            {activatingSemester ? "Activando…" : "Establecer como activo"}
+          </button>
+        )}
         <button
           type="button"
           onClick={openCreateGrupo}
@@ -968,20 +1048,16 @@ export default function GroupManagement() {
                 <label className="block text-sm text-gray-700 mb-1.5 font-medium">
                   Docente
                 </label>
-                <select
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:ring-2 focus:ring-[#1d4ed8]"
-                  value={assignDocenteId}
-                  onChange={(e) =>
-                    setAssignDocenteId(e.target.value ? Number(e.target.value) : "")
-                  }
-                >
-                  <option value="">Seleccionar…</option>
-                  {candidatosAsignar.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name} — {d.program}
-                    </option>
-                  ))}
-                </select>
+                <AppSelect
+                  className="w-full bg-gray-50"
+                  value={assignDocenteId === "" ? "" : String(assignDocenteId)}
+                  onValueChange={(v) => setAssignDocenteId(v === "" ? "" : Number(v))}
+                  placeholder="Seleccionar…"
+                  options={candidatosAsignar.map((d) => ({
+                    value: String(d.id),
+                    label: `${d.name} — ${d.program}`,
+                  }))}
+                />
               </div>
               {selectedCandidato && (
                 <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-gray-700 space-y-1">
@@ -1202,20 +1278,16 @@ export default function GroupManagement() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Semestre origen
                 </label>
-                <select
+                <AppSelect
                   value={cloneOrigen}
-                  onChange={(e) => setCloneOrigen(e.target.value)}
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                >
-                  {semestres.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                  {semestres.length === 0 && (
-                    <option value={semestreActivo}>{semestreActivo}</option>
-                  )}
-                </select>
+                  onValueChange={(v) => setCloneOrigen(v)}
+                  className="w-full bg-gray-50"
+                  options={
+                    semestres.length === 0
+                      ? [{ value: semestreActivo, label: semestreActivo }]
+                      : semestres.map((s) => ({ value: s, label: s }))
+                  }
+                />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1228,6 +1300,44 @@ export default function GroupManagement() {
                   placeholder="2026B"
                 />
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Fecha de inicio
+                  </label>
+                  <input
+                    type="date"
+                    value={cloneFechaInicio}
+                    onChange={(e) => setCloneFechaInicio(e.target.value)}
+                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Fecha de finalización
+                  </label>
+                  <input
+                    type="date"
+                    min={cloneFechaInicio || undefined}
+                    value={cloneFechaFin}
+                    onChange={(e) => setCloneFechaFin(e.target.value)}
+                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Número de semanas
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={53}
+                  value={cloneNumeroSemanas}
+                  onChange={(e) => setCloneNumeroSemanas(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
+                />
+              </div>
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input
                   type="checkbox"
@@ -1235,6 +1345,14 @@ export default function GroupManagement() {
                   onChange={(e) => setClonePlantillas(e.target.checked)}
                 />
                 Copiar también las plantillas de entregables
+              </label>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={cloneActivar}
+                  onChange={(e) => setCloneActivar(e.target.checked)}
+                />
+                Establecer el nuevo semestre como activo
               </label>
               <p className="text-sm text-gray-600 bg-slate-50 rounded-lg px-3 py-2">
                 Se clonarán <strong>{clonePreviewCount}</strong> grupo

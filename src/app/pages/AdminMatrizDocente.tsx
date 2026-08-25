@@ -10,16 +10,20 @@ import {
   Info,
   Calendar,
   Clock,
+  Pencil,
+  RotateCcw,
 } from "lucide-react";
 import {
   categoryConfig,
-  MONTHS,
-  type MonthName,
   type Category,
 } from "../data/matrizConstants";
 import { CategoryTag } from "../components/CategoryTag";
+import { AppSelect } from "../components/AppSelect";
+import { useConfirmationDialog } from "../components/ConfirmationDialog";
 import { useCurrentUser } from "../hooks/useCurrentUser";
-import { API_BASE } from "../config/api";
+import { API_BASE, apiFetch as fetch } from "../config/api";
+import { notify } from "../lib/notify";
+import { toDateOnly } from "../lib/date";
 
 const ALL = "all";
 
@@ -38,12 +42,36 @@ export interface EntregableMatrizAdmin {
   entregable_id: number | null;
   completado: boolean;
   fecha_real_entrega: string | null;
+  fecha_cargue_evidencia: string | null;
   url_evidencia: string | null;
+  enlace_referencia: string | null;
   estado_revision: string | null;
   comentario_revision?: string | null;
   porcentaje_avance: number | null;
   actividad_reportada?: string | null;
+  iniciativa_id: number | null;
+  iniciativa_titulo: string;
+  iniciativa_tipo: string;
+  tiene_excepcion: boolean;
+  motivo_excepcion?: string | null;
+  proyecto_override_id?: number | null;
 }
+
+interface IniciativaAsignada {
+  id: number;
+  titulo: string;
+  tipo: string;
+}
+
+const EMPTY_EXCEPTION_FORM = {
+  entregable_override: "",
+  descripcion_evidencia_override: "",
+  enlace_referencia_override: "",
+  fecha_inicio_override: "",
+  fecha_fin_override: "",
+  proyecto_id: "",
+  motivo: "",
+};
 
 interface PerfilDocente {
   nombre: string;
@@ -153,7 +181,7 @@ function parseTextWithLinks(text: string): React.ReactNode {
 }
 
 const formatDate = (iso: string) =>
-  new Date(iso).toLocaleDateString("es-CO", {
+  new Date(iso.includes("T") ? iso : `${iso}T12:00:00`).toLocaleDateString("es-CO", {
     day: "2-digit",
     month: "short",
     year: "numeric",
@@ -169,6 +197,11 @@ interface MatrizStatsPayload {
     total_entregables: number;
     completados: number;
     porcentaje_semestral: number;
+    porcentaje_real: number;
+    porcentaje_esperado: number;
+    cumplimiento_esperado: number;
+    exigibles_a_fecha: number;
+    brecha: number;
   };
   por_mes: {
     mes: string;
@@ -179,6 +212,7 @@ interface MatrizStatsPayload {
 }
 
 export default function AdminMatrizDocente() {
+  const requestConfirmation = useConfirmationDialog();
   const navigate = useNavigate();
   const { docenteId: docenteIdParam } = useParams<{ docenteId: string }>();
   const docenteId = Number(docenteIdParam);
@@ -188,7 +222,6 @@ export default function AdminMatrizDocente() {
   const [matrizStats, setMatrizStats] = useState<MatrizStatsPayload | null>(null);
   const [perfil, setPerfil] = useState<PerfilDocente | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   const [filterMonth, setFilterMonth] = useState<string>(ALL);
   const [filterCategory, setFilterCategory] = useState<string>(ALL);
@@ -197,6 +230,10 @@ export default function AdminMatrizDocente() {
   const [collapsedPhase, setCollapsedPhase] = useState<Record<string, boolean>>({});
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const [showLegend, setShowLegend] = useState(true);
+  const [iniciativas, setIniciativas] = useState<IniciativaAsignada[]>([]);
+  const [exceptionItem, setExceptionItem] = useState<EntregableMatrizAdmin | null>(null);
+  const [exceptionForm, setExceptionForm] = useState(EMPTY_EXCEPTION_FORM);
+  const [savingException, setSavingException] = useState(false);
 
   const isAdmin = currentUser?.rol === "admin";
 
@@ -210,11 +247,11 @@ export default function AdminMatrizDocente() {
     const load = async () => {
       try {
         setLoading(true);
-        setError(null);
-        const [resPerfil, resMatriz, resStats] = await Promise.all([
+        const [resPerfil, resMatriz, resStats, resIniciativas] = await Promise.all([
           fetch(`${API_BASE}/admin/docentes/${docenteId}/perfil`),
           fetch(`${API_BASE}/admin/docentes/${docenteId}/matriz`),
           fetch(`${API_BASE}/admin/docentes/${docenteId}/matriz-stats`),
+          fetch(`${API_BASE}/admin/docentes/${docenteId}/iniciativas`),
         ]);
         if (!resMatriz.ok) {
           const d = await resMatriz.json().catch(() => ({}));
@@ -243,9 +280,19 @@ export default function AdminMatrizDocente() {
         } else {
           setMatrizStats(null);
         }
+        if (resIniciativas.ok) {
+          const initiativeData = await resIniciativas.json();
+          setIniciativas(
+            Array.isArray(initiativeData.iniciativas)
+              ? initiativeData.iniciativas
+              : []
+          );
+        } else {
+          setIniciativas([]);
+        }
       } catch (e) {
         console.error(e);
-        setError(e instanceof Error ? e.message : "No se pudo cargar la información.");
+        notify.error("No se pudo cargar la matriz del docente. Intente de nuevo más tarde.");
         setEntregables([]);
         setMatrizStats(null);
         setPerfil(null);
@@ -257,39 +304,134 @@ export default function AdminMatrizDocente() {
     void load();
   }, [isAdmin, docenteId]);
 
+  const refreshMatrix = async () => {
+    const [matrixResponse, statsResponse] = await Promise.all([
+      fetch(`${API_BASE}/admin/docentes/${docenteId}/matriz`),
+      fetch(`${API_BASE}/admin/docentes/${docenteId}/matriz-stats`),
+    ]);
+    if (!matrixResponse.ok) {
+      const error = await matrixResponse.json().catch(() => ({}));
+      throw new Error(error.error || "No se pudo actualizar la matriz");
+    }
+    const matrixData = await matrixResponse.json();
+    setEntregables(Array.isArray(matrixData.items) ? matrixData.items : []);
+    if (statsResponse.ok) setMatrizStats(await statsResponse.json());
+  };
+
+  const openExceptionModal = (item: EntregableMatrizAdmin) => {
+    setExceptionItem(item);
+    setExceptionForm({
+      entregable_override: item.entregable,
+      descripcion_evidencia_override: item.descripcion_evidencia,
+      enlace_referencia_override: item.enlace_referencia || "",
+      fecha_inicio_override: toDateOnly(item.fecha_inicio_calculada) || "",
+      fecha_fin_override: toDateOnly(item.fecha_fin_calculada) || "",
+      proyecto_id: String(item.proyecto_override_id ?? item.iniciativa_id ?? ""),
+      motivo: item.motivo_excepcion || "",
+    });
+  };
+
+  const saveException = async () => {
+    if (!exceptionItem) return;
+    if (!exceptionForm.motivo.trim()) {
+      notify.warning("Indica el motivo del ajuste individual.");
+      return;
+    }
+    if (
+      exceptionForm.fecha_inicio_override &&
+      exceptionForm.fecha_fin_override &&
+      exceptionForm.fecha_fin_override < exceptionForm.fecha_inicio_override
+    ) {
+      notify.warning("La fecha límite no puede ser anterior a la fecha de inicio.");
+      return;
+    }
+    setSavingException(true);
+    try {
+      const response = await fetch(
+        `${API_BASE}/admin/docentes/${docenteId}/plantillas/${exceptionItem.id}/excepcion`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...exceptionForm,
+            proyecto_id: exceptionForm.proyecto_id
+              ? Number(exceptionForm.proyecto_id)
+              : null,
+          }),
+        }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        notify.fromError(data, "No se pudo guardar el ajuste individual.");
+        return;
+      }
+      await refreshMatrix();
+      setExceptionItem(null);
+      notify.success("Ajuste individual guardado");
+    } catch (error) {
+      console.error(error);
+      notify.error("Error de conexión al guardar el ajuste.");
+    } finally {
+      setSavingException(false);
+    }
+  };
+
+  const removeException = async (item: EntregableMatrizAdmin) => {
+    const accepted = await requestConfirmation({
+      title: "Restablecer configuración del grupo",
+      description:
+        "Se eliminarán las fechas, el texto y la iniciativa personalizados para este docente. El grupo general no se modificará.",
+      confirmLabel: "Restablecer",
+      tone: "warning",
+    });
+    if (!accepted) return;
+    try {
+      const response = await fetch(
+        `${API_BASE}/admin/docentes/${docenteId}/plantillas/${item.id}/excepcion`,
+        { method: "DELETE" }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        notify.fromError(data, "No se pudo restablecer el entregable.");
+        return;
+      }
+      await refreshMatrix();
+      notify.success("Se restableció la configuración del grupo");
+    } catch (error) {
+      console.error(error);
+      notify.error("Error de conexión al restablecer.");
+    }
+  };
+
   const pctSemestral = Math.round(
     matrizStats?.resumen.porcentaje_semestral ?? perfil?.stats?.porcentaje_avance ?? 0
   );
   const totalTpl = matrizStats?.resumen.total_entregables ?? perfil?.stats?.total_plantillas ?? 0;
   const doneTpl = matrizStats?.resumen.completados ?? perfil?.stats?.completados ?? 0;
-
-  const mesDelCalendario = useMemo(() => {
-    const m = new Date().getMonth() + 1;
-    const map: Record<number, string> = {
-      2: "Febrero",
-      3: "Marzo",
-      4: "Abril",
-      5: "Mayo",
-    };
-    return map[m] ?? "Febrero";
-  }, []);
-
-  const statsMesActual = matrizStats?.por_mes.find((x) => x.mes === mesDelCalendario);
+  const expectedPct = Math.round(matrizStats?.resumen.porcentaje_esperado ?? 0);
+  const expectedCompliance = Math.round(
+    matrizStats?.resumen.cumplimiento_esperado ?? 100
+  );
 
   const vencidosCount = useMemo(
     () => entregables.filter((e) => computeEstatus(e).key === "vencido").length,
     [entregables]
   );
 
+  const availableMonths = useMemo(
+    () => [...new Set(entregables.map((item) => item.mes.trim()).filter(Boolean))],
+    [entregables]
+  );
+
   const vencidosPorMes = useMemo(() => {
     const map: Record<string, number> = {};
-    for (const m of MONTHS) {
+    for (const m of availableMonths) {
       map[m] = entregables.filter(
         (e) => e.mes === m && computeEstatus(e).key === "vencido"
       ).length;
     }
     return map;
-  }, [entregables]);
+  }, [availableMonths, entregables]);
 
   const filtered = useMemo(() => {
     return entregables.filter((e) => {
@@ -303,10 +445,9 @@ export default function AdminMatrizDocente() {
   }, [entregables, filterMonth, filterCategory, filterExcelStatus]);
 
   const groupedByMonthPhase = useMemo(() => {
-    const months: MonthName[] =
-      filterMonth === ALL ? [...MONTHS] : [filterMonth as MonthName];
+    const months = filterMonth === ALL ? availableMonths : [filterMonth];
     const blocks: {
-      month: MonthName;
+      month: string;
       items: EntregableMatrizAdmin[];
       phases: { phase: string; items: EntregableMatrizAdmin[] }[];
     }[] = [];
@@ -332,7 +473,7 @@ export default function AdminMatrizDocente() {
       blocks.push({ month, items, phases });
     }
     return blocks;
-  }, [filtered, filterMonth]);
+  }, [availableMonths, filtered, filterMonth]);
 
   const phaseKey = (month: string, phase: string) => `${month}||${phase}`;
   const toggleCollapse = (month: string) => {
@@ -381,12 +522,6 @@ export default function AdminMatrizDocente() {
 
   return (
     <div className="p-6 space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
-          {error}
-        </div>
-      )}
-
       <div className="flex flex-wrap items-start gap-4 justify-between">
         <div className="space-y-2">
           <button
@@ -481,21 +616,29 @@ export default function AdminMatrizDocente() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
         <div className="bg-white rounded-xl border p-4 shadow-sm">
           <p className="text-xs text-gray-500 uppercase">% Avance semestral</p>
           <p className="text-3xl font-bold text-gray-900 mt-1">{pctSemestral}%</p>
         </div>
         <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Completados / total</p>
-          <p className="text-3xl font-bold text-gray-900 mt-1">
-            {doneTpl} / {totalTpl}
+          <p className="text-xs text-gray-500 uppercase">Avance esperado a hoy</p>
+          <p className="text-3xl font-bold text-amber-600 mt-1">{expectedPct}%</p>
+        </div>
+        <div className="bg-white rounded-xl border p-4 shadow-sm">
+          <p className="text-xs text-gray-500 uppercase">Cumplimiento esperado</p>
+          <p
+            className={`text-3xl font-bold mt-1 ${
+              expectedCompliance >= 100 ? "text-emerald-600" : "text-red-600"
+            }`}
+          >
+            {expectedCompliance}%
           </p>
         </div>
         <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Completados este mes ({mesDelCalendario})</p>
+          <p className="text-xs text-gray-500 uppercase">Completados / total</p>
           <p className="text-3xl font-bold text-gray-900 mt-1">
-            {statsMesActual ? `${statsMesActual.completados} / ${statsMesActual.total}` : "—"}
+            {doneTpl} / {totalTpl}
           </p>
         </div>
         <div className="bg-white rounded-xl border p-4 shadow-sm">
@@ -591,42 +734,36 @@ export default function AdminMatrizDocente() {
         <div className="flex items-center gap-2 text-sm text-gray-500">
           <Filter className="w-4 h-4" /> Filtrar:
         </div>
-        <select
+        <AppSelect
           value={filterMonth}
-          onChange={(e) => setFilterMonth(e.target.value)}
-          className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
-        >
-          <option value={ALL}>Todos los meses</option>
-          {MONTHS.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
-        <select
+          onValueChange={(value) => setFilterMonth(value)}
+          options={[
+            { value: ALL, label: "Todos los meses" },
+            ...availableMonths.map((m) => ({ value: m, label: m })),
+          ]}
+        />
+        <AppSelect
           value={filterCategory}
-          onChange={(e) => setFilterCategory(e.target.value)}
-          className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
-        >
-          <option value={ALL}>Todas las categorías</option>
-          {Object.entries(categoryConfig).map(([key, cfg]) => (
-            <option key={key} value={key}>
-              {cfg.label}
-            </option>
-          ))}
-        </select>
-        <select
+          onValueChange={(value) => setFilterCategory(value)}
+          options={[
+            { value: ALL, label: "Todas las categorías" },
+            ...Object.entries(categoryConfig).map(([key, cfg]) => ({
+              value: key,
+              label: cfg.label,
+            })),
+          ]}
+        />
+        <AppSelect
           value={filterExcelStatus}
-          onChange={(e) => setFilterExcelStatus(e.target.value)}
-          className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
-        >
-          <option value={ALL}>Todos los estados</option>
-          {EXCEL_STATUS_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
+          onValueChange={(value) => setFilterExcelStatus(value)}
+          options={[
+            { value: ALL, label: "Todos los estados" },
+            ...EXCEL_STATUS_OPTIONS.map((opt) => ({
+              value: opt.value,
+              label: opt.label,
+            })),
+          ]}
+        />
         {(filterMonth !== ALL || filterCategory !== ALL || filterExcelStatus !== ALL) && (
           <button
             type="button"
@@ -789,6 +926,19 @@ export default function AdminMatrizDocente() {
                                                     ) : null}
                                                   </div>
                                                 </div>
+                                                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                                                  <span className="font-semibold text-gray-500">
+                                                    Iniciativa:
+                                                  </span>
+                                                  <span className="text-gray-800">
+                                                    {e.iniciativa_titulo}
+                                                  </span>
+                                                  {e.tiene_excepcion && (
+                                                    <span className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800">
+                                                      Excepción individual
+                                                    </span>
+                                                  )}
+                                                </div>
                                                 <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
                                                   <Calendar className="w-3.5 h-3.5 shrink-0" />
                                                   <span>
@@ -819,6 +969,19 @@ export default function AdminMatrizDocente() {
                                                       <span className="font-semibold">Fecha real: </span>
                                                       {e.fecha_real_entrega ? formatDate(e.fecha_real_entrega) : "—"}
                                                     </p>
+                                                    {e.fecha_cargue_evidencia && (
+                                                      <p>
+                                                        <span className="font-semibold">
+                                                          Registro automático: {" "}
+                                                        </span>
+                                                        {new Date(
+                                                          e.fecha_cargue_evidencia
+                                                        ).toLocaleString("es-CO", {
+                                                          dateStyle: "medium",
+                                                          timeStyle: "short",
+                                                        })}
+                                                      </p>
+                                                    )}
                                                     <p>
                                                       <span className="font-semibold">Estado revisión: </span>
                                                       {e.estado_revision ?? "—"}
@@ -840,6 +1003,28 @@ export default function AdminMatrizDocente() {
                                                           Abrir evidencia
                                                         </a>
                                                       </p>
+                                                    )}
+                                                  </div>
+                                                  <div className="mt-4 flex flex-wrap gap-2 border-t border-gray-200 pt-3">
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => openExceptionModal(e)}
+                                                      className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-800"
+                                                    >
+                                                      <Pencil className="h-3.5 w-3.5" />
+                                                      {e.tiene_excepcion
+                                                        ? "Editar excepción"
+                                                        : "Crear excepción"}
+                                                    </button>
+                                                    {e.tiene_excepcion && (
+                                                      <button
+                                                        type="button"
+                                                        onClick={() => void removeException(e)}
+                                                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-50"
+                                                      >
+                                                        <RotateCcw className="h-3.5 w-3.5" />
+                                                        Restablecer grupo
+                                                      </button>
                                                     )}
                                                   </div>
                                                 </div>
@@ -864,8 +1049,161 @@ export default function AdminMatrizDocente() {
         })}
       </div>
 
-      {groupedByMonthPhase.length === 0 && !error && (
+      {groupedByMonthPhase.length === 0 && (
         <p className="text-center text-gray-400 text-sm py-8">No hay entregables con los filtros seleccionados.</p>
+      )}
+
+      {exceptionItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <div className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+            <div className="border-b border-gray-100 px-6 py-4">
+              <h2 className="text-lg font-semibold text-gray-900">
+                Ajuste individual del entregable
+              </h2>
+              <p className="mt-1 text-sm text-gray-500">
+                Solo afectará a {nombreDocente}; la plantilla del grupo permanecerá intacta.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-4 p-6 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <label className="text-xs font-semibold text-gray-600">Entregable</label>
+                <textarea
+                  rows={3}
+                  value={exceptionForm.entregable_override}
+                  onChange={(event) =>
+                    setExceptionForm((form) => ({
+                      ...form,
+                      entregable_override: event.target.value,
+                    }))
+                  }
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-xs font-semibold text-gray-600">
+                  Descripción de la evidencia
+                </label>
+                <textarea
+                  rows={4}
+                  value={exceptionForm.descripcion_evidencia_override}
+                  onChange={(event) =>
+                    setExceptionForm((form) => ({
+                      ...form,
+                      descripcion_evidencia_override: event.target.value,
+                    }))
+                  }
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-xs font-semibold text-gray-600">
+                  Enlace o formulario de referencia
+                </label>
+                <input
+                  type="url"
+                  placeholder="https://"
+                  value={exceptionForm.enlace_referencia_override}
+                  onChange={(event) =>
+                    setExceptionForm((form) => ({
+                      ...form,
+                      enlace_referencia_override: event.target.value,
+                    }))
+                  }
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-600">
+                  Fecha exacta de inicio
+                </label>
+                <input
+                  type="date"
+                  value={exceptionForm.fecha_inicio_override}
+                  onChange={(event) =>
+                    setExceptionForm((form) => ({
+                      ...form,
+                      fecha_inicio_override: event.target.value,
+                    }))
+                  }
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-600">
+                  Fecha límite exacta
+                </label>
+                <input
+                  type="date"
+                  value={exceptionForm.fecha_fin_override}
+                  onChange={(event) =>
+                    setExceptionForm((form) => ({
+                      ...form,
+                      fecha_fin_override: event.target.value,
+                    }))
+                  }
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-xs font-semibold text-gray-600">
+                  Iniciativa asociada
+                </label>
+                <AppSelect
+                  value={exceptionForm.proyecto_id || "__inherit__"}
+                  onValueChange={(value) =>
+                    setExceptionForm((form) => ({
+                      ...form,
+                      proyecto_id: value === "__inherit__" ? "" : value,
+                    }))
+                  }
+                  className="mt-1 w-full"
+                  options={[
+                    { value: "__inherit__", label: "Inferir desde el entregable" },
+                    ...iniciativas.map((initiative) => ({
+                      value: String(initiative.id),
+                      label: `${initiative.titulo} · ${initiative.tipo}`,
+                    })),
+                  ]}
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-xs font-semibold text-gray-600">
+                  Motivo del ajuste <span className="text-red-600">*</span>
+                </label>
+                <textarea
+                  rows={2}
+                  value={exceptionForm.motivo}
+                  onChange={(event) =>
+                    setExceptionForm((form) => ({
+                      ...form,
+                      motivo: event.target.value,
+                    }))
+                  }
+                  placeholder="Ej.: ampliación aprobada por convenio gubernamental"
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-gray-100 px-6 py-4">
+              <button
+                type="button"
+                onClick={() => setExceptionItem(null)}
+                disabled={savingException}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveException()}
+                disabled={savingException}
+                className="rounded-lg bg-blue-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                {savingException ? "Guardando…" : "Guardar ajuste"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

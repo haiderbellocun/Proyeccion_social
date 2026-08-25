@@ -11,9 +11,12 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
+import { AppSelect } from "../components/AppSelect";
 import React from "react";
 import { useCurrentUser } from "../hooks/useCurrentUser";
-import { API_BASE } from "../config/api";
+import { API_BASE, apiFetch as fetch } from "../config/api";
+import { notify } from "../lib/notify";
+import { useLocation } from "react-router";
 
 const API_BASE_URL = API_BASE;
 
@@ -34,7 +37,11 @@ type ReportHistoryRow = {
 
 export default function ReportHistory() {
   const currentUser = useCurrentUser();
-  const [error, setError] = useState<string | null>(null);
+  const location = useLocation();
+  const notificationReportId = useMemo(() => {
+    const parsed = Number(new URLSearchParams(location.search).get("reporte"));
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }, [location.search]);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -63,7 +70,6 @@ export default function ReportHistory() {
     const porcentaje = cambios?.porcentaje_avance ?? reporte.progress;
 
     setGuardandoEdicion(reporte.id);
-    setError(null);
     try {
       const resPut = await fetch(`${API_BASE_URL}/docente/entregables/${reporte.id}`, {
         method: "PUT",
@@ -78,7 +84,7 @@ export default function ReportHistory() {
       });
       if (!resPut.ok) {
         const err = await resPut.json().catch(() => ({}));
-        setError(err.error ?? "No se pudo guardar las correcciones.");
+        notify.fromError(err, "No se pudo guardar las correcciones.");
         return;
       }
 
@@ -88,9 +94,11 @@ export default function ReportHistory() {
       );
       if (!resReenviar.ok) {
         const err = await resReenviar.json().catch(() => ({}));
-        setError(err.error ?? "No se pudo reenviar el reporte.");
+        notify.fromError(err, "No se pudo reenviar el reporte.");
         return;
       }
+
+      notify.success("Reporte reenviado");
 
       setReports((prev) =>
         prev.map((rep) =>
@@ -112,7 +120,7 @@ export default function ReportHistory() {
         return next;
       });
     } catch {
-      setError("Error de conexión. Intenta de nuevo.");
+      notify.error("Error de conexión. Intenta de nuevo.");
     } finally {
       setGuardandoEdicion(null);
     }
@@ -122,7 +130,6 @@ export default function ReportHistory() {
     const load = async () => {
       try {
         setLoading(true);
-        setError(null);
         const docenteId = currentUser?.id ?? null;
         if (!docenteId) {
           setReports([]);
@@ -135,7 +142,7 @@ export default function ReportHistory() {
         setReports(Array.isArray(data.reportes) ? data.reportes : []);
       } catch (err) {
         console.error(err);
-        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
         setReports([]);
       } finally {
         setLoading(false);
@@ -143,6 +150,25 @@ export default function ReportHistory() {
     };
     load();
   }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (
+      loading ||
+      !notificationReportId ||
+      !reports.some((report) => report.id === notificationReportId)
+    ) {
+      return;
+    }
+    setSearch("");
+    setFilterStatus("all");
+    setExpanded(notificationReportId);
+    const timer = window.setTimeout(() => {
+      document
+        .getElementById(`reporte-${notificationReportId}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [loading, notificationReportId, reports]);
 
   const filtered = useMemo(() => {
     return reports.filter((r) => {
@@ -156,11 +182,6 @@ export default function ReportHistory() {
 
   return (
     <div className="p-6 space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-          {error}
-        </div>
-      )}
       <div>
         <h1 className="text-gray-900">Historial de Reportes</h1>
         <p className="text-gray-500 text-sm mt-0.5">
@@ -191,7 +212,7 @@ export default function ReportHistory() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             type="text"
-            placeholder="Buscar por proyecto o actividad..."
+            placeholder="Buscar por iniciativa o entregable..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-white"
@@ -199,16 +220,17 @@ export default function ReportHistory() {
         </div>
         <div className="flex items-center gap-2">
           <Filter className="w-4 h-4 text-gray-400" />
-          <select
+          <AppSelect
             value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value)}
-            className="px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-white"
-          >
-            <option value="all">Todos los estados</option>
-            <option value="approved">Aprobado</option>
-            <option value="pending">Pendiente</option>
-            <option value="review">Requiere corrección</option>
-          </select>
+            onValueChange={(value) => setFilterStatus(value)}
+            options={[
+              { value: "all", label: "Todos los estados" },
+              { value: "approved", label: "Aprobado" },
+              { value: "pending", label: "Pendiente" },
+              { value: "review", label: "Requiere corrección" },
+            ]}
+            className="w-full sm:w-56"
+          />
         </div>
       </div>
 
@@ -220,7 +242,7 @@ export default function ReportHistory() {
               <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
                 <th className="text-left px-6 py-3">Semana / Fecha</th>
                 <th className="text-left px-6 py-3">Proyecto</th>
-                <th className="text-left px-6 py-3">Actividad</th>
+                <th className="text-left px-6 py-3">Entregable</th>
                 <th className="text-left px-6 py-3">Avance</th>
                 <th className="text-left px-6 py-3">Estado</th>
                 <th className="text-left px-6 py-3">Acciones</th>
@@ -237,8 +259,13 @@ export default function ReportHistory() {
                 filtered.map((r) => (
                 <React.Fragment key={r.id}>
                   <tr
+                    id={`reporte-${r.id}`}
                     className={`hover:bg-gray-50 transition-colors ${
                       r.status === "review" ? "border-l-4 border-amber-400" : ""
+                    } ${
+                      r.id === notificationReportId
+                        ? "bg-blue-50 ring-2 ring-inset ring-blue-400"
+                        : ""
                     }`}
                   >
                     <td className="px-6 py-4">
@@ -294,7 +321,7 @@ export default function ReportHistory() {
                             Detalle del reporte
                           </p>
                           <p className="text-sm text-gray-600">
-                            <span style={{ fontWeight: 500 }}>Actividad: </span>
+                            <span style={{ fontWeight: 500 }}>Entregable: </span>
                             {r.activity}
                           </p>
                           {r.comment && (
@@ -365,7 +392,7 @@ export default function ReportHistory() {
 
                               <div className="flex flex-col gap-1">
                                 <label className="text-xs font-medium text-gray-700">
-                                  Descripción de la actividad
+                                  Descripción del reporte
                                 </label>
                                 <textarea
                                   rows={3}

@@ -9,12 +9,29 @@ const { Pool } = pkg;
 const pgPassword = process.env.PGPASSWORD;
 const password = pgPassword !== undefined && pgPassword !== "" ? String(pgPassword) : undefined;
 
+const cloudSqlHost = process.env.INSTANCE_CONNECTION_NAME
+  ? `/cloudsql/${process.env.INSTANCE_CONNECTION_NAME}`
+  : null;
+const ssl = String(process.env.PGSSL || "").toLowerCase() === "true"
+  ? { rejectUnauthorized: false }
+  : undefined;
+
+const connectionConfig = process.env.DATABASE_URL
+  ? { connectionString: process.env.DATABASE_URL, ssl }
+  : {
+      host: cloudSqlHost || process.env.PGHOST || "localhost",
+      port: cloudSqlHost ? undefined : Number(process.env.PGPORT || 5432),
+      database: process.env.PGDATABASE || "proyeccion-social",
+      user: process.env.PGUSER || "postgres",
+      password,
+      ssl: cloudSqlHost ? undefined : ssl,
+    };
+
 export const pool = new Pool({
-  host: process.env.PGHOST || "localhost",
-  port: Number(process.env.PGPORT || 5432),
-  database: process.env.PGDATABASE || "app_proyecion",
-  user: process.env.PGUSER || "postgres",
-  password,
+  ...connectionConfig,
+  max: Number(process.env.PGPOOL_MAX || 10),
+  idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+  connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS || 10000),
 });
 
 export async function testConnection() {

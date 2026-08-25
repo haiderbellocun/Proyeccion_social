@@ -16,8 +16,11 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useCurrentUser } from "../hooks/useCurrentUser";
-import { API_BASE } from "../config/api";
+import { API_BASE, apiFetch as fetch } from "../config/api";
 import { NotificationPanel } from "./NotificationPanel";
+import { clearSession } from "../config/auth";
+import { notify } from "../lib/notify";
+import { UserAvatar } from "./UserAvatar";
 
 const API_BASE_URL = API_BASE;
 
@@ -25,7 +28,7 @@ const navItems = [
   { to: "/docente", label: "Inicio", icon: LayoutDashboard, end: true },
   { to: "/docente/matriz", label: "Matriz de Seguimiento", icon: TableProperties },
   { to: "/docente/proyectos", label: "Mis Iniciativas", icon: FolderKanban },
-  { to: "/docente/reportar", label: "Reportar Avance", icon: FileEdit },
+  { to: "/docente/reportar", label: "Reportar entregable", icon: FileEdit },
   { to: "/docente/evidencias", label: "Evidencias", icon: Paperclip },
   { to: "/docente/historial", label: "Historial", icon: History },
 ];
@@ -39,7 +42,16 @@ export function TeacherLayout() {
   const [notifCount, setNotifCount] = useState(0);
   const notifRef = useRef<HTMLDivElement>(null);
   const [displayName, setDisplayName] = useState<string | null>(null);
-  const [initials, setInitials] = useState<string>("--");
+
+  const logout = async () => {
+    try {
+      await fetch(`${API_BASE_URL}/auth/logout`, { method: "POST" });
+    } finally {
+      clearSession();
+      notify.info("Sesión cerrada");
+      navigate("/", { replace: true });
+    }
+  };
 
   useEffect(() => {
     if (!currentUser?.id || currentUser.rol !== "docente") {
@@ -51,7 +63,10 @@ export function TeacherLayout() {
       try {
         const res = await fetch(`${API_BASE_URL}/docente/${currentUser.id}/notificaciones`);
         const data = await res.json().catch(() => ({}));
-        const n = Array.isArray(data.notificaciones) ? data.notificaciones.length : 0;
+        const n = Number(
+          data.total_no_leidas ??
+            (Array.isArray(data.notificaciones) ? data.notificaciones.length : 0)
+        );
         if (!cancelled) setNotifCount(n);
       } catch {
         if (!cancelled) setNotifCount(0);
@@ -88,14 +103,6 @@ export function TeacherLayout() {
       }
       if (fullName) {
         setDisplayName(fullName);
-        const parts = fullName
-          .split(" ")
-          .filter(Boolean)
-          .slice(0, 2);
-        const init = parts.map((p) => p[0]?.toUpperCase() ?? "").join("");
-        if (init) {
-          setInitials(init);
-        }
       }
     } catch {
       // ignore parse errors
@@ -204,7 +211,7 @@ export function TeacherLayout() {
                 <Bell className="w-5 h-5" />
                 {notifCount > 0 && (
                   <span className="absolute -top-0.5 -right-0.5 min-w-[1.125rem] h-[1.125rem] px-0.5 flex items-center justify-center bg-red-500 text-white text-[10px] font-bold rounded-full leading-none">
-                    {notifCount > 9 ? "9+" : notifCount}
+                    {notifCount}
                   </span>
                 )}
               </button>
@@ -213,6 +220,7 @@ export function TeacherLayout() {
                   rol="docente"
                   userId={currentUser.id}
                   onClose={() => setShowNotifs(false)}
+                  onUnreadCountChange={setNotifCount}
                 />
               )}
             </div>
@@ -222,22 +230,26 @@ export function TeacherLayout() {
                 onClick={() => setProfileOpen(!profileOpen)}
                 className="flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-lg hover:bg-gray-100 transition-colors"
               >
-                <div className="w-8 h-8 bg-[#1e3a8a] rounded-full flex items-center justify-center text-white text-sm">
-                  {initials}
-                </div>
+                <UserAvatar user={currentUser} className="w-8 h-8 shrink-0 text-sm" />
                 <span className="hidden sm:block text-sm text-gray-700">
-                  Docente
+                  {currentUser?.nombre || "Docente"}
                 </span>
                 <ChevronDown className="w-4 h-4 text-gray-400" />
               </button>
               {profileOpen && (
                 <div className="absolute right-0 top-full mt-1 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
-                  <button className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 w-full text-left">
+                  <button
+                    onClick={() => {
+                      setProfileOpen(false);
+                      navigate("/docente/perfil");
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 w-full text-left"
+                  >
                     <User className="w-4 h-4" /> Mi perfil
                   </button>
                   <hr className="my-1 border-gray-100" />
                   <button
-                    onClick={() => navigate("/")}
+                    onClick={() => void logout()}
                     className="flex items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 w-full text-left"
                   >
                     <LogOut className="w-4 h-4" /> Cerrar sesión

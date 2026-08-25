@@ -1,30 +1,35 @@
 import { createBrowserRouter } from "react-router";
-import Login from "./pages/Login";
-import ForgotPassword from "./pages/ForgotPassword";
-import TeacherDashboard from "./pages/TeacherDashboard";
-import MyProjects from "./pages/MyProjects";
-import ProjectDetail from "./pages/ProjectDetail";
-import ReportProgress from "./pages/ReportProgress";
-import Evidences from "./pages/Evidences";
-import ReportHistory from "./pages/ReportHistory";
-import MatrizSeguimiento from "./pages/MatrizSeguimiento";
-import TeacherProfile from "./pages/TeacherProfile";
-import AdminDashboard from "./pages/AdminDashboard";
-import ReportReview from "./pages/ReportReview";
-import ReportsMetrics from "./pages/ReportsMetrics";
-import SystemAdmin from "./pages/SystemAdmin";
-import IndicadoresGrupo from "./pages/IndicadoresGrupo";
-import AdminMatrizDocente from "./pages/AdminMatrizDocente";
-import AvanceConsolidado from "./pages/AvanceConsolidado";
+import { lazy } from "react";
 import { TeacherLayout } from "./components/TeacherLayout";
 import { AdminLayout } from "./components/AdminLayout";
+import { ProtectedRoute } from "./components/ProtectedRoute";
+
+const Login = lazy(() => import("./pages/Login"));
+const TeacherDashboard = lazy(() => import("./pages/TeacherDashboard"));
+const MyProjects = lazy(() => import("./pages/MyProjects"));
+const ProjectDetail = lazy(() => import("./pages/ProjectDetail"));
+const ReportProgress = lazy(() => import("./pages/ReportProgress"));
+const Evidences = lazy(() => import("./pages/Evidences"));
+const ReportHistory = lazy(() => import("./pages/ReportHistory"));
+const MatrizSeguimiento = lazy(() => import("./pages/MatrizSeguimiento"));
+const TeacherProfile = lazy(() => import("./pages/TeacherProfile"));
+const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
+const ReportReview = lazy(() => import("./pages/ReportReview"));
+const ReportsMetrics = lazy(() => import("./pages/ReportsMetrics"));
+const SystemAdmin = lazy(() => import("./pages/SystemAdmin"));
+const IndicadoresGrupo = lazy(() => import("./pages/IndicadoresGrupo"));
+const AdminMatrizDocente = lazy(() => import("./pages/AdminMatrizDocente"));
+const AvanceConsolidado = lazy(() => import("./pages/AvanceConsolidado"));
 
 export const router = createBrowserRouter([
   { path: "/", Component: Login },
-  { path: "/recuperar-contrasena", Component: ForgotPassword },
   {
     path: "/docente",
-    Component: TeacherLayout,
+    element: (
+      <ProtectedRoute role="docente">
+        <TeacherLayout />
+      </ProtectedRoute>
+    ),
     children: [
       { index: true, Component: TeacherDashboard },
       { path: "matriz", Component: MatrizSeguimiento },
@@ -38,7 +43,11 @@ export const router = createBrowserRouter([
   },
   {
     path: "/admin",
-    Component: AdminLayout,
+    element: (
+      <ProtectedRoute role="admin">
+        <AdminLayout />
+      </ProtectedRoute>
+    ),
     children: [
       { index: true, Component: AdminDashboard },
       { path: "revision", Component: ReportReview },

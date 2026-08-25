@@ -20,19 +20,87 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { Badge } from "../components/Badge";
+import { Badge, type BadgeVariant } from "../components/Badge";
 import { StatusBadge } from "../components/StatusBadge";
-import { MONTH_COLORS, type MonthName } from "../data/matrizConstants";
 import { useCurrentUser } from "../hooks/useCurrentUser";
-import { API_BASE } from "../config/api";
+import { API_BASE, apiFetch as fetch } from "../config/api";
+import { notify } from "../lib/notify";
 
 const API_BASE_URL = API_BASE;
+const MONTH_COLOR_CLASSES = [
+  "bg-violet-600",
+  "bg-[#1e3a8a]",
+  "bg-teal-600",
+  "bg-emerald-600",
+  "bg-amber-600",
+  "bg-rose-600",
+];
 
-type StatsByMonth = { month: string; total: number; done: number; pct: number };
-type UpcomingItem = { id: number; proyecto: string; entregable: string; fechaFin: string; semana: number };
-type ActivityRow = { id: number; project: string; activity: string; deadline: string; status: string };
+type DashboardStats = {
+  total: number;
+  completed: number;
+  pct: number;
+  expectedPct: number;
+  compliancePct: number;
+  due: number;
+  gap: number;
+};
+type StatsByMonth = {
+  month: string;
+  total: number;
+  done: number;
+  pct: number;
+  expectedPct: number;
+  active: boolean;
+};
+type StatsByWeek = {
+  semana: number;
+  total: number;
+  done: number;
+  pct: number;
+  expectedPct: number;
+};
+type UpcomingItem = {
+  id: number;
+  iniciativa: string;
+  entregable: string;
+  fechaInicio: string | null;
+  fechaFin: string | null;
+  semana: number;
+};
+type ActivityRow = {
+  id: number;
+  entregableId: number | null;
+  category: string;
+  deliverable: string;
+  initiative: string;
+  initiativeType: string;
+  startDate: string | null;
+  deadline: string | null;
+  status: BadgeVariant;
+  statusLabel: string;
+};
 
-function computeStatusFromDate(fechaFin: string): "no_iniciado" | "semana_en_curso" | "vencido" | "entrega_a_tiempo" {
+const EMPTY_STATS: DashboardStats = {
+  total: 0,
+  completed: 0,
+  pct: 0,
+  expectedPct: 0,
+  compliancePct: 100,
+  due: 0,
+  gap: 0,
+};
+
+const formatDate = (value: string | null) =>
+  value
+    ? new Date(`${value}T12:00:00`).toLocaleDateString("es-CO", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      })
+    : "—";
+
+function computeStatusFromDate(fechaFin: string | null): "no_iniciado" | "semana_en_curso" | "vencido" | "entrega_a_tiempo" {
   if (!fechaFin) return "no_iniciado";
   const fin = new Date(fechaFin);
   const today = new Date();
@@ -49,12 +117,12 @@ export default function TeacherDashboard() {
   const currentUser = useCurrentUser();
   const [docenteId, setDocenteId] = useState<number | null>(null);
   const [projectsCount, setProjectsCount] = useState<number | null>(null);
-  const [stats, setStats] = useState<{ total: number; completed: number; pct: number } | null>(null);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [byMonth, setByMonth] = useState<StatsByMonth[]>([]);
+  const [byWeek, setByWeek] = useState<StatsByWeek[]>([]);
   const [upcoming, setUpcoming] = useState<UpcomingItem[]>([]);
   const [activities, setActivities] = useState<ActivityRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const id = currentUser?.id ?? null;
@@ -62,8 +130,9 @@ export default function TeacherDashboard() {
 
     if (!id) {
       setProjectsCount(0);
-      setStats({ total: 0, completed: 0, pct: 0 });
+      setStats(EMPTY_STATS);
       setByMonth([]);
+      setByWeek([]);
       setUpcoming([]);
       setActivities([]);
       setLoading(false);
@@ -72,7 +141,6 @@ export default function TeacherDashboard() {
 
     const load = async () => {
       try {
-        setError(null);
         const [resDashboard, resStats] = await Promise.all([
           fetch(`${API_BASE_URL}/docente/${id}/dashboard`),
           fetch(`${API_BASE_URL}/docente/${id}/dashboard-stats`),
@@ -88,22 +156,25 @@ export default function TeacherDashboard() {
 
         if (resStats.ok) {
           const data = await resStats.json();
-          setStats(data.stats || { total: 0, completed: 0, pct: 0 });
+          setStats({ ...EMPTY_STATS, ...(data.stats || {}) });
           setByMonth(Array.isArray(data.byMonth) ? data.byMonth : []);
+          setByWeek(Array.isArray(data.byWeek) ? data.byWeek : []);
           setUpcoming(Array.isArray(data.upcoming) ? data.upcoming : []);
           setActivities(Array.isArray(data.activities) ? data.activities : []);
         } else {
-          setStats({ total: 0, completed: 0, pct: 0 });
+          setStats(EMPTY_STATS);
           setByMonth([]);
+          setByWeek([]);
           setUpcoming([]);
           setActivities([]);
         }
       } catch (err) {
         console.error(err);
-        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
         setProjectsCount(0);
-        setStats({ total: 0, completed: 0, pct: 0 });
+        setStats(EMPTY_STATS);
         setByMonth([]);
+        setByWeek([]);
         setUpcoming([]);
         setActivities([]);
       } finally {
@@ -114,36 +185,46 @@ export default function TeacherDashboard() {
     load();
   }, [currentUser?.id]);
 
-  const safeStats = stats ?? { total: 0, completed: 0, pct: 0 };
+  const safeStats = stats ?? EMPTY_STATS;
   const complianceColor =
-    safeStats.pct >= 90 ? "#10b981" : safeStats.pct >= 80 ? "#1d4ed8" : safeStats.pct >= 60 ? "#f59e0b" : "#ef4444";
+    safeStats.compliancePct >= 100
+      ? "#10b981"
+      : safeStats.compliancePct >= 90
+      ? "#1d4ed8"
+      : safeStats.compliancePct >= 75
+      ? "#f59e0b"
+      : "#ef4444";
 
-  const weeklyData = Array.from({ length: 8 }, (_, i) => ({
-    semana: `S${i + 1}`,
-    avance: safeStats.total > 0 ? Math.round((safeStats.pct / 100) * ((i + 1) / 8) * 100) : 0,
+  const weeklyData = byWeek.map((row) => ({
+    semana: `S${row.semana}`,
+    avance: row.pct,
+    esperado: row.expectedPct,
   }));
 
   const statCards = [
     {
-      label: "Cumplimiento general",
+      label: "Avance real",
       value: `${safeStats.pct}%`,
       sub: `${safeStats.completed} de ${safeStats.total} entregables`,
       icon: TrendingUp,
       iconBg: "bg-[#1d4ed8]",
     },
     {
-      label: "Entregables completados",
-      value: String(safeStats.completed),
-      sub: "Con evidencia registrada",
-      icon: CheckCircle2,
-      iconBg: "bg-emerald-500",
-    },
-    {
-      label: "Pendientes / En curso",
-      value: String(Math.max(0, safeStats.total - safeStats.completed)),
-      sub: "Por reportar",
+      label: "Avance esperado",
+      value: `${safeStats.expectedPct}%`,
+      sub: `${safeStats.due} entregables exigibles a hoy`,
       icon: Clock,
       iconBg: "bg-amber-500",
+    },
+    {
+      label: "Cumplimiento esperado",
+      value: `${Math.round(safeStats.compliancePct)}%`,
+      sub:
+        safeStats.gap >= 0
+          ? `${safeStats.gap} puntos por encima de lo esperado`
+          : `${Math.abs(safeStats.gap)} puntos por debajo de lo esperado`,
+      icon: CheckCircle2,
+      iconBg: safeStats.gap >= 0 ? "bg-emerald-500" : "bg-red-500",
     },
     {
       label: "Proyectos activos",
@@ -154,15 +235,10 @@ export default function TeacherDashboard() {
     },
   ];
 
-  const hasVencidos = activities.some((a) => a.status === "delayed");
+  const hasVencidos = activities.some((a) => a.statusLabel === "Retrasado");
 
   return (
     <div className="p-6 space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-          {error}
-        </div>
-      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-gray-900">Mi Dashboard</h1>
@@ -186,7 +262,7 @@ export default function TeacherDashboard() {
             style={{ fontWeight: 600 }}
           >
             <Plus className="w-4 h-4" />
-            Reportar Avance
+            Reportar entregable
           </button>
         </div>
       </div>
@@ -227,10 +303,10 @@ export default function TeacherDashboard() {
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {(byMonth.length > 0 ? byMonth : [{ month: "Febrero", total: 0, done: 0, pct: 0 }, { month: "Marzo", total: 0, done: 0, pct: 0 }, { month: "Abril", total: 0, done: 0, pct: 0 }, { month: "Mayo", total: 0, done: 0, pct: 0 }]).map((m) => {
+          {byMonth.map((m, index) => {
             const isDone = m.pct === 100 && m.total > 0;
-            const isActive = m.month === "Marzo";
-            const colorClass = MONTH_COLORS[m.month as MonthName] || "bg-gray-500";
+            const isActive = m.active;
+            const colorClass = MONTH_COLOR_CLASSES[index % MONTH_COLOR_CLASSES.length];
             return (
               <div
                 key={m.month}
@@ -257,6 +333,9 @@ export default function TeacherDashboard() {
                   <p className="text-gray-400 text-xs mt-0.5">
                     {m.done}/{m.total} entregables
                   </p>
+                  <p className="text-gray-500 text-[11px] mt-1">
+                    Esperado a hoy: {Math.round(m.expectedPct)}%
+                  </p>
                 </div>
                 <div className="mt-3 w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
                   <div
@@ -270,16 +349,22 @@ export default function TeacherDashboard() {
               </div>
             );
           })}
+          {!loading && byMonth.length === 0 && (
+            <p className="col-span-full text-sm text-gray-400 text-center py-6">
+              No hay entregables calendarizados para mostrar.
+            </p>
+          )}
         </div>
 
         <div className="mt-5 pt-4 border-t border-gray-100">
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm text-gray-700" style={{ fontWeight: 500 }}>
-              Avance acumulado del ciclo
+              Avance real frente al esperado
             </p>
-            <p className="text-sm" style={{ fontWeight: 700, color: complianceColor }}>
-              {safeStats.pct}%
-            </p>
+            <div className="flex items-center gap-3 text-xs font-semibold">
+              <span className="text-[#1d4ed8]">Real {safeStats.pct}%</span>
+              <span className="text-amber-600">Esperado {safeStats.expectedPct}%</span>
+            </div>
           </div>
           <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden">
             <div
@@ -287,13 +372,11 @@ export default function TeacherDashboard() {
               style={{ width: `${safeStats.pct}%`, backgroundColor: complianceColor }}
             />
           </div>
-          <div className="flex justify-between text-xs text-gray-400 mt-1">
-            <span>Inicio</span>
-            <span>Feb</span>
-            <span>Mar</span>
-            <span>Abr</span>
-            <span>Mayo · Cierre</span>
-          </div>
+          {byMonth.length > 0 && (
+            <div className="flex justify-between gap-2 text-xs text-gray-400 mt-1">
+              {byMonth.map((m) => <span key={m.month}>{m.month}</span>)}
+            </div>
+          )}
         </div>
       </div>
 
@@ -305,11 +388,11 @@ export default function TeacherDashboard() {
               <h3 className="text-gray-800">Progreso Semanal</h3>
               <p className="text-gray-500 text-xs mt-0.5">Avance acumulado por semana</p>
             </div>
-            <span className="text-xs text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full" style={{ fontWeight: 500 }}>
-              ↑ En tiempo
+            <span className={`text-xs px-2.5 py-1 rounded-full ${hasVencidos ? "text-red-600 bg-red-50" : "text-emerald-600 bg-emerald-50"}`} style={{ fontWeight: 500 }}>
+              {hasVencidos ? "Con vencimientos" : "Sin vencimientos"}
             </span>
           </div>
-          <ResponsiveContainer width="100%" height={200}>
+          {weeklyData.length > 0 ? <ResponsiveContainer width="100%" height={200}>
             <AreaChart data={weeklyData}>
               <defs>
                 <linearGradient id="tdColorAvance" x1="0" y1="0" x2="0" y2="1">
@@ -321,9 +404,29 @@ export default function TeacherDashboard() {
               <XAxis dataKey="semana" tick={{ fontSize: 12, fill: "#9ca3af" }} />
               <YAxis tick={{ fontSize: 12, fill: "#9ca3af" }} unit="%" />
               <Tooltip formatter={(v) => [`${v}%`, "Avance"]} contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 12 }} />
-              <Area type="monotone" dataKey="avance" stroke="#1d4ed8" strokeWidth={2} fill="url(#tdColorAvance)" />
+              <Area
+                type="monotone"
+                dataKey="esperado"
+                name="Avance esperado"
+                stroke="#d97706"
+                strokeWidth={2}
+                strokeDasharray="5 4"
+                fill="transparent"
+              />
+              <Area
+                type="monotone"
+                dataKey="avance"
+                name="Avance real"
+                stroke="#1d4ed8"
+                strokeWidth={2}
+                fill="url(#tdColorAvance)"
+              />
             </AreaChart>
-          </ResponsiveContainer>
+          </ResponsiveContainer> : (
+            <div className="h-[200px] flex items-center justify-center text-sm text-gray-400">
+              No hay avance semanal registrado.
+            </div>
+          )}
         </div>
 
         <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
@@ -351,10 +454,13 @@ export default function TeacherDashboard() {
                   <p className="text-gray-700 text-xs leading-snug line-clamp-2" style={{ fontWeight: 500 }}>
                     {d.entregable}
                   </p>
+                  <p className="text-gray-400 text-[11px] mt-1 line-clamp-1">
+                    {d.iniciativa}
+                  </p>
                   <div className="flex items-center justify-between mt-2">
                     <span className="text-xs text-gray-400 flex items-center gap-1">
                       <Calendar className="w-3 h-3" />
-                      {d.fechaFin ? new Date(d.fechaFin + "T12:00:00").toLocaleDateString("es-PE", { day: "2-digit", month: "short" }) : "—"}
+                      {formatDate(d.fechaInicio)} – {formatDate(d.fechaFin)}
                     </span>
                     <StatusBadge status={status} pulse />
                   </div>
@@ -368,7 +474,7 @@ export default function TeacherDashboard() {
               <div>
                 <p className="text-xs text-red-700" style={{ fontWeight: 600 }}>Entregas vencidas</p>
                 <p className="text-xs text-red-600 mt-0.5">
-                  {activities.filter((a) => a.status === "delayed").length} entregable(s) sin presentar
+                  {activities.filter((a) => a.statusLabel === "Retrasado").length} entregable(s) sin presentar
                 </p>
               </div>
             </div>
@@ -376,12 +482,17 @@ export default function TeacherDashboard() {
         </div>
       </div>
 
-      {/* Activities table */}
+      {/* Listado cronológico de entregables */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <h3 className="text-gray-800">Actividades Programadas</h3>
+          <div>
+            <h3 className="text-gray-800">Entregables programados</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Listado cronológico de proyectos, actividades y convenios
+            </p>
+          </div>
           <button
-            onClick={() => navigate("/docente/proyectos")}
+            onClick={() => navigate("/docente/matriz")}
             className="text-sm text-[#1d4ed8] hover:underline flex items-center gap-1"
           >
             Ver todas <ArrowRight className="w-3.5 h-3.5" />
@@ -391,9 +502,10 @@ export default function TeacherDashboard() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                <th className="text-left px-6 py-3">Proyecto</th>
-                <th className="text-left px-6 py-3">Actividad</th>
-                <th className="text-left px-6 py-3">Fecha Límite</th>
+                <th className="text-left px-6 py-3">Categoría</th>
+                <th className="text-left px-6 py-3">Entregable</th>
+                <th className="text-left px-6 py-3">Iniciativa</th>
+                <th className="text-left px-6 py-3">Periodo de entrega</th>
                 <th className="text-left px-6 py-3">Estado</th>
                 <th className="text-left px-6 py-3">Acción</th>
               </tr>
@@ -401,30 +513,39 @@ export default function TeacherDashboard() {
             <tbody className="divide-y divide-gray-50">
               {activities.length === 0 && !loading && (
                 <tr>
-                  <td colSpan={5} className="px-6 py-8 text-center text-gray-400 text-sm">
-                    No hay actividades cargadas. Asigna proyectos y entregables en administración.
+                  <td colSpan={6} className="px-6 py-8 text-center text-gray-400 text-sm">
+                    No hay entregables programados para tu grupo matriz.
                   </td>
                 </tr>
               )}
               {activities.map((row) => (
                 <tr key={row.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4 text-gray-800" style={{ fontWeight: 500 }}>
-                    <div className="max-w-xs truncate">{row.project}</div>
+                    <div className="max-w-[150px] capitalize">{row.category.replaceAll("_", " ")}</div>
                   </td>
                   <td className="px-6 py-4 text-gray-600">
-                    <div className="max-w-xs truncate">{row.activity}</div>
+                    <div className="max-w-xs line-clamp-2">{row.deliverable}</div>
                   </td>
-                  <td className="px-6 py-4 text-gray-500">{row.deadline}</td>
+                  <td className="px-6 py-4 text-gray-700">
+                    <div className="max-w-xs line-clamp-2 font-medium">{row.initiative}</div>
+                    <span className="text-[11px] text-gray-400 capitalize">
+                      {row.initiativeType}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-gray-500 whitespace-nowrap">
+                    <div>{formatDate(row.startDate)}</div>
+                    <div className="text-xs text-gray-400">hasta {formatDate(row.deadline)}</div>
+                  </td>
                   <td className="px-6 py-4">
-                    <Badge variant={row.status as "pending" | "review" | "approved" | "delayed"} />
+                      <Badge variant={row.status} label={row.statusLabel} />
                   </td>
                   <td className="px-6 py-4">
                     <button
-                      onClick={() => navigate("/docente/reportar")}
+                      onClick={() => navigate("/docente/matriz")}
                       className="text-[#1d4ed8] hover:underline text-xs"
                       style={{ fontWeight: 500 }}
                     >
-                      Reportar
+                      Ver entregable
                     </button>
                   </td>
                 </tr>

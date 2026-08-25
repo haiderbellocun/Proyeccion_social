@@ -1,17 +1,19 @@
 import { useState } from "react";
-import { Calendar, FileText, FolderKanban, Target, Users } from "lucide-react";
+import { Building2, Calendar, CalendarRange, FileText, FolderKanban, Users } from "lucide-react";
 import UserManagement from "./UserManagement";
 import ProjectManagement from "./ProjectManagement";
-import ProfileManagement from "./ProfileManagement";
 import GroupManagement from "./GroupManagement";
 import PlantillaManagement from "./PlantillaManagement";
+import ProgramManagement from "./ProgramManagement";
+import SemesterManagement from "./SemesterManagement";
 
-type TabType = "usuarios" | "proyectos" | "indicadores" | "tareas" | "plantillas";
+type TabType = "usuarios" | "semestres" | "programas" | "proyectos" | "tareas" | "plantillas";
 
 const tabs: { id: TabType; label: string; icon: React.ElementType }[] = [
   { id: "usuarios", label: "Usuarios", icon: Users },
+  { id: "semestres", label: "Semestres", icon: CalendarRange },
+  { id: "programas", label: "Escuelas y programas", icon: Building2 },
   { id: "proyectos", label: "Iniciativas", icon: FolderKanban },
-  { id: "indicadores", label: "Indicadores", icon: Target },
   { id: "tareas", label: "Tareas semanales", icon: Calendar },
   { id: "plantillas", label: "Plantillas", icon: FileText },
 ];
@@ -25,7 +27,7 @@ export default function SystemAdminPage() {
         <div>
           <h1 className="text-gray-900">Administración del Sistema</h1>
           <p className="text-gray-500 text-sm mt-0.5">
-            Gestión de usuarios, iniciativas e indicadores
+            Gestión de usuarios, programas, iniciativas, grupos y plantillas
           </p>
         </div>
       </div>
@@ -49,8 +51,9 @@ export default function SystemAdminPage() {
       </div>
 
       {activeTab === "usuarios" && <UserManagement />}
+      {activeTab === "semestres" && <SemesterManagement />}
+      {activeTab === "programas" && <ProgramManagement />}
       {activeTab === "proyectos" && <ProjectManagement />}
-      {activeTab === "indicadores" && <ProfileManagement />}
       {activeTab === "tareas" && <GroupManagement />}
       {activeTab === "plantillas" && <PlantillaManagement />}
     </div>

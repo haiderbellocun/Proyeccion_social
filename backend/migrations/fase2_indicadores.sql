@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS perfiles_indicador (
 CREATE TABLE IF NOT EXISTS programa_perfil_indicador (
   programa_id  INTEGER NOT NULL REFERENCES programas(id) ON DELETE CASCADE,
   perfil_id    INTEGER NOT NULL REFERENCES perfiles_indicador(id) ON DELETE RESTRICT,
-  semestre     TEXT NOT NULL DEFAULT '2025C',
+  semestre     TEXT NOT NULL,
   PRIMARY KEY (programa_id, semestre)
 );
 

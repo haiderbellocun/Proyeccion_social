@@ -1,20 +1,92 @@
 import express from "express";
 import { pool } from "../db.js";
+import {
+  buildMatrixStats,
+  loadAssignedInitiatives,
+  mapMatrixRows,
+  resolveInitiativeForTemplate,
+} from "../services/matrizService.js";
+import { markNotificationsAsRead } from "../services/notificationService.js";
 
 const router = express.Router();
 
-let reportFieldsColumnsEnsured = false;
-
-async function ensureReportFieldsColumns(client) {
-  if (reportFieldsColumnsEnsured) return;
-  await client.query(`
-    ALTER TABLE proyecto_entregables
-      ADD COLUMN IF NOT EXISTS actividad_reportada TEXT,
-      ADD COLUMN IF NOT EXISTS descripcion_reporte TEXT,
-      ADD COLUMN IF NOT EXISTS porcentaje_avance INTEGER;
-  `);
-  reportFieldsColumnsEnsured = true;
+function allowAdminOrSelf(req, res, next, value) {
+  const requestedId = Number(value);
+  if (!Number.isInteger(requestedId) || requestedId <= 0) {
+    return res.status(400).json({ error: "id de docente inválido" });
+  }
+  if (req.user?.rol !== "admin" && Number(req.user?.id) !== requestedId) {
+    return res.status(403).json({ error: "No puedes consultar información de otro docente" });
+  }
+  next();
 }
+
+router.param("id", allowAdminOrSelf);
+router.param("docenteId", allowAdminOrSelf);
+
+router.param("proyectoId", async (req, res, next, value) => {
+  if (req.user?.rol === "admin") return next();
+  const proyectoId = Number(value);
+  if (!Number.isInteger(proyectoId) || proyectoId <= 0) {
+    return res.status(400).json({ error: "id de iniciativa inválido" });
+  }
+  try {
+    const result = await pool.query(
+      `
+      SELECT 1
+      FROM proyectos p
+      WHERE p.id = $1
+        AND (
+          p.docente_responsable_id = $2
+          OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
+        )
+      `,
+      [proyectoId, req.user.id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(403).json({ error: "No tienes acceso a esta iniciativa" });
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.param("entregableId", async (req, res, next, value) => {
+  if (req.user?.rol === "admin") return next();
+  const entregableId = Number(value);
+  if (!Number.isInteger(entregableId) || entregableId <= 0) {
+    return res.status(400).json({ error: "id de entregable inválido" });
+  }
+  try {
+    const result = await pool.query(
+      `
+      SELECT 1
+      FROM proyecto_entregables e
+      JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
+      JOIN proyectos p ON p.id = s.proyecto_id
+      WHERE e.id = $1
+        AND (
+          e.docente_id = $2
+          OR (
+            e.docente_id IS NULL
+            AND (
+              p.docente_responsable_id = $2
+              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
+            )
+          )
+        )
+      `,
+      [entregableId, req.user.id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(403).json({ error: "No tienes acceso a este entregable" });
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 // Datos básicos para dashboard docente (proyectos asignados o como responsable)
 router.get("/:id/dashboard", async (req, res) => {
@@ -37,12 +109,24 @@ router.get("/:id/dashboard", async (req, res) => {
         p.horas_totales,
         p.semanas,
         prog.nombre AS programa_nombre,
-        u.nombre || ' ' || u.apellido AS coordinador
+        u.nombre || ' ' || u.apellido AS coordinador,
+        COUNT(e.id)::int AS total_entregables,
+        COUNT(e.id) FILTER (WHERE COALESCE(e.completado, false))::int AS entregables_completados,
+        CASE
+          WHEN COUNT(e.id) > 0
+            THEN ROUND((100.0 * COUNT(e.id) FILTER (WHERE COALESCE(e.completado, false)) / COUNT(e.id))::numeric, 1)::float
+          ELSE 0::float
+        END AS porcentaje_avance
       FROM proyectos p
       LEFT JOIN programas prog ON prog.id = p.programa_id
       LEFT JOIN usuarios u ON u.id = p.docente_responsable_id
+      LEFT JOIN proyecto_semanas ps ON ps.proyecto_id = p.id
+      LEFT JOIN proyecto_entregables e
+        ON e.proyecto_semana_id = ps.id
+       AND (e.docente_id = $1 OR e.docente_id IS NULL)
       WHERE p.docente_responsable_id = $1
          OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
+      GROUP BY p.id, prog.nombre, u.nombre, u.apellido
       ORDER BY p.fecha_inicio
       `,
       [docenteId]
@@ -57,7 +141,8 @@ router.get("/:id/dashboard", async (req, res) => {
   }
 });
 
-// Estadísticas y datos para el dashboard del docente (avance por mes, próximas entregas, actividades)
+// Estadísticas del dashboard. La fuente de verdad es la plantilla del grupo,
+// incluso cuando el docente aún no ha creado ningún reporte.
 router.get("/:id/dashboard-stats", async (req, res) => {
   const docenteId = Number(req.params.id);
   if (!docenteId) {
@@ -65,85 +150,104 @@ router.get("/:id/dashboard-stats", async (req, res) => {
   }
 
   try {
-    const entregablesRows = await pool.query(
-      `
-      SELECT
-        e.id,
-        e.descripcion,
-        COALESCE(e.completado, false) AS completado,
-        e.fecha_completado,
-        s.fecha_fin   AS semana_fecha_fin,
-        s.numero      AS semana_numero,
-        p.titulo      AS proyecto_titulo,
-        p.id         AS proyecto_id
-      FROM proyecto_entregables e
-      JOIN proyecto_semanas s ON e.proyecto_semana_id = s.id
-      JOIN proyectos p ON s.proyecto_id = p.id
-      WHERE p.docente_responsable_id = $1
-         OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
-      ORDER BY s.fecha_fin, e.id
-      `,
-      [docenteId]
-    );
-
-    const items = entregablesRows.rows || [];
-    const total = items.length;
-    const completed = items.filter((i) => i.completado).length;
-    const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-
-    const monthNames = { 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo" };
-    const byMonth = [];
-    for (const [num, name] of Object.entries(monthNames)) {
-      const mesNum = Number(num);
-      const delMes = items.filter((i) => {
-        const d = i.semana_fecha_fin ? new Date(i.semana_fecha_fin) : null;
-        return d && d.getMonth() + 1 === mesNum;
-      });
-      const done = delMes.filter((i) => i.completado).length;
-      byMonth.push({
-        month: name,
-        total: delMes.length,
-        done,
-        pct: delMes.length > 0 ? Math.round((done / delMes.length) * 100) : 0,
-      });
-    }
-
+    const items = await loadDocenteMatrixItems(docenteId);
+    const matrixStats = buildMatrixStats(items);
+    const total = matrixStats.resumen.total_entregables;
+    const completed = matrixStats.resumen.completados;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
+    const byMonth = matrixStats.por_mes.map((row) => {
+      const monthItems = items.filter((item) => item.mes === row.mes);
+      const active = monthItems.some((item) => {
+        if (!item.fecha_inicio_calculada || !item.fecha_fin_calculada) return false;
+        return (
+          new Date(`${item.fecha_inicio_calculada}T00:00:00`) <= today &&
+          new Date(`${item.fecha_fin_calculada}T23:59:59`) >= today
+        );
+      });
+      return {
+        month: row.mes,
+        total: row.total,
+        done: row.completados,
+        pct: row.porcentaje_mensual,
+        expectedPct: row.porcentaje_esperado,
+        active,
+      };
+    });
+    const byWeek = matrixStats.por_semana.map((row) => ({
+      semana: row.semana_numero,
+      total: row.total,
+      done: row.completados,
+      pct: row.porcentaje_acumulado,
+      expectedPct: row.porcentaje_esperado_acumulado,
+    }));
+
     const upcoming = items
-      .filter((i) => !i.completado && i.semana_fecha_fin)
+      .filter((item) => {
+        if (item.completado || !item.fecha_fin_calculada) return false;
+        const deadline = new Date(`${item.fecha_fin_calculada}T23:59:59`);
+        deadline.setHours(0, 0, 0, 0);
+        return deadline >= today;
+      })
+      .sort((a, b) =>
+        String(a.fecha_fin_calculada).localeCompare(String(b.fecha_fin_calculada))
+      )
       .slice(0, 8)
-      .map((i) => ({
-        id: i.id,
-        proyecto: i.proyecto_titulo,
-        entregable: i.descripcion,
-        fechaFin: i.semana_fecha_fin,
-        semana: i.semana_numero,
+      .map((item) => ({
+        id: item.id,
+        iniciativa: item.iniciativa_titulo,
+        entregable: item.entregable,
+        fechaInicio: item.fecha_inicio_calculada,
+        fechaFin: item.fecha_fin_calculada,
+        semana: item.semana_numero,
       }));
 
-    const activities = items.map((i) => {
-      const fin = i.semana_fecha_fin ? new Date(i.semana_fecha_fin) : null;
+    const activities = items.map((item) => {
+      const fin = item.fecha_fin_calculada
+        ? new Date(`${item.fecha_fin_calculada}T23:59:59`)
+        : null;
       let status = "pending";
-      if (i.completado) status = "approved";
-      else if (fin && fin < today) status = "delayed";
+      let statusLabel = "Pendiente";
+      if (item.completado && item.estado_revision === "aprobado") {
+        status = "approved";
+        statusLabel = "Aprobado";
+      } else if (item.completado && item.estado_revision === "observado") {
+        status = "delayed";
+        statusLabel = "Con observaciones";
+      } else if (item.completado) {
+        status = "review";
+        statusLabel = "En revisión";
+      } else if (fin && fin < today) {
+        status = "delayed";
+        statusLabel = "Retrasado";
+      }
       return {
-        id: i.id,
-        project: i.proyecto_titulo,
-        activity: i.descripcion,
-        deadline: fin
-          ? fin.toLocaleDateString("es-CO", {
-              day: "2-digit",
-              month: "short",
-              year: "numeric",
-            })
-          : "—",
+        id: item.id,
+        entregableId: item.entregable_id,
+        category: item.categoria,
+        deliverable: item.entregable,
+        initiative: item.iniciativa_titulo,
+        initiativeType: item.iniciativa_tipo,
+        startDate: item.fecha_inicio_calculada,
+        deadline: item.fecha_fin_calculada,
         status,
+        statusLabel,
       };
     });
 
     res.json({
-      stats: { total, completed, pct },
+      stats: {
+        total,
+        completed,
+        pct: matrixStats.resumen.porcentaje_real,
+        expectedPct: matrixStats.resumen.porcentaje_esperado,
+        compliancePct: matrixStats.resumen.cumplimiento_esperado,
+        due: matrixStats.resumen.exigibles_a_fecha,
+        gap: matrixStats.resumen.brecha,
+      },
       byMonth,
+      byWeek,
       upcoming,
       activities,
     });
@@ -179,6 +283,7 @@ router.get("/:id/cronograma", async (req, res) => {
           json_agg(
             json_build_object(
               'id', e.id,
+              'plantillaId', e.plantilla_id,
               'descripcion', e.descripcion,
               'horas', e.horas,
               'completado', COALESCE(e.completado, false),
@@ -195,6 +300,7 @@ router.get("/:id/cronograma", async (req, res) => {
         ON s.proyecto_id = p.id
       LEFT JOIN proyecto_entregables e
         ON e.proyecto_semana_id = s.id
+       AND (e.docente_id = $1 OR e.docente_id IS NULL)
       WHERE p.docente_responsable_id = $1
          OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
       GROUP BY
@@ -209,6 +315,7 @@ router.get("/:id/cronograma", async (req, res) => {
       [docenteId]
     );
 
+    const matrixItems = await loadDocenteMatrixItems(docenteId);
     const map = new Map();
     for (const row of result.rows) {
       if (!map.has(row.proyecto_id)) {
@@ -219,14 +326,44 @@ router.get("/:id/cronograma", async (req, res) => {
         });
       }
       const proj = map.get(row.proyecto_id);
+      const existingDetails =
+        row.entregablesDetalle || row.entregablesdetalle || [];
+      const plannedDetails = matrixItems
+        .filter(
+          (item) =>
+            Number(item.iniciativa_id) === Number(row.proyecto_id) &&
+            Number(item.semana_numero) === Number(row.semana_numero)
+        )
+        .map((item) => ({
+          id: item.entregable_id,
+          plantillaId: item.id,
+          descripcion: item.entregable,
+          horas: item.horas,
+          completado: item.completado,
+          fecha_completado: item.fecha_real_entrega,
+          url_evidencia: item.url_evidencia,
+          fecha_real_entrega: item.fecha_real_entrega,
+          descripcion_evidencia: item.descripcion_evidencia,
+          enlace_referencia: item.enlace_referencia,
+          fecha_inicio: item.fecha_inicio_calculada,
+          fecha_fin: item.fecha_fin_calculada,
+        }));
+      const plannedTemplateIds = new Set(
+        plannedDetails.map((item) => Number(item.plantillaId))
+      );
+      const adHocDetails = existingDetails.filter(
+        (item) =>
+          item.plantillaId == null ||
+          !plannedTemplateIds.has(Number(item.plantillaId))
+      );
+      const details = [...plannedDetails, ...adHocDetails];
       proj.weeks.push({
         id: row.semana_id,
         numero: row.semana_numero,
-        fechaInicio: row.semana_fecha_inicio,
-        fechaFin: row.semana_fecha_fin,
-        entregables: row.entregables || [],
-        entregablesDetalle:
-          row.entregablesDetalle || row.entregablesdetalle || [],
+        fechaInicio: toDateOnlyISO(row.semana_fecha_inicio),
+        fechaFin: toDateOnlyISO(row.semana_fecha_fin),
+        entregables: details.map((item) => item.descripcion),
+        entregablesDetalle: details,
       });
     }
 
@@ -255,70 +392,95 @@ router.get("/:id/notificaciones", async (req, res) => {
 
     const result = await pool.query(
       `
-      SELECT * FROM (
+      WITH origen AS (
         SELECT
-          'vencido' AS tipo,
-          tpl.id AS referencia_id,
-          CONCAT('Entregable vencido: ', tpl.entregable) AS mensaje,
-          (DATE '2026-02-10' + (tpl.dias_fin_desde_feb::integer * INTERVAL '1 day'))::date AS fecha
+          'vencido'::text AS tipo,
+          tpl.id::bigint AS referencia_id,
+          CONCAT('Entregable vencido: ', COALESCE(dex.entregable_override, tpl.entregable)) AS mensaje,
+          fechas.fecha_fin::timestamp AS fecha,
+          CONCAT('vencido:', tpl.id, ':', fechas.fecha_fin::text) AS clave,
+          CONCAT('/docente/matriz?plantilla=', tpl.id) AS destino
         FROM plantilla_entregables tpl
+        INNER JOIN grupos_matriz gm ON gm.id = tpl.grupo_id
+        INNER JOIN semestres sem ON sem.codigo = gm.semestre
         INNER JOIN usuarios u
           ON u.grupo_matriz_id = tpl.grupo_id AND u.id = $1 AND u.rol = 'docente'
-        WHERE tpl.dias_fin_desde_feb IS NOT NULL
-          AND (DATE '2026-02-10' + (tpl.dias_fin_desde_feb::integer * INTERVAL '1 day'))::date < CURRENT_DATE
+        LEFT JOIN docente_entregable_excepciones dex
+          ON dex.docente_id = $1 AND dex.plantilla_id = tpl.id
+        CROSS JOIN LATERAL (
+          SELECT COALESCE(
+            dex.fecha_fin_override,
+            (sem.fecha_inicio + (tpl.dias_fin_desde_feb::integer * INTERVAL '1 day'))::date
+          ) AS fecha_fin
+        ) fechas
+        WHERE fechas.fecha_fin IS NOT NULL
+          AND fechas.fecha_fin < CURRENT_DATE
           AND NOT EXISTS (
             SELECT 1
             FROM proyecto_entregables pe
-            JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id
-            JOIN proyectos p ON p.id = ps.proyecto_id
-            WHERE (
-                p.docente_responsable_id = $1
-                OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
-              )
-              AND ps.numero = tpl.semana_numero
+            WHERE pe.plantilla_id = tpl.id
+              AND pe.docente_id = $1
               AND COALESCE(pe.completado, false) = true
-              AND (
-                TRIM(pe.descripcion) = TRIM(tpl.entregable)
-                OR TRIM(COALESCE(pe.actividad_reportada, '')) = TRIM(tpl.entregable)
-              )
           )
 
         UNION ALL
 
         SELECT
-          'observacion' AS tipo,
-          pe.id AS referencia_id,
+          'observacion'::text AS tipo,
+          pe.id::bigint AS referencia_id,
           CONCAT('Reporte con observación: ', COALESCE(pe.actividad_reportada, pe.descripcion)) AS mensaje,
-          pe.revisado_en AS fecha
+          pe.revisado_en AS fecha,
+          CONCAT('observacion:', pe.id, ':', pe.revisado_en::text) AS clave,
+          CONCAT('/docente/historial?reporte=', pe.id) AS destino
         FROM proyecto_entregables pe
         JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id
         JOIN proyectos p ON p.id = ps.proyecto_id
-        WHERE (
-            p.docente_responsable_id = $1
-            OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
-          )
+        WHERE COALESCE(pe.docente_id, p.docente_responsable_id) = $1
           AND pe.estado_revision = 'observado'
           AND pe.revisado_en IS NOT NULL
 
         UNION ALL
 
         SELECT
-          'aprobado' AS tipo,
-          pe.id AS referencia_id,
+          'aprobado'::text AS tipo,
+          pe.id::bigint AS referencia_id,
           CONCAT('Reporte aprobado: ', COALESCE(pe.actividad_reportada, pe.descripcion)) AS mensaje,
-          pe.revisado_en AS fecha
+          pe.revisado_en AS fecha,
+          CONCAT('aprobado:', pe.id, ':', pe.revisado_en::text) AS clave,
+          CONCAT('/docente/historial?reporte=', pe.id) AS destino
         FROM proyecto_entregables pe
         JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id
         JOIN proyectos p ON p.id = ps.proyecto_id
-        WHERE (
-            p.docente_responsable_id = $1
-            OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
-          )
+        WHERE COALESCE(pe.docente_id, p.docente_responsable_id) = $1
           AND pe.estado_revision = 'aprobado'
           AND pe.revisado_en >= (CURRENT_DATE - INTERVAL '7 days')
-      ) AS n
+
+        UNION ALL
+
+        SELECT
+          n.tipo::text,
+          n.id::bigint AS referencia_id,
+          n.mensaje,
+          n.creado_en AS fecha,
+          CONCAT('persistente:', n.id) AS clave,
+          CASE
+            WHEN n.referencia_tipo = 'reporte' AND n.referencia_id IS NOT NULL
+              THEN CONCAT('/docente/historial?reporte=', n.referencia_id)
+            ELSE NULL
+          END AS destino
+        FROM notificaciones n
+        WHERE n.usuario_id = $1
+          AND COALESCE(n.leida, false) = false
+      ), pendientes AS (
+        SELECT origen.*
+        FROM origen
+        LEFT JOIN notificacion_lecturas lectura
+          ON lectura.usuario_id = $1 AND lectura.clave = origen.clave
+        WHERE lectura.clave IS NULL
+      )
+      SELECT tipo, referencia_id, mensaje, fecha, clave, destino
+      FROM pendientes
       ORDER BY fecha DESC NULLS LAST
-      LIMIT 10
       `,
       [docenteId]
     );
@@ -327,6 +489,8 @@ router.get("/:id/notificaciones", async (req, res) => {
       tipo: row.tipo,
       referencia_id: Number(row.referencia_id),
       mensaje: row.mensaje,
+      clave: row.clave,
+      destino: row.destino || null,
       fecha:
         row.fecha != null
           ? row.fecha instanceof Date
@@ -335,10 +499,31 @@ router.get("/:id/notificaciones", async (req, res) => {
           : null,
     }));
 
-    res.json({ notificaciones });
+    res.json({
+      notificaciones,
+      total_no_leidas: notificaciones.length,
+    });
   } catch (error) {
     console.error("Error en GET /docente/:id/notificaciones", error);
     res.status(500).json({ error: "Error interno" });
+  }
+});
+
+router.patch("/:id/notificaciones/leer", async (req, res) => {
+  const docenteId = Number(req.params.id);
+  try {
+    const marked = await markNotificationsAsRead(
+      docenteId,
+      req.body?.notificaciones ?? req.body
+    );
+    res.json({ marcadas: marked });
+  } catch (error) {
+    console.error("Error en PATCH /docente/:id/notificaciones/leer", error);
+    res.status(Number(error?.status) || 500).json({
+      error: Number(error?.status)
+        ? error.message
+        : "No fue posible marcar la notificación",
+    });
   }
 });
 
@@ -363,26 +548,20 @@ router.get("/:id/perfil", async (req, res) => {
         u.link_drive,
         u.programa_id,
         u.grupo_matriz_id,
-        u.perfil_indicador_id,
         p.nombre AS programa_nombre,
-        COALESCE(p.facultad, 'Sin escuela') AS escuela_nombre,
+        e.id AS escuela_id,
+        COALESCE(e.nombre, 'Sin escuela') AS escuela_nombre,
         gm.id AS gm_id,
         gm.nombre AS gm_nombre,
         gm.horas_totales AS gm_horas,
         gm.num_proyectos AS gm_num_proyectos,
         gm.num_actividades AS gm_num_actividades,
         gm.num_convenios_nuevos AS gm_num_convenios_nuevos,
-        gm.num_convenios_dinamizados AS gm_num_convenios_dinamizados,
-        pi.id AS pi_id,
-        pi.nombre AS pi_nombre,
-        pi.num_proyectos AS pi_num_proyectos,
-        pi.num_actividades AS pi_num_actividades,
-        pi.num_convenios_nuevos AS pi_num_convenios_nuevos,
-        pi.num_convenios_dinamizados AS pi_num_convenios_dinamizados
+        gm.num_convenios_dinamizados AS gm_num_convenios_dinamizados
       FROM usuarios u
       LEFT JOIN programas p ON p.id = u.programa_id
+      LEFT JOIN escuelas e ON e.id = p.escuela_id
       LEFT JOIN grupos_matriz gm ON gm.id = u.grupo_matriz_id
-      LEFT JOIN perfiles_indicador pi ON pi.id = u.perfil_indicador_id
       WHERE u.id = $1 AND u.rol = 'docente'
       `,
       [docenteId]
@@ -413,8 +592,14 @@ router.get("/:id/perfil", async (req, res) => {
       JOIN proyectos p ON p.id = s.proyecto_id
       WHERE COALESCE(e.completado, false) = true
         AND (
-          p.docente_responsable_id = $1
-          OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
+          e.docente_id = $1
+          OR (
+            e.docente_id IS NULL
+            AND (
+              p.docente_responsable_id = $1
+              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
+            )
+          )
         )
       `,
       [docenteId]
@@ -437,7 +622,7 @@ router.get("/:id/perfil", async (req, res) => {
         nombre: row.programa_nombre || "Sin programa",
       },
       escuela: {
-        id: null,
+        id: row.escuela_id ?? null,
         nombre: row.escuela_nombre || "Sin escuela",
       },
       grupo_matriz:
@@ -452,16 +637,6 @@ router.get("/:id/perfil", async (req, res) => {
               num_convenios_dinamizados: Number(row.gm_num_convenios_dinamizados ?? 0),
             }
           : null,
-      perfil_indicador: row.pi_id
-        ? {
-            id: row.pi_id,
-            nombre: row.pi_nombre,
-            num_proyectos: Number(row.pi_num_proyectos ?? 0),
-            num_actividades: Number(row.pi_num_actividades ?? 0),
-            num_convenios_nuevos: Number(row.pi_num_convenios_nuevos ?? 0),
-            num_convenios_dinamizados: Number(row.pi_num_convenios_dinamizados ?? 0),
-          }
-        : null,
       stats: {
         total_plantillas: totalPlantillas,
         completados,
@@ -474,33 +649,82 @@ router.get("/:id/perfil", async (req, res) => {
   }
 });
 
+// El docente solo puede actualizar su propio enlace de trabajo. Los demás
+// datos de perfil siguen bajo control administrativo.
+router.put("/:id/info-contacto", async (req, res) => {
+  const docenteId = Number(req.params.id);
+  const linkDrive = req.body?.link_drive;
+  if (typeof linkDrive !== "string") {
+    return res.status(400).json({ error: "link_drive es obligatorio" });
+  }
+
+  const normalized = linkDrive.trim();
+  if (normalized) {
+    try {
+      const url = new URL(normalized);
+      if (url.protocol !== "https:") {
+        return res.status(400).json({ error: "El enlace debe usar HTTPS" });
+      }
+    } catch {
+      return res.status(400).json({ error: "El enlace de Drive no es válido" });
+    }
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      UPDATE usuarios
+      SET link_drive = $1
+      WHERE id = $2 AND rol = 'docente'
+      RETURNING id, link_drive
+      `,
+      [normalized || null, docenteId]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Docente no encontrado" });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("Error en PUT /docente/:id/info-contacto", error);
+    res.status(500).json({ error: "Error interno" });
+  }
+});
+
 const MATRIZ_PLANTILLA_JOIN = `
   FROM plantilla_entregables tpl
+  INNER JOIN grupos_matriz gm ON gm.id = tpl.grupo_id
+  INNER JOIN semestres sem ON sem.codigo = gm.semestre
   INNER JOIN usuarios u
     ON u.id = $1
    AND u.rol = 'docente'
    AND u.grupo_matriz_id = tpl.grupo_id
+  LEFT JOIN docente_entregable_excepciones dex
+    ON dex.docente_id = u.id
+   AND dex.plantilla_id = tpl.id
+  LEFT JOIN proyectos p_override ON p_override.id = dex.proyecto_id
   LEFT JOIN LATERAL (
     SELECT
       e.id,
       e.completado,
       e.fecha_real_entrega,
+      e.fecha_cargue_evidencia,
       e.url_evidencia,
       e.estado_revision,
+      e.comentario_revision,
       e.porcentaje_avance,
       e.actividad_reportada,
-      e.horas
+      e.horas,
+      p.id AS proyecto_id,
+      p.titulo AS proyecto_titulo,
+      p.tipo AS proyecto_tipo
     FROM proyecto_entregables e
     INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
     INNER JOIN proyectos p ON p.id = s.proyecto_id
-    WHERE s.numero = tpl.semana_numero
+    WHERE e.plantilla_id = tpl.id
+      AND e.docente_id = u.id
       AND (
         p.docente_responsable_id = u.id
         OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-      )
-      AND (
-        TRIM(e.descripcion) = TRIM(tpl.entregable)
-        OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
       )
     ORDER BY e.id DESC
     LIMIT 1
@@ -509,14 +733,14 @@ const MATRIZ_PLANTILLA_JOIN = `
 
 const MATRIZ_ORDER = `
   ORDER BY
-    CASE LOWER(TRIM(tpl.mes))
-      WHEN 'febrero' THEN 1
-      WHEN 'marzo' THEN 2
-      WHEN 'abril' THEN 3
-      WHEN 'mayo' THEN 4
-      ELSE 5
-    END,
-    tpl.semana_numero NULLS LAST,
+    COALESCE(
+      dex.fecha_inicio_override,
+      (sem.fecha_inicio + COALESCE(tpl.dias_inicio_desde_feb, 0) * INTERVAL '1 day')::date
+    ) NULLS LAST,
+    COALESCE(
+      dex.fecha_fin_override,
+      (sem.fecha_inicio + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date
+    ) NULLS LAST,
     tpl.numero
 `;
 
@@ -549,6 +773,66 @@ const toDateOnlyISO = (d) => {
 
 const round1 = (x) => Math.round(Number(x) * 10) / 10;
 
+async function loadDocenteMatrixItems(docenteId, db = pool) {
+  const [tplRes, initiatives] = await Promise.all([
+    db.query(
+      `
+      SELECT
+        tpl.id,
+        tpl.numero,
+        tpl.categoria AS categoria_raw,
+        tpl.fase AS fase_raw,
+        tpl.mes,
+        tpl.semana_numero,
+        sem.fecha_inicio AS semestre_fecha_inicio,
+        tpl.entregable,
+        tpl.descripcion_evidencia,
+        COALESCE(dex.entregable_override, tpl.entregable) AS entregable_effective,
+        COALESCE(
+          dex.descripcion_evidencia_override,
+          tpl.descripcion_evidencia
+        ) AS descripcion_evidencia_effective,
+        COALESCE(
+          dex.enlace_referencia_override,
+          tpl.enlace_referencia
+        ) AS enlace_referencia_effective,
+        COALESCE(pe.horas, tpl.horas) AS horas_effective,
+        COALESCE(
+          dex.fecha_inicio_override,
+          (sem.fecha_inicio + COALESCE(tpl.dias_inicio_desde_feb, 0) * INTERVAL '1 day')::date
+        ) AS fecha_inicio_calculada,
+        COALESCE(
+          dex.fecha_fin_override,
+          (sem.fecha_inicio + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date
+        ) AS fecha_fin_calculada,
+        dex.id AS exception_id,
+        dex.motivo AS exception_reason,
+        dex.proyecto_id AS override_project_id,
+        p_override.titulo AS override_project_title,
+        p_override.tipo AS override_project_type,
+        pe.proyecto_id AS report_project_id,
+        pe.proyecto_titulo AS report_project_title,
+        pe.proyecto_tipo AS report_project_type,
+        pe.id AS entregable_id,
+        COALESCE(pe.completado, false) AS completado,
+        pe.fecha_real_entrega,
+        pe.fecha_cargue_evidencia,
+        pe.url_evidencia,
+        pe.estado_revision,
+        pe.comentario_revision,
+        pe.porcentaje_avance,
+        pe.actividad_reportada
+      ${MATRIZ_PLANTILLA_JOIN}
+      ${MATRIZ_ORDER}
+      `,
+      [docenteId]
+    ),
+    loadAssignedInitiatives(docenteId, db),
+  ]);
+
+  return mapMatrixRows(tplRes.rows, initiatives, mapCategorySlug);
+}
+
 // Estadísticas agregadas (misma lógica de emparejamiento que GET .../matriz)
 router.get("/:docenteId/matriz-stats", async (req, res) => {
   const docenteId = Number(req.params.docenteId);
@@ -561,13 +845,14 @@ router.get("/:docenteId/matriz-stats", async (req, res) => {
       total_entregables: 0,
       completados: 0,
       porcentaje_semestral: 0,
+      porcentaje_real: 0,
+      porcentaje_esperado: 0,
+      cumplimiento_esperado: 100,
+      exigibles_a_fecha: 0,
+      completados_exigibles: 0,
+      brecha: 0,
     },
-    por_mes: ["Febrero", "Marzo", "Abril", "Mayo"].map((mes) => ({
-      mes,
-      total: 0,
-      completados: 0,
-      porcentaje_mensual: 0,
-    })),
+    por_mes: [],
     por_semana: [],
   });
 
@@ -589,80 +874,8 @@ router.get("/:docenteId/matriz-stats", async (req, res) => {
       return res.json(emptyPayload());
     }
 
-    const baseRes = await pool.query(
-      `
-      SELECT
-        tpl.mes,
-        tpl.semana_numero,
-        COALESCE(pe.completado, false) AS completado
-      ${MATRIZ_PLANTILLA_JOIN}
-      ${MATRIZ_ORDER}
-      `,
-      [docenteId]
-    );
-
-    const rows = baseRes.rows || [];
-    const total = rows.length;
-    const completados = rows.filter((r) => r.completado).length;
-    const porcentaje_semestral =
-      total > 0 ? round1((completados / total) * 100) : 0;
-
-    const mesLabels = ["Febrero", "Marzo", "Abril", "Mayo"];
-    const mesKeyToLabel = {
-      febrero: "Febrero",
-      marzo: "Marzo",
-      abril: "Abril",
-      mayo: "Mayo",
-    };
-
-    const por_mes = mesLabels.map((label) => {
-      const sub = rows.filter(
-        (r) => mesKeyToLabel[String(r.mes || "").toLowerCase()] === label
-      );
-      const t = sub.length;
-      const c = sub.filter((r) => r.completado).length;
-      return {
-        mes: label,
-        total: t,
-        completados: c,
-        porcentaje_mensual: t > 0 ? round1((c / t) * 100) : 0,
-      };
-    });
-
-    const weekNums = [...new Set(rows.map((r) => Number(r.semana_numero)).filter(Boolean))].sort(
-      (a, b) => a - b
-    );
-
-    const por_semana = weekNums.map((w) => {
-      const sub = rows.filter((r) => Number(r.semana_numero) === w);
-      const t = sub.length;
-      const c = sub.filter((r) => r.completado).length;
-      const accDone = rows.filter(
-        (r) => Number(r.semana_numero) <= w && r.completado
-      ).length;
-      const sampleMes = sub[0]?.mes;
-      const mes =
-        mesKeyToLabel[String(sampleMes || "").toLowerCase()] || "Febrero";
-      return {
-        semana_numero: w,
-        mes,
-        total: t,
-        completados: c,
-        porcentaje_semanal: t > 0 ? round1((c / t) * 100) : 0,
-        porcentaje_acumulado:
-          total > 0 ? round1((accDone / total) * 100) : 0,
-      };
-    });
-
-    res.json({
-      resumen: {
-        total_entregables: total,
-        completados,
-        porcentaje_semestral,
-      },
-      por_mes,
-      por_semana,
-    });
+    const items = await loadDocenteMatrixItems(docenteId);
+    res.json(buildMatrixStats(items));
   } catch (error) {
     console.error("Error en GET /docente/:docenteId/matriz-stats", error);
     res.status(500).json({ error: "Error interno" });
@@ -694,67 +907,7 @@ router.get("/:docenteId/matriz", async (req, res) => {
       return res.json({ items: [] });
     }
 
-    const tplRes = await pool.query(
-      `
-      SELECT
-        tpl.id,
-        tpl.numero,
-        tpl.categoria AS categoria_raw,
-        tpl.fase AS fase_raw,
-        tpl.mes,
-        tpl.semana_numero,
-        tpl.entregable,
-        tpl.descripcion_evidencia,
-        COALESCE(pe.horas, tpl.horas) AS horas_effective,
-        (DATE '2026-02-10' + COALESCE(tpl.dias_inicio_desde_feb, 0) * INTERVAL '1 day')::date AS fecha_inicio_calculada,
-        (DATE '2026-02-10' + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date AS fecha_fin_calculada,
-        pe.id AS entregable_id,
-        COALESCE(pe.completado, false) AS completado,
-        pe.fecha_real_entrega,
-        pe.url_evidencia,
-        pe.estado_revision,
-        pe.porcentaje_avance,
-        pe.actividad_reportada
-      ${MATRIZ_PLANTILLA_JOIN}
-      ${MATRIZ_ORDER}
-      `,
-      [docenteId]
-    );
-
-    const monthKeyMap = {
-      febrero: "Febrero",
-      marzo: "Marzo",
-      abril: "Abril",
-      mayo: "Mayo",
-    };
-
-    const items = (tplRes.rows || []).map((row) => {
-      const mesKey = String(row.mes || "").toLowerCase();
-      return {
-        id: Number(row.id),
-        numero: row.numero != null ? Number(row.numero) : 0,
-        categoria: mapCategorySlug(row.categoria_raw, row.fase_raw),
-        fase: row.fase_raw ? String(row.fase_raw).trim() : "",
-        mes: monthKeyMap[mesKey] || row.mes || "",
-        semana_numero:
-          row.semana_numero != null ? Number(row.semana_numero) : 0,
-        entregable: row.entregable,
-        descripcion_evidencia: row.descripcion_evidencia || "",
-        horas:
-          row.horas_effective != null ? Number(row.horas_effective) : 0,
-        fecha_inicio_calculada: toDateOnlyISO(row.fecha_inicio_calculada),
-        fecha_fin_calculada: toDateOnlyISO(row.fecha_fin_calculada),
-        entregable_id: row.entregable_id != null ? Number(row.entregable_id) : null,
-        completado: Boolean(row.completado),
-        fecha_real_entrega: toDateOnlyISO(row.fecha_real_entrega),
-        url_evidencia: row.url_evidencia || null,
-        estado_revision: row.estado_revision || null,
-        porcentaje_avance:
-          row.porcentaje_avance != null ? Number(row.porcentaje_avance) : null,
-        actividad_reportada: row.actividad_reportada || null,
-      };
-    });
-
+    const items = await loadDocenteMatrixItems(docenteId);
     res.json({ items });
   } catch (error) {
     console.error("Error en GET /docente/:docenteId/matriz", error);
@@ -768,7 +921,7 @@ router.post(
   async (req, res) => {
     const docenteId = Number(req.params.docenteId);
     const plantillaId = Number(req.params.plantillaId);
-    const { completado, fecha_real_entrega, url_evidencia } = req.body || {};
+    const { completado, url_evidencia } = req.body || {};
 
     if (!docenteId || !plantillaId) {
       return res.status(400).json({ error: "ids inválidos" });
@@ -779,13 +932,23 @@ router.post(
 
     const client = await pool.connect();
     try {
-      await ensureReportFieldsColumns(client);
 
       const tplR = await client.query(
         `
-        SELECT tpl.* FROM plantilla_entregables tpl
+        SELECT
+          tpl.*,
+          tpl.categoria AS categoria_raw,
+          tpl.fase AS fase_raw,
+          COALESCE(dex.entregable_override, tpl.entregable) AS entregable_effective,
+          dex.proyecto_id AS override_project_id,
+          p_override.titulo AS override_project_title,
+          p_override.tipo AS override_project_type
+        FROM plantilla_entregables tpl
         INNER JOIN usuarios u
           ON u.id = $2 AND u.rol = 'docente' AND u.grupo_matriz_id = tpl.grupo_id
+        LEFT JOIN docente_entregable_excepciones dex
+          ON dex.docente_id = u.id AND dex.plantilla_id = tpl.id
+        LEFT JOIN proyectos p_override ON p_override.id = dex.proyecto_id
         WHERE tpl.id = $1
         `,
         [plantillaId, docenteId]
@@ -794,35 +957,27 @@ router.post(
         return res.status(404).json({ error: "Plantilla no encontrada" });
       }
       const tpl = tplR.rows[0];
-      const entregableTexto = String(tpl.entregable || "").trim();
+      const entregableTexto = String(tpl.entregable_effective || tpl.entregable || "").trim();
       const semanaNum = tpl.semana_numero != null ? Number(tpl.semana_numero) : null;
       if (semanaNum == null || Number.isNaN(semanaNum)) {
         return res.status(400).json({ error: "Plantilla sin semana_numero" });
       }
-
-      const fechaRealRaw =
-        fecha_real_entrega != null && String(fecha_real_entrega).trim() !== ""
-          ? String(fecha_real_entrega).trim()
-          : null;
 
       const existing = await client.query(
         `
         SELECT pe.id FROM proyecto_entregables pe
         INNER JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id
         INNER JOIN proyectos p ON p.id = ps.proyecto_id
-        WHERE ps.numero = $1
+        WHERE pe.plantilla_id = $1
+          AND pe.docente_id = $2
           AND (
             p.docente_responsable_id = $2
             OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
           )
-          AND (
-            TRIM(pe.descripcion) = TRIM($3::text)
-            OR TRIM(COALESCE(pe.actividad_reportada, '')) = TRIM($3::text)
-          )
         ORDER BY pe.id DESC
         LIMIT 1
         `,
-        [semanaNum, docenteId, entregableTexto]
+        [plantillaId, docenteId]
       );
 
       let entregableId;
@@ -839,37 +994,45 @@ router.post(
           UPDATE proyecto_entregables
           SET completado = $1,
               fecha_completado = CASE
-                WHEN $1 THEN COALESCE($2::date, CURRENT_DATE)
+                WHEN $1 THEN CURRENT_DATE
                 ELSE NULL
               END,
               fecha_real_entrega = CASE
-                WHEN $2::text IS NOT NULL AND TRIM($2::text) <> '' THEN $2::date
-                ELSE fecha_real_entrega
+                WHEN $1 THEN CURRENT_DATE
+                ELSE NULL
               END,
-              url_evidencia = COALESCE($3, url_evidencia),
+              fecha_cargue_evidencia = CASE
+                WHEN $1 THEN CURRENT_TIMESTAMP
+                ELSE NULL
+              END,
+              url_evidencia = COALESCE($2, url_evidencia),
               estado_revision = CASE
                 WHEN $1 THEN 'enviado'
                 WHEN estado_revision IN ('aprobado', 'observado') THEN estado_revision
                 ELSE 'borrador'
               END
-          WHERE id = $4
+          WHERE id = $3
           `,
-          [completado, fechaRealRaw, urlVal, entregableId]
+          [completado, urlVal, entregableId]
         );
       } else {
+        const initiative = await resolveInitiativeForTemplate(docenteId, tpl, client);
+        if (!initiative.id) {
+          return res.status(422).json({
+            error:
+              "No tienes una iniciativa asignada. El administrador debe asignarla antes de reportar.",
+            semana_numero: semanaNum,
+          });
+        }
         const semana = await client.query(
           `
           SELECT ps.id FROM proyecto_semanas ps
-          INNER JOIN proyectos p ON p.id = ps.proyecto_id
           WHERE ps.numero = $1
-            AND (
-              p.docente_responsable_id = $2
-              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
-            )
+            AND ps.proyecto_id = $2
           ORDER BY ps.id ASC
           LIMIT 1
           `,
-          [semanaNum, docenteId]
+          [semanaNum, initiative.id]
         );
 
         if (semana.rowCount === 0) {
@@ -883,10 +1046,13 @@ router.post(
           `
           INSERT INTO proyecto_entregables (
             proyecto_semana_id,
+            plantilla_id,
+            docente_id,
             descripcion,
             completado,
             fecha_completado,
             fecha_real_entrega,
+            fecha_cargue_evidencia,
             url_evidencia,
             estado_revision,
             horas
@@ -895,22 +1061,23 @@ router.post(
             $1,
             $2,
             $3,
-            CASE WHEN $3 THEN COALESCE($4::date, CURRENT_DATE) ELSE NULL END,
-            CASE
-              WHEN $4::text IS NOT NULL AND TRIM($4::text) <> '' THEN $4::date
-              ELSE NULL
-            END,
+            $4,
             $5,
-            CASE WHEN $3 THEN 'enviado' ELSE 'borrador' END,
-            $6
+            CASE WHEN $5 THEN CURRENT_DATE ELSE NULL END,
+            CASE WHEN $5 THEN CURRENT_DATE ELSE NULL END,
+            CASE WHEN $5 THEN CURRENT_TIMESTAMP ELSE NULL END,
+            $6,
+            CASE WHEN $5 THEN 'enviado' ELSE 'borrador' END,
+            $7
           )
-          RETURNING id
+          RETURNING id, fecha_cargue_evidencia
           `,
           [
             semana.rows[0].id,
+            plantillaId,
+            docenteId,
             entregableTexto,
             completado,
-            fechaRealRaw,
             url_evidencia != null ? String(url_evidencia) : null,
             tpl.horas != null ? Number(tpl.horas) : null,
           ]
@@ -918,7 +1085,17 @@ router.post(
         entregableId = ins.rows[0].id;
       }
 
-      res.json({ ok: true, entregable_id: entregableId });
+      const saved = await client.query(
+        `SELECT fecha_real_entrega, fecha_cargue_evidencia
+         FROM proyecto_entregables WHERE id = $1`,
+        [entregableId]
+      );
+      res.json({
+        ok: true,
+        entregable_id: entregableId,
+        fecha_real_entrega: toDateOnlyISO(saved.rows[0]?.fecha_real_entrega),
+        fecha_cargue_evidencia: saved.rows[0]?.fecha_cargue_evidencia || null,
+      });
     } catch (error) {
       console.error(
         "Error en POST /docente/:docenteId/matriz/:plantillaId/completar",
@@ -960,8 +1137,14 @@ router.get("/:id/reportes", async (req, res) => {
       JOIN proyectos p ON p.id = s.proyecto_id
       WHERE COALESCE(e.completado, false) = true
         AND (
-          p.docente_responsable_id = $1
-          OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
+          e.docente_id = $1
+          OR (
+            e.docente_id IS NULL
+            AND (
+              p.docente_responsable_id = $1
+              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
+            )
+          )
         )
       ORDER BY
         COALESCE(e.fecha_real_entrega, e.fecha_completado) DESC NULLS LAST,
@@ -1047,11 +1230,13 @@ router.get("/:docenteId/iniciativas/:proyectoId", async (req, res) => {
            '[]'
          ) AS entregables
        FROM proyecto_semanas s
-       LEFT JOIN proyecto_entregables e ON e.proyecto_semana_id = s.id
+       LEFT JOIN proyecto_entregables e
+         ON e.proyecto_semana_id = s.id
+        AND (e.docente_id = $2 OR e.docente_id IS NULL)
        WHERE s.proyecto_id = $1
        GROUP BY s.id, s.numero, s.fecha_inicio, s.fecha_fin
        ORDER BY s.numero`,
-      [proyectoId]
+      [proyectoId, docenteId]
     );
 
     const tipoMap = {
@@ -1117,7 +1302,6 @@ router.patch("/entregables/:entregableId/borrador", async (req, res) => {
 
   const client = await pool.connect();
   try {
-    await ensureReportFieldsColumns(client);
     const perm = await client.query(
       `
       SELECT 1
@@ -1126,8 +1310,14 @@ router.patch("/entregables/:entregableId/borrador", async (req, res) => {
       JOIN proyectos p ON p.id = s.proyecto_id
       WHERE e.id = $1
         AND (
-          p.docente_responsable_id = $2
-          OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
+          e.docente_id = $2
+          OR (
+            e.docente_id IS NULL
+            AND (
+              p.docente_responsable_id = $2
+              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
+            )
+          )
         )
       `,
       [entregableId, docenteIdNum]
@@ -1147,7 +1337,10 @@ router.patch("/entregables/:entregableId/borrador", async (req, res) => {
           porcentaje_avance   = COALESCE($3, porcentaje_avance),
           url_evidencia       = CASE WHEN $5 THEN $4 ELSE url_evidencia END,
           estado_revision     = 'borrador',
-          completado          = false
+          completado          = false,
+          fecha_completado    = NULL,
+          fecha_real_entrega  = NULL,
+          fecha_cargue_evidencia = NULL
       WHERE id = $6
       RETURNING id
       `,
@@ -1172,73 +1365,13 @@ router.patch("/entregables/:entregableId/borrador", async (req, res) => {
   }
 });
 
-// PATCH fecha real de entrega (docente)
-router.patch("/entregables/:entregableId/fecha-entrega", async (req, res) => {
-  const entregableId = Number(req.params.entregableId);
-  const { fecha_real_entrega, docente_id } = req.body || {};
-  const docenteIdNum = docente_id != null ? Number(docente_id) : null;
-
-  if (!entregableId) {
-    return res.status(400).json({ error: "id de entregable inválido" });
-  }
-  if (
-    fecha_real_entrega == null ||
-    String(fecha_real_entrega).trim() === ""
-  ) {
-    return res.status(400).json({ error: "fecha_real_entrega es requerida" });
-  }
-
-  const client = await pool.connect();
-  try {
-    await ensureReportFieldsColumns(client);
-    if (docenteIdNum != null && !Number.isNaN(docenteIdNum)) {
-      const perm = await client.query(
-        `
-        SELECT 1
-        FROM proyecto_entregables e
-        JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-        JOIN proyectos p ON p.id = s.proyecto_id
-        WHERE e.id = $1
-          AND (
-            p.docente_responsable_id = $2
-            OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
-          )
-        `,
-        [entregableId, docenteIdNum]
-      );
-      if (perm.rowCount === 0) {
-        return res
-          .status(403)
-          .json({ error: "No tienes permiso para editar este entregable" });
-      }
-    }
-
-    const r = await client.query(
-      `
-      UPDATE proyecto_entregables
-      SET fecha_real_entrega = $1::date
-      WHERE id = $2
-      RETURNING id, fecha_real_entrega
-      `,
-      [String(fecha_real_entrega).trim(), entregableId]
-    );
-    if (r.rowCount === 0) {
-      return res.status(404).json({ error: "Entregable no encontrado" });
-    }
-    const row = r.rows[0];
-    res.json({
-      id: row.id,
-      fecha_real_entrega: toDateOnlyISO(row.fecha_real_entrega),
-    });
-  } catch (error) {
-    console.error(
-      "Error en PATCH /docente/entregables/:id/fecha-entrega",
-      error
-    );
-    res.status(500).json({ error: "Error interno" });
-  } finally {
-    client.release();
-  }
+// Compatibilidad explícita para clientes antiguos: la fecha real nunca se
+// acepta desde el navegador; el servidor la registra al enviar la evidencia.
+router.patch("/entregables/:entregableId/fecha-entrega", (_req, res) => {
+  res.status(403).json({
+    error:
+      "La fecha de entrega se registra automáticamente y no puede ser modificada por el docente.",
+  });
 });
 
 // Reenviar reporte observado para revisión (docente)
@@ -1267,6 +1400,7 @@ router.post("/:docenteId/entregables/:entregableId/reenviar", async (req, res) =
       LEFT JOIN proyecto_docentes pd
         ON pd.proyecto_id = p.id AND pd.docente_id = $2
       WHERE e.id = $1
+        AND (e.docente_id = $2 OR e.docente_id IS NULL)
       `,
       [entregableId, docenteId]
     );
@@ -1296,10 +1430,15 @@ router.post("/:docenteId/entregables/:entregableId/reenviar", async (req, res) =
       UPDATE proyecto_entregables
       SET estado_revision = 'enviado',
           comentario_revision = NULL,
-          revisado_en = NULL
+          revisado_en = NULL,
+          completado = true,
+          fecha_completado = CURRENT_DATE,
+          fecha_real_entrega = CURRENT_DATE,
+          fecha_cargue_evidencia = CURRENT_TIMESTAMP,
+          docente_id = COALESCE(docente_id, $2)
       WHERE id = $1
       `,
-      [entregableId]
+      [entregableId, docenteId]
     );
 
     res.json({ ok: true, mensaje: "Reporte reenviado para revisión" });
@@ -1320,7 +1459,6 @@ router.put("/entregables/:entregableId", async (req, res) => {
   }
   const {
     completado,
-    fecha_real_entrega,
     url_evidencia,
     docente_id,
     actividad_reportada,
@@ -1333,7 +1471,6 @@ router.put("/entregables/:entregableId", async (req, res) => {
   }
   const client = await pool.connect();
   try {
-    await ensureReportFieldsColumns(client);
     if (docenteIdNum != null) {
       const perm = await client.query(
         `
@@ -1343,8 +1480,14 @@ router.put("/entregables/:entregableId", async (req, res) => {
         JOIN proyectos p ON p.id = s.proyecto_id
         WHERE e.id = $1
           AND (
-            p.docente_responsable_id = $2
-            OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
+            e.docente_id = $2
+            OR (
+              e.docente_id IS NULL
+              AND (
+                p.docente_responsable_id = $2
+                OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
+              )
+            )
           )
         `,
         [entregableId, docenteIdNum]
@@ -1356,15 +1499,19 @@ router.put("/entregables/:entregableId", async (req, res) => {
       }
     }
 
-    await client.query(
+    const updated = await client.query(
       `UPDATE proyecto_entregables
        SET completado         = $1,
            fecha_completado   = CASE WHEN $1 = true THEN CURRENT_DATE ELSE NULL END,
-           fecha_real_entrega = $2,
-           url_evidencia      = $3,
-           actividad_reportada = $4,
-           descripcion_reporte = $5,
-           porcentaje_avance  = $6,
+           fecha_real_entrega = CASE WHEN $1 = true THEN CURRENT_DATE ELSE NULL END,
+           fecha_cargue_evidencia = CASE
+                                      WHEN $1 = true THEN CURRENT_TIMESTAMP
+                                      ELSE NULL
+                                    END,
+           url_evidencia      = $2,
+           actividad_reportada = $3,
+           descripcion_reporte = $4,
+           porcentaje_avance  = $5,
            estado_revision    = CASE
                                 WHEN $1 = true THEN
                                   CASE
@@ -1373,10 +1520,10 @@ router.put("/entregables/:entregableId", async (req, res) => {
                                   END
                                 ELSE COALESCE(estado_revision, 'enviado')
                               END
-       WHERE id = $7`,
+       WHERE id = $6
+       RETURNING fecha_real_entrega, fecha_cargue_evidencia`,
       [
         completado === true,
-        fecha_real_entrega || null,
         url_evidencia || null,
         actividad_reportada || null,
         descripcion_reporte || null,
@@ -1386,7 +1533,14 @@ router.put("/entregables/:entregableId", async (req, res) => {
         entregableId,
       ]
     );
-    res.json({ ok: true });
+    if (updated.rowCount === 0) {
+      return res.status(404).json({ error: "Entregable no encontrado" });
+    }
+    res.json({
+      ok: true,
+      fecha_real_entrega: toDateOnlyISO(updated.rows[0].fecha_real_entrega),
+      fecha_cargue_evidencia: updated.rows[0].fecha_cargue_evidencia,
+    });
   } catch (error) {
     console.error("Error en PUT /docente/entregables/:entregableId", error);
     res.status(500).json({ error: "Error interno" });

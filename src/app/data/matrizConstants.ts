@@ -20,12 +20,10 @@ export type DeliveryStatus =
   | "entrega_fuera"
   | "vencido";
 
-export type MonthName = "Febrero" | "Marzo" | "Abril" | "Mayo";
-
 export interface Deliverable {
   id: number;
   numero?: number | null;
-  month: MonthName;
+  month: string;
   week: number;
   startDate: string;
   endDate: string;
@@ -213,12 +211,3 @@ export function computeStatus(
   if (today >= weekStart && today <= weekEnd) return "semana_en_curso";
   return "vencido";
 }
-
-export const MONTHS: MonthName[] = ["Febrero", "Marzo", "Abril", "Mayo"];
-
-export const MONTH_COLORS: Record<MonthName, string> = {
-  Febrero: "bg-violet-600",
-  Marzo: "bg-[#1e3a8a]",
-  Abril: "bg-teal-600",
-  Mayo: "bg-emerald-600",
-};

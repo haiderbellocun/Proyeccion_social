@@ -2,7 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Edit2, Plus, Search, Trash2, X } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import type { BadgeVariant } from "../../components/Badge";
-import { API_BASE } from "../../config/api";
+import { AppSelect } from "../../components/AppSelect";
+import { useConfirmationDialog } from "../../components/ConfirmationDialog";
+import { API_BASE, apiFetch as fetch } from "../../config/api";
+import { notify } from "../../lib/notify";
 
 const API_BASE_URL = API_BASE;
 
@@ -15,13 +18,23 @@ type AdminUser = {
   program: string;
   school: string;
   status: BadgeVariant;
+  estado: "activo" | "inactivo";
   programa_id: number | null;
   tipo_docente: string | null;
+  regional: string | null;
+  link_drive: string | null;
   grupo_matriz_id: number | null;
   grupo_matriz_nombre: string | null;
 };
 
 type ProgramOption = { id: number; name: string; school: string };
+type GroupOption = {
+  id: number;
+  nombre: string;
+  semestre: string;
+  tipo_docente: string | null;
+  activo: boolean;
+};
 
 function initials(name: string) {
   const parts = name.split(/\s+/).filter(Boolean).slice(0, 2);
@@ -33,6 +46,7 @@ function tipoIsNuevo(t: string | null | undefined) {
 }
 
 export default function UserManagement() {
+  const requestConfirmation = useConfirmationDialog();
   const [showModal, setShowModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [search, setSearch] = useState("");
@@ -45,14 +59,17 @@ export default function UserManagement() {
   const [newRole, setNewRole] = useState<"Docente" | "Administrador">("Docente");
   const [newSchool, setNewSchool] = useState<string>("");
   const [newProgram, setNewProgram] = useState<string>("");
+  const [newTeacherType, setNewTeacherType] = useState<"ANTIGUO" | "NUEVO">("ANTIGUO");
+  const [newRegional, setNewRegional] = useState("");
+  const [newDriveLink, setNewDriveLink] = useState("");
+  const [newGroupId, setNewGroupId] = useState<number | "">("");
   const [savingUser, setSavingUser] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [deleteBanner, setDeleteBanner] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [limit] = useState(50);
   const [total, setTotal] = useState(0);
 
   const [programOptions, setProgramOptions] = useState<ProgramOption[]>([]);
+  const [groupOptions, setGroupOptions] = useState<GroupOption[]>([]);
 
   const [editId, setEditId] = useState<number | null>(null);
   const [editNombre, setEditNombre] = useState("");
@@ -60,14 +77,23 @@ export default function UserManagement() {
   const [editCorreo, setEditCorreo] = useState("");
   const [editRol, setEditRol] = useState<"docente" | "admin">("docente");
   const [editProgramaId, setEditProgramaId] = useState<number | "">("");
+  const [editEstado, setEditEstado] = useState<"activo" | "inactivo">("activo");
+  const [editTeacherType, setEditTeacherType] = useState<"ANTIGUO" | "NUEVO">("ANTIGUO");
+  const [editRegional, setEditRegional] = useState("");
+  const [editDriveLink, setEditDriveLink] = useState("");
+  const [editGroupId, setEditGroupId] = useState<number | "">("");
   const [savingEdit, setSavingEdit] = useState(false);
 
   useEffect(() => {
     const loadCatalog = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/admin/catalogos`);
-        if (!res.ok) return;
+        const [res, groupsResponse] = await Promise.all([
+          fetch(`${API_BASE_URL}/admin/catalogos`),
+          fetch(`${API_BASE_URL}/admin/grupos-matriz`),
+        ]);
+        if (!res.ok || !groupsResponse.ok) return;
         const data = await res.json();
+        const groupsData = await groupsResponse.json();
         const schools = data.schools || [];
         const opts: ProgramOption[] = [];
         for (const s of schools) {
@@ -83,6 +109,7 @@ export default function UserManagement() {
         }
         opts.sort((a, b) => a.name.localeCompare(b.name));
         setProgramOptions(opts);
+        setGroupOptions(groupsData.grupos || []);
       } catch (e) {
         console.error(e);
       }
@@ -92,7 +119,6 @@ export default function UserManagement() {
 
   const loadUsers = async () => {
     try {
-      setError(null);
       const res = await fetch(
         `${API_BASE_URL}/admin/usuarios?page=${page}&limit=${limit}`
       );
@@ -108,8 +134,11 @@ export default function UserManagement() {
         program: String(r.program || "Sin programa"),
         school: String(r.school || ""),
         status: (r.status === "delayed" ? "delayed" : "active") as BadgeVariant,
+        estado: r.estado === "inactivo" ? "inactivo" : "activo",
         programa_id: r.programa_id != null ? Number(r.programa_id) : null,
         tipo_docente: r.tipo_docente != null ? String(r.tipo_docente) : null,
+        regional: r.regional != null ? String(r.regional) : null,
+        link_drive: r.link_drive != null ? String(r.link_drive) : null,
         grupo_matriz_id: r.grupo_matriz_id != null ? Number(r.grupo_matriz_id) : null,
         grupo_matriz_nombre:
           r.grupo_matriz_nombre != null ? String(r.grupo_matriz_nombre) : null,
@@ -118,7 +147,7 @@ export default function UserManagement() {
       setTotal(Number(data.pagination?.total ?? mapped.length));
     } catch (err) {
       console.error(err);
-      setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+      notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
     }
   };
 
@@ -134,12 +163,13 @@ export default function UserManagement() {
           new Set(users.filter((u) => u.school === selectedSchool).map((u) => u.program))
         ).filter(Boolean);
 
+  const catalogSchools = Array.from(new Set(programOptions.map((option) => option.school))).filter(Boolean);
   const programsForNewSchool =
     newSchool && newSchool !== ""
-      ? Array.from(
-          new Set(users.filter((u) => u.school === newSchool).map((u) => u.program))
-        ).filter(Boolean)
-      : programsForSchool;
+      ? programOptions
+          .filter((option) => option.school === newSchool)
+          .map((option) => option.name)
+      : programOptions.map((option) => option.name);
 
   const filteredUsers = users.filter((u) => {
     const term = search.toLowerCase();
@@ -161,12 +191,16 @@ export default function UserManagement() {
     setNewRole("Docente");
     setNewSchool("");
     setNewProgram("");
+    setNewTeacherType("ANTIGUO");
+    setNewRegional("");
+    setNewDriveLink("");
+    setNewGroupId("");
     setShowModal(true);
   };
 
   const handleSaveUser = async () => {
     if (!newFirstName || !newLastName || !newEmail) {
-      alert("Nombres, apellidos y correo son obligatorios.");
+      notify.warning("Nombres, apellidos y correo son obligatorios.");
       return;
     }
     try {
@@ -180,18 +214,24 @@ export default function UserManagement() {
           correo: newEmail,
           rol: newRole === "Administrador" ? "admin" : "docente",
           programaNombre: newProgram || undefined,
+          tipo_docente: newRole === "Docente" ? newTeacherType : null,
+          regional: newRole === "Docente" ? newRegional.trim() || null : null,
+          link_drive: newRole === "Docente" ? newDriveLink.trim() || null : null,
+          grupo_matriz_id:
+            newRole === "Docente" && newGroupId !== "" ? newGroupId : null,
         }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        alert(data.error || "No se pudo crear el usuario.");
+        notify.error(data.error || "No se pudo crear el usuario.");
         return;
       }
       await loadUsers();
       setShowModal(false);
+      notify.success("Usuario creado");
     } catch (err) {
       console.error(err);
-      alert("Error de conexión con el servidor.");
+      notify.error("Error de conexión con el servidor.");
     } finally {
       setSavingUser(false);
     }
@@ -206,18 +246,21 @@ export default function UserManagement() {
     setEditCorreo(u.email);
     setEditRol(u.rol);
     setEditProgramaId(u.programa_id ?? "");
-    setDeleteBanner(null);
+    setEditEstado(u.estado);
+    setEditTeacherType(tipoIsNuevo(u.tipo_docente) ? "NUEVO" : "ANTIGUO");
+    setEditRegional(u.regional || "");
+    setEditDriveLink(u.link_drive || "");
+    setEditGroupId(u.grupo_matriz_id ?? "");
     setShowEditModal(true);
   };
 
   const handleSaveEdit = async () => {
     if (editId == null) return;
     if (!editNombre.trim() || !editApellido.trim() || !editCorreo.trim()) {
-      alert("Nombre, apellido y correo son obligatorios.");
+      notify.warning("Nombre, apellido y correo son obligatorios.");
       return;
     }
     setSavingEdit(true);
-    setDeleteBanner(null);
     try {
       const res = await fetch(`${API_BASE_URL}/admin/usuarios/${editId}`, {
         method: "PUT",
@@ -228,11 +271,17 @@ export default function UserManagement() {
           correo: editCorreo.trim(),
           rol: editRol,
           programa_id: editProgramaId === "" ? null : editProgramaId,
+          estado: editEstado,
+          tipo_docente: editRol === "docente" ? editTeacherType : null,
+          regional: editRol === "docente" ? editRegional.trim() || null : null,
+          link_drive: editRol === "docente" ? editDriveLink.trim() || null : null,
+          grupo_matriz_id:
+            editRol === "docente" && editGroupId !== "" ? editGroupId : null,
         }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        alert(data.error || "No se pudo guardar.");
+        notify.error(data.error || "No se pudo guardar.");
         return;
       }
       const updated = await res.json();
@@ -249,54 +298,56 @@ export default function UserManagement() {
                 program: updated.program,
                 school: updated.school,
                 status: updated.status as BadgeVariant,
+                estado: updated.estado === "inactivo" ? "inactivo" : "activo",
                 programa_id: updated.programa_id ?? null,
                 tipo_docente:
-                  updated.tipo_docente != null ? String(updated.tipo_docente) : row.tipo_docente,
-                grupo_matriz_id: updated.grupo_matriz_id ?? row.grupo_matriz_id,
+                  updated.tipo_docente != null ? String(updated.tipo_docente) : null,
+                regional: updated.regional ?? null,
+                link_drive: updated.link_drive ?? null,
+                grupo_matriz_id: updated.grupo_matriz_id ?? null,
                 grupo_matriz_nombre:
-                  updated.grupo_matriz_nombre ?? row.grupo_matriz_nombre,
+                  updated.grupo_matriz_nombre ?? null,
               }
             : row
         )
       );
       setShowEditModal(false);
+      notify.success("Cambios guardados");
     } catch (err) {
       console.error(err);
-      alert("Error de conexión.");
+      notify.error("Error de conexión.");
     } finally {
       setSavingEdit(false);
     }
   };
 
   const handleDelete = async (u: AdminUser) => {
-    if (
-      !window.confirm(
-        `¿Eliminar a ${u.name}? Esta acción no se puede deshacer.`
-      )
-    ) {
-      return;
-    }
-    setDeleteBanner(null);
+    const accepted = await requestConfirmation({
+      title: "Eliminar usuario",
+      description: `¿Deseas eliminar a ${u.name}? Esta acción no se puede deshacer.`,
+      confirmLabel: "Eliminar",
+      tone: "danger",
+    });
+    if (!accepted) return;
     try {
       const res = await fetch(`${API_BASE_URL}/admin/usuarios/${u.id}`, {
         method: "DELETE",
       });
       if (res.status === 400) {
         const data = await res.json().catch(() => ({}));
-        setDeleteBanner(
-          String(data.error || "No se puede eliminar este usuario.")
-        );
+        notify.error(String(data.error || "No se puede eliminar este usuario."));
         return;
       }
       if (!res.ok) {
-        setDeleteBanner("No se pudo eliminar el usuario.");
+        notify.error("No se pudo eliminar el usuario.");
         return;
       }
       setUsers((prev) => prev.filter((row) => row.id !== u.id));
       setTotal((t) => Math.max(0, t - 1));
+      notify.success("Usuario eliminado");
     } catch (err) {
       console.error(err);
-      setDeleteBanner("Error de conexión al eliminar.");
+      notify.error("Error de conexión al eliminar.");
     }
   };
 
@@ -306,48 +357,32 @@ export default function UserManagement() {
 
   return (
     <div className="space-y-4">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-          {error}
-        </div>
-      )}
-      {deleteBanner && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-          {deleteBanner}
-        </div>
-      )}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-xs text-gray-500">Filtros</span>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <select
+          <AppSelect
             value={selectedSchool}
-            onChange={(e) => {
-              setSelectedSchool(e.target.value);
+            onValueChange={(v) => {
+              setSelectedSchool(v);
               setSelectedProgram("Todos");
             }}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-          >
-            <option value="Todas">Todas las escuelas</option>
-            {schools.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-          <select
+            options={[
+              { value: "Todas", label: "Todas las escuelas" },
+              ...schools.map((s) => ({ value: s, label: s })),
+            ]}
+            className="bg-gray-50"
+          />
+          <AppSelect
             value={selectedProgram}
-            onChange={(e) => setSelectedProgram(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-          >
-            <option value="Todos">Todos los programas</option>
-            {programsForSchool.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
+            onValueChange={(v) => setSelectedProgram(v)}
+            options={[
+              { value: "Todos", label: "Todos los programas" },
+              ...programsForSchool.map((p) => ({ value: p, label: p })),
+            ]}
+            className="bg-gray-50"
+          />
         </div>
       </div>
 
@@ -486,7 +521,7 @@ export default function UserManagement() {
 
       {showModal && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
               <h3 className="text-gray-800">Agregar nuevo usuario</h3>
               <button
@@ -538,55 +573,119 @@ export default function UserManagement() {
                   <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
                     Rol
                   </label>
-                  <select
+                  <AppSelect
                     value={newRole}
-                    onChange={(e) =>
-                      setNewRole(e.target.value === "Administrador" ? "Administrador" : "Docente")
-                    }
-                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50"
-                  >
-                    <option>Docente</option>
-                    <option>Administrador</option>
-                  </select>
+                    onValueChange={(v) => {
+                      const nextRole = v === "Administrador" ? "Administrador" : "Docente";
+                      setNewRole(nextRole);
+                      if (nextRole === "Administrador") setNewGroupId("");
+                    }}
+                    options={[
+                      { value: "Docente", label: "Docente" },
+                      { value: "Administrador", label: "Administrador" },
+                    ]}
+                    className="w-full bg-gray-50"
+                  />
                 </div>
                 <div>
                   <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
                     Escuela
                   </label>
-                  <select
+                  <AppSelect
                     value={newSchool}
-                    onChange={(e) => {
-                      setNewSchool(e.target.value);
+                    onValueChange={(v) => {
+                      setNewSchool(v);
                       setNewProgram("");
                     }}
-                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50"
-                  >
-                    <option>Seleccionar escuela...</option>
-                    {schools.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
+                    placeholder="Seleccionar escuela..."
+                    options={catalogSchools.map((s) => ({ value: s, label: s }))}
+                    className="w-full bg-gray-50"
+                  />
                 </div>
               </div>
               <div>
                 <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
                   Programa
                 </label>
-                <select
+                <AppSelect
                   value={newProgram}
-                  onChange={(e) => setNewProgram(e.target.value)}
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50"
-                >
-                  <option>Seleccionar programa...</option>
-                  {programsForNewSchool.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
+                  onValueChange={(v) => setNewProgram(v)}
+                  placeholder="Seleccionar programa..."
+                  options={programsForNewSchool.map((p) => ({ value: p, label: p }))}
+                  className="w-full bg-gray-50"
+                />
               </div>
+              {newRole === "Docente" && (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-1.5 font-medium">
+                        Tipo de docente
+                      </label>
+                      <AppSelect
+                        value={newTeacherType}
+                        onValueChange={(v) => {
+                          setNewTeacherType(v === "NUEVO" ? "NUEVO" : "ANTIGUO");
+                          setNewGroupId("");
+                        }}
+                        options={[
+                          { value: "ANTIGUO", label: "Antiguo" },
+                          { value: "NUEVO", label: "Nuevo" },
+                        ]}
+                        className="w-full bg-gray-50"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-1.5 font-medium">
+                        Regional
+                      </label>
+                      <input
+                        type="text"
+                        value={newRegional}
+                        onChange={(e) => setNewRegional(e.target.value)}
+                        placeholder="Ej. Bogotá"
+                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1.5 font-medium">
+                      Grupo matriz
+                    </label>
+                    <AppSelect
+                      value={newGroupId === "" ? "" : String(newGroupId)}
+                      emptyValue="__none__"
+                      onValueChange={(v) => setNewGroupId(v === "" ? "" : Number(v))}
+                      options={[
+                        { value: "__none__", label: "Sin grupo" },
+                        ...groupOptions
+                          .filter(
+                            (group) =>
+                              group.activo !== false &&
+                              (!group.tipo_docente || group.tipo_docente === newTeacherType)
+                          )
+                          .map((group) => ({
+                            value: String(group.id),
+                            label: `${group.nombre} (${group.semestre})`,
+                          })),
+                      ]}
+                      className="w-full bg-gray-50"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1.5 font-medium">
+                      Carpeta de Google Drive
+                    </label>
+                    <input
+                      type="url"
+                      value={newDriveLink}
+                      onChange={(e) => setNewDriveLink(e.target.value)}
+                      placeholder="https://drive.google.com/..."
+                      className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
+                    />
+                  </div>
+                </>
+              )}
             </div>
             <div className="flex gap-3 px-6 pb-6">
               <button
@@ -610,7 +709,7 @@ export default function UserManagement() {
 
       {showEditModal && editId != null && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
               <h3 className="text-gray-800 font-semibold">Editar usuario</h3>
               <button
@@ -651,34 +750,120 @@ export default function UserManagement() {
               </div>
               <div>
                 <label className="block text-sm text-gray-700 mb-1.5 font-medium">Rol</label>
-                <select
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
+                <AppSelect
+                  className="w-full bg-gray-50"
                   value={editRol}
-                  onChange={(e) =>
-                    setEditRol(e.target.value === "admin" ? "admin" : "docente")
+                  onValueChange={(v) => {
+                    const nextRole = v === "admin" ? "admin" : "docente";
+                    setEditRol(nextRole);
+                    if (nextRole === "admin") setEditGroupId("");
+                  }}
+                  options={[
+                    { value: "docente", label: "docente" },
+                    { value: "admin", label: "admin" },
+                  ]}
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-700 mb-1.5 font-medium">Estado</label>
+                <AppSelect
+                  className="w-full bg-gray-50"
+                  value={editEstado}
+                  onValueChange={(v) =>
+                    setEditEstado(v === "inactivo" ? "inactivo" : "activo")
                   }
-                >
-                  <option value="docente">docente</option>
-                  <option value="admin">admin</option>
-                </select>
+                  options={[
+                    { value: "activo", label: "Activo" },
+                    { value: "inactivo", label: "Inactivo" },
+                  ]}
+                />
               </div>
               <div>
                 <label className="block text-sm text-gray-700 mb-1.5 font-medium">Programa</label>
-                <select
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                  value={editProgramaId}
-                  onChange={(e) =>
-                    setEditProgramaId(e.target.value ? Number(e.target.value) : "")
-                  }
-                >
-                  <option value="">Sin programa</option>
-                  {programsInEditModal.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.school})
-                    </option>
-                  ))}
-                </select>
+                <AppSelect
+                  className="w-full bg-gray-50"
+                  value={editProgramaId === "" ? "" : String(editProgramaId)}
+                  emptyValue="__none__"
+                  onValueChange={(v) => setEditProgramaId(v === "" ? "" : Number(v))}
+                  options={[
+                    { value: "__none__", label: "Sin programa" },
+                    ...programsInEditModal.map((p) => ({
+                      value: String(p.id),
+                      label: `${p.name} (${p.school})`,
+                    })),
+                  ]}
+                />
               </div>
+              {editRol === "docente" && (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-1.5 font-medium">
+                        Tipo de docente
+                      </label>
+                      <AppSelect
+                        className="w-full bg-gray-50"
+                        value={editTeacherType}
+                        onValueChange={(v) => {
+                          setEditTeacherType(v === "NUEVO" ? "NUEVO" : "ANTIGUO");
+                          setEditGroupId("");
+                        }}
+                        options={[
+                          { value: "ANTIGUO", label: "Antiguo" },
+                          { value: "NUEVO", label: "Nuevo" },
+                        ]}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-1.5 font-medium">
+                        Regional
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
+                        value={editRegional}
+                        onChange={(e) => setEditRegional(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1.5 font-medium">
+                      Grupo matriz
+                    </label>
+                    <AppSelect
+                      className="w-full bg-gray-50"
+                      value={editGroupId === "" ? "" : String(editGroupId)}
+                      emptyValue="__none__"
+                      onValueChange={(v) => setEditGroupId(v === "" ? "" : Number(v))}
+                      options={[
+                        { value: "__none__", label: "Sin grupo" },
+                        ...groupOptions
+                          .filter(
+                            (group) =>
+                              group.activo !== false &&
+                              (!group.tipo_docente || group.tipo_docente === editTeacherType)
+                          )
+                          .map((group) => ({
+                            value: String(group.id),
+                            label: `${group.nombre} (${group.semestre})`,
+                          })),
+                      ]}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-700 mb-1.5 font-medium">
+                      Carpeta de Google Drive
+                    </label>
+                    <input
+                      type="url"
+                      className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
+                      value={editDriveLink}
+                      onChange={(e) => setEditDriveLink(e.target.value)}
+                      placeholder="https://drive.google.com/..."
+                    />
+                  </div>
+                </>
+              )}
             </div>
             <div className="flex gap-3 px-6 pb-6">
               <button

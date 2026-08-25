@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { BarChart2, RefreshCw, TableProperties } from "lucide-react";
-import { API_BASE } from "../config/api";
+import { AppSelect } from "../components/AppSelect";
+import { API_BASE, apiFetch as fetch } from "../config/api";
 import { useCurrentUser } from "../hooks/useCurrentUser";
+import { notify } from "../lib/notify";
 
-type MesKey = "febrero" | "marzo" | "abril" | "mayo";
+interface AvanceMes {
+  mes: string;
+  completados: number;
+  total: number;
+  porcentaje: number;
+}
 
 interface DocenteAvance {
   id: number;
@@ -15,29 +22,36 @@ interface DocenteAvance {
   grupo_nombre: string;
   tipo_docente: "ANTIGUO" | "NUEVO";
   avance_global: number;
-  avance_por_mes: Record<
-    MesKey,
-    { completados: number; total: number; porcentaje: number }
-  >;
+  avance_real: number;
+  avance_esperado: number;
+  cumplimiento_esperado: number;
+  brecha: number;
+  avance_por_mes: AvanceMes[];
   entregables_vencidos: number;
   ultimo_reporte: string | null;
 }
 
-type SortKey =
-  | "nombre"
-  | "febrero"
-  | "marzo"
-  | "abril"
-  | "mayo"
-  | "global";
+type SortKey = string;
 
 interface Payload {
+  meses: string[];
   docentes: DocenteAvance[];
   totales: {
     docentes: number;
     promedio_global: number;
-    por_mes: Record<MesKey, number>;
+    por_mes: { mes: string; porcentaje: number }[];
   };
+}
+
+const emptyMonth = (mes: string): AvanceMes => ({
+  mes,
+  completados: 0,
+  total: 0,
+  porcentaje: 0,
+});
+
+function monthProgress(docente: DocenteAvance, mes: string): AvanceMes {
+  return docente.avance_por_mes.find((row) => row.mes === mes) || emptyMonth(mes);
 }
 
 function cellColor(pct: number) {
@@ -54,9 +68,9 @@ function barColor(pct: number) {
 
 function estadoRow(d: DocenteAvance): { label: string; className: string } {
   if (d.grupo_id == null) return { label: "Sin grupo", className: "bg-gray-100 text-gray-700" };
-  const g = d.avance_global;
-  if (g >= 70) return { label: "Al día", className: "bg-green-100 text-green-800" };
-  if (g >= 30) return { label: "En riesgo", className: "bg-amber-100 text-amber-800" };
+  const compliance = d.cumplimiento_esperado;
+  if (compliance >= 100) return { label: "Al día", className: "bg-green-100 text-green-800" };
+  if (compliance >= 75) return { label: "En riesgo", className: "bg-amber-100 text-amber-800" };
   return { label: "Crítico", className: "bg-red-100 text-red-800" };
 }
 
@@ -86,14 +100,12 @@ export default function AvanceConsolidado() {
   const [grupos, setGrupos] = useState<{ id: number; nombre: string; semestre: string }[]>([]);
   const [semestresList, setSemestresList] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("global");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   const fetchData = useCallback(async () => {
     if (!isAdmin) return;
     setLoading(true);
-    setError(null);
     try {
       const q = new URLSearchParams();
       if (semestre.trim()) q.set("semestre", semestre.trim());
@@ -104,7 +116,7 @@ export default function AvanceConsolidado() {
       setData(json as Payload);
     } catch (e) {
       console.error(e);
-      setError(e instanceof Error ? e.message : "Error");
+      notify.error("No se pudo cargar el avance consolidado. Intente de nuevo más tarde.");
       setData(null);
     } finally {
       setLoading(false);
@@ -118,8 +130,17 @@ export default function AvanceConsolidado() {
         const r = await fetch(`${API_BASE}/admin/semestres`);
         const j = await r.json();
         const s: string[] = j.semestres || [];
+        const activeCode = String(j.activo?.codigo || "");
         setSemestresList(s);
-        if (s.length) setSemestre((prev) => prev || s[0]);
+        if (s.length) {
+          setSemestre((prev) =>
+            prev && s.includes(prev)
+              ? prev
+              : activeCode && s.includes(activeCode)
+              ? activeCode
+              : s[0]
+          );
+        }
       } catch {
         setSemestresList([]);
       }
@@ -174,9 +195,15 @@ export default function AvanceConsolidado() {
       if (sortKey === "global") {
         va = a.avance_global;
         vb = b.avance_global;
+      } else if (sortKey === "esperado") {
+        va = a.avance_esperado;
+        vb = b.avance_esperado;
+      } else if (sortKey === "cumplimiento") {
+        va = a.cumplimiento_esperado;
+        vb = b.cumplimiento_esperado;
       } else {
-        va = a.avance_por_mes[sortKey].porcentaje;
-        vb = b.avance_por_mes[sortKey].porcentaje;
+        va = monthProgress(a, sortKey).porcentaje;
+        vb = monthProgress(b, sortKey).porcentaje;
       }
       if (va !== vb) return dir * (va - vb);
       return a.nombre.localeCompare(b.nombre);
@@ -194,16 +221,14 @@ export default function AvanceConsolidado() {
   };
 
   const riesgoCount = useMemo(
-    () => (data?.docentes ?? []).filter((d) => d.grupo_id != null && d.avance_global < 30).length,
+    () =>
+      (data?.docentes ?? []).filter(
+        (d) => d.grupo_id != null && d.cumplimiento_esperado < 75
+      ).length,
     [data]
   );
 
-  const mesLabels: { key: MesKey; label: string }[] = [
-    { key: "febrero", label: "Feb" },
-    { key: "marzo", label: "Mar" },
-    { key: "abril", label: "Abr" },
-    { key: "mayo", label: "May" },
-  ];
+  const meses = data?.meses ?? [];
 
   if (!isAdmin) {
     return (
@@ -236,40 +261,32 @@ export default function AvanceConsolidado() {
         </button>
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">{error}</div>
-      )}
-
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 flex flex-wrap gap-3 items-end">
         <div>
           <label className="block text-xs text-gray-500 mb-1">Semestre</label>
-          <select
+          <AppSelect
             value={semestre}
-            onChange={(e) => setSemestre(e.target.value)}
-            className="px-3 py-2 border rounded-lg text-sm min-w-[120px]"
-          >
-            <option value="">Todos</option>
-            {semestresList.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+            onValueChange={(value) => setSemestre(value)}
+            emptyValue="__todos__"
+            options={[
+              { value: "__todos__", label: "Todos" },
+              ...semestresList.map((s) => ({ value: s, label: s })),
+            ]}
+            className="min-w-[120px]"
+          />
         </div>
         <div>
           <label className="block text-xs text-gray-500 mb-1">Grupo</label>
-          <select
+          <AppSelect
             value={grupoId}
-            onChange={(e) => setGrupoId(e.target.value)}
-            className="px-3 py-2 border rounded-lg text-sm min-w-[180px]"
-          >
-            <option value="">Todos</option>
-            {grupos.map((g) => (
-              <option key={g.id} value={String(g.id)}>
-                {g.nombre}
-              </option>
-            ))}
-          </select>
+            onValueChange={(value) => setGrupoId(value)}
+            emptyValue="__todos__"
+            options={[
+              { value: "__todos__", label: "Todos" },
+              ...grupos.map((g) => ({ value: String(g.id), label: g.nombre })),
+            ]}
+            className="min-w-[180px]"
+          />
         </div>
         <div className="flex-1 min-w-[200px]">
           <label className="block text-xs text-gray-500 mb-1">Buscar docente</label>
@@ -282,7 +299,7 @@ export default function AvanceConsolidado() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="bg-white border rounded-xl p-4 shadow-sm">
           <p className="text-xs text-gray-500">Total docentes</p>
           <p className="text-2xl font-bold text-gray-900">{tot?.docentes ?? "—"}</p>
@@ -291,16 +308,16 @@ export default function AvanceConsolidado() {
           <p className="text-xs text-gray-500">Promedio avance global</p>
           <p className="text-2xl font-bold text-blue-800">{tot?.promedio_global ?? "—"}%</p>
         </div>
-        <div className="bg-white border rounded-xl p-4 shadow-sm">
-          <p className="text-xs text-gray-500">% Avance Febrero (prom.)</p>
-          <p className="text-2xl font-bold text-gray-800">{tot?.por_mes?.febrero ?? "—"}%</p>
-        </div>
-        <div className="bg-white border rounded-xl p-4 shadow-sm">
-          <p className="text-xs text-gray-500">% Avance Marzo (prom.)</p>
-          <p className="text-2xl font-bold text-gray-800">{tot?.por_mes?.marzo ?? "—"}%</p>
-        </div>
+        {meses.map((mes) => (
+          <div key={mes} className="bg-white border rounded-xl p-4 shadow-sm">
+            <p className="text-xs text-gray-500">% Avance {mes} (prom.)</p>
+            <p className="text-2xl font-bold text-gray-800">
+              {tot?.por_mes.find((row) => row.mes === mes)?.porcentaje ?? "—"}%
+            </p>
+          </div>
+        ))}
         <div className="bg-white border rounded-xl p-4 shadow-sm col-span-2 md:col-span-1">
-          <p className="text-xs text-gray-500">Docentes en riesgo (&lt;30%)</p>
+          <p className="text-xs text-gray-500">Docentes críticos (&lt;75% de lo esperado)</p>
           <p className="text-2xl font-bold text-red-600">{riesgoCount}</p>
         </div>
       </div>
@@ -317,16 +334,26 @@ export default function AvanceConsolidado() {
               <th className="text-left px-2 py-2">Programa</th>
               <th className="text-left px-2 py-2">Regional</th>
               <th className="text-left px-2 py-2">Grupo</th>
-              {mesLabels.map((m) => (
-                <th key={m.key} className="text-left px-2 py-2">
-                  <button type="button" onClick={() => toggleSort(m.key)} className="hover:underline font-semibold">
-                    {m.label} {sortKey === m.key ? (sortDir === "asc" ? "↑" : "↓") : ""}
+              {meses.map((mes) => (
+                <th key={mes} className="text-left px-2 py-2">
+                  <button type="button" onClick={() => toggleSort(mes)} className="hover:underline font-semibold">
+                    {mes.slice(0, 3)} {sortKey === mes ? (sortDir === "asc" ? "↑" : "↓") : ""}
                   </button>
                 </th>
               ))}
               <th className="text-left px-2 py-2">
                 <button type="button" onClick={() => toggleSort("global")} className="hover:underline font-semibold">
                   Global {sortKey === "global" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+                </button>
+              </th>
+              <th className="text-left px-2 py-2">
+                <button type="button" onClick={() => toggleSort("esperado")} className="hover:underline font-semibold">
+                  Esperado {sortKey === "esperado" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+                </button>
+              </th>
+              <th className="text-left px-2 py-2">
+                <button type="button" onClick={() => toggleSort("cumplimiento")} className="hover:underline font-semibold">
+                  Cumplimiento {sortKey === "cumplimiento" ? (sortDir === "asc" ? "↑" : "↓") : ""}
                 </button>
               </th>
               <th className="text-left px-2 py-2">Estado</th>
@@ -345,10 +372,10 @@ export default function AvanceConsolidado() {
                   <td className="px-2 py-2 text-gray-600 max-w-[140px] truncate">{d.programa}</td>
                   <td className="px-2 py-2 text-gray-600 whitespace-nowrap">{d.regional}</td>
                   <td className="px-2 py-2 text-gray-600 max-w-[120px] truncate">{d.grupo_nombre}</td>
-                  {mesLabels.map((m) => {
-                    const x = d.avance_por_mes[m.key];
+                  {meses.map((mes) => {
+                    const x = monthProgress(d, mes);
                     return (
-                      <td key={m.key} className="px-2 py-2">
+                      <td key={mes} className="px-2 py-2">
                         <MesCell c={x.completados} t={x.total} p={x.porcentaje} />
                       </td>
                     );
@@ -356,6 +383,22 @@ export default function AvanceConsolidado() {
                   <td className="px-2 py-2">
                     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${gb}`}>
                       {g}%
+                    </span>
+                  </td>
+                  <td className="px-2 py-2">
+                    <span className="font-semibold text-amber-700">{d.avance_esperado}%</span>
+                  </td>
+                  <td className="px-2 py-2">
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 text-xs font-bold ${
+                        d.cumplimiento_esperado >= 100
+                          ? "bg-green-100 text-green-800"
+                          : d.cumplimiento_esperado >= 75
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-red-100 text-red-800"
+                      }`}
+                    >
+                      {d.cumplimiento_esperado}%
                     </span>
                   </td>
                   <td className="px-2 py-2">
@@ -381,12 +424,14 @@ export default function AvanceConsolidado() {
                 <td className="px-3 py-2" colSpan={4}>
                   Promedios (filtrados)
                 </td>
-                {mesLabels.map((m) => {
-                  const vals = sorted.filter((d) => d.grupo_id != null && d.avance_por_mes[m.key].total > 0).map((d) => d.avance_por_mes[m.key].porcentaje);
+                {meses.map((mes) => {
+                  const vals = sorted
+                    .filter((d) => d.grupo_id != null && monthProgress(d, mes).total > 0)
+                    .map((d) => monthProgress(d, mes).porcentaje);
                   const avg =
                     vals.length === 0 ? 0 : Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
                   return (
-                    <td key={m.key} className="px-2 py-2">
+                    <td key={mes} className="px-2 py-2">
                       {avg}%
                     </td>
                   );
@@ -400,7 +445,7 @@ export default function AvanceConsolidado() {
                       )}
                   %
                 </td>
-                <td colSpan={2} />
+                <td colSpan={4} />
               </tr>
             </tfoot>
           )}

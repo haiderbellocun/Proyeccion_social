@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BarChart2 } from "lucide-react";
-import { API_BASE } from "../config/api";
+import { AppSelect } from "../components/AppSelect";
+import { API_BASE, apiFetch as fetch } from "../config/api";
+import { notify } from "../lib/notify";
 
 const API_BASE_URL = API_BASE;
 
@@ -44,7 +46,6 @@ export default function IndicadoresGrupo() {
   const [semestreActivo, setSemestreActivo] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [grupos, setGrupos] = useState<IndicadoresGrupoRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,12 +58,13 @@ export default function IndicadoresGrupo() {
         setSemestres(list);
         setSemestreActivo((prev) => {
           if (prev) return prev;
-          return list[0] ?? "2026A";
+          return d.activo?.codigo ?? list[0] ?? "";
         });
       } catch {
         if (!cancelled) {
           setSemestres([]);
-          setSemestreActivo((prev) => prev || "2026A");
+          setSemestreActivo("");
+          setLoading(false);
         }
       }
     })();
@@ -75,7 +77,6 @@ export default function IndicadoresGrupo() {
     if (!semestreActivo) return;
     try {
       setLoading(true);
-      setError(null);
       const q = encodeURIComponent(semestreActivo);
       const res = await fetch(`${API_BASE_URL}/admin/indicadores-grupo?semestre=${q}`);
       if (!res.ok) throw new Error("No se pudo cargar indicadores por grupo");
@@ -83,7 +84,7 @@ export default function IndicadoresGrupo() {
       setGrupos(Array.isArray(data.grupos) ? data.grupos : []);
     } catch (err) {
       console.error(err);
-      setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+      notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
       setGrupos([]);
     } finally {
       setLoading(false);
@@ -141,11 +142,6 @@ export default function IndicadoresGrupo() {
 
   return (
     <div className="p-6 space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-          {error}
-        </div>
-      )}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-gray-900" style={{ fontWeight: 750 }}>
@@ -158,20 +154,16 @@ export default function IndicadoresGrupo() {
         <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2 text-sm text-gray-700">
             <span style={{ fontWeight: 600 }}>Semestre:</span>
-            <select
+            <AppSelect
               value={semestreActivo}
-              onChange={(e) => setSemestreActivo(e.target.value)}
-              className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white min-w-[100px]"
-            >
-              {semestres.length === 0 && (
-                <option value={semestreActivo}>{semestreActivo}</option>
-              )}
-              {semestres.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+              onValueChange={(value) => setSemestreActivo(value)}
+              options={
+                semestres.length === 0
+                  ? [{ value: semestreActivo, label: semestreActivo }]
+                  : semestres.map((s) => ({ value: s, label: s }))
+              }
+              className="min-w-[100px]"
+            />
           </label>
           <div className="hidden sm:flex items-center gap-2 text-gray-600">
             <BarChart2 className="w-4 h-4" />

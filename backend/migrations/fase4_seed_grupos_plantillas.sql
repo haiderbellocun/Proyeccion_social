@@ -4,11 +4,15 @@
 -- Base date inicio semestre: 2026-02-11
 -- ============================================================
 
--- Desligar docentes del grupo antes de truncar (evita CASCADE en usuarios)
+-- Desligar docentes del grupo y limpiar sin TRUNCATE CASCADE.
+-- TRUNCATE CASCADE también vacía usuarios, proyectos y entregables aunque
+-- no existan referencias activas, por lo que no debe usarse aquí.
 UPDATE usuarios SET grupo_matriz_id = NULL WHERE grupo_matriz_id IS NOT NULL;
 
-TRUNCATE TABLE plantilla_entregables RESTART IDENTITY CASCADE;
-TRUNCATE TABLE grupos_matriz RESTART IDENTITY CASCADE;
+DELETE FROM plantilla_entregables;
+DELETE FROM grupos_matriz;
+ALTER SEQUENCE plantilla_entregables_id_seq RESTART WITH 1;
+ALTER SEQUENCE grupos_matriz_id_seq RESTART WITH 1;
 
 -- 1. GRUPOS
 INSERT INTO grupos_matriz (id, nombre, descripcion, tipo_docente, horas_totales, num_proyectos, num_actividades, num_convenios_nuevos, num_convenios_dinamizados, activo) VALUES

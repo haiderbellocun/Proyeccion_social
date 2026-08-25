@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import React from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import {
   Filter,
   ExternalLink,
@@ -16,13 +16,13 @@ import {
 import {
   isDeliverableCompleted,
   categoryConfig,
-  MONTHS,
-  type MonthName,
   type Category,
 } from "../data/matrizConstants";
 import { CategoryTag } from "../components/CategoryTag";
-import { useCurrentUser } from "../hooks/useCurrentUser";
-import { API_BASE } from "../config/api";
+import { AppSelect } from "../components/AppSelect";
+import { useCurrentSemester, useCurrentUser } from "../hooks/useCurrentUser";
+import { API_BASE, apiFetch as fetch } from "../config/api";
+import { notify } from "../lib/notify";
 
 const ALL = "all";
 
@@ -41,10 +41,17 @@ export interface EntregableMatriz {
   entregable_id: number | null;
   completado: boolean;
   fecha_real_entrega: string | null;
+  fecha_cargue_evidencia: string | null;
   url_evidencia: string | null;
+  enlace_referencia: string | null;
   estado_revision: string | null;
   porcentaje_avance: number | null;
   actividad_reportada?: string | null;
+  iniciativa_id: number | null;
+  iniciativa_titulo: string;
+  iniciativa_tipo: string;
+  tiene_excepcion: boolean;
+  motivo_excepcion?: string | null;
 }
 
 interface PerfilDocente {
@@ -154,12 +161,18 @@ interface MatrizStatsPayload {
     total_entregables: number;
     completados: number;
     porcentaje_semestral: number;
+    porcentaje_real: number;
+    porcentaje_esperado: number;
+    cumplimiento_esperado: number;
+    exigibles_a_fecha: number;
+    brecha: number;
   };
   por_mes: {
     mes: string;
     total: number;
     completados: number;
     porcentaje_mensual: number;
+    porcentaje_esperado: number;
   }[];
   por_semana: {
     semana_numero: number;
@@ -168,6 +181,7 @@ interface MatrizStatsPayload {
     completados: number;
     porcentaje_semanal: number;
     porcentaje_acumulado: number;
+    porcentaje_esperado_acumulado: number;
   }[];
 }
 
@@ -177,7 +191,7 @@ function categoryUi(c: string): Category {
 }
 
 const formatDate = (iso: string) =>
-  new Date(iso).toLocaleDateString("es-CO", {
+  new Date(iso.includes("T") ? iso : `${iso}T12:00:00`).toLocaleDateString("es-CO", {
     day: "2-digit",
     month: "short",
     year: "numeric",
@@ -222,7 +236,13 @@ function semaphoreClasses(pct: number, emptyMonth: boolean) {
 
 export default function MatrizSeguimiento() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const notificationTemplateId = useMemo(() => {
+    const parsed = Number(new URLSearchParams(location.search).get("plantilla"));
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }, [location.search]);
   const currentUser = useCurrentUser();
+  const currentSemester = useCurrentSemester();
 
   const [filterMonth, setFilterMonth] = useState<string>(ALL);
   const [filterCategory, setFilterCategory] = useState<string>(ALL);
@@ -240,7 +260,6 @@ export default function MatrizSeguimiento() {
   );
   const [perfil, setPerfil] = useState<PerfilDocente | null>(null);
   const [loadingMatrix, setLoadingMatrix] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [savingPlantilla, setSavingPlantilla] = useState<Record<number, boolean>>(
     {}
   );
@@ -258,7 +277,6 @@ export default function MatrizSeguimiento() {
     const load = async () => {
       try {
         setLoadingMatrix(true);
-        setError(null);
         const [resPerfil, resMatriz, resStats] = await Promise.all([
           fetch(`${API_BASE}/docente/${userId}/perfil`),
           fetch(`${API_BASE}/docente/${userId}/matriz`),
@@ -289,9 +307,7 @@ export default function MatrizSeguimiento() {
         }
       } catch (err) {
         console.error(err);
-        setError(
-          "No se pudo cargar la información. Intente de nuevo más tarde."
-        );
+        notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
         setEntregables([]);
         setMatrizStats(null);
         setPerfil(null);
@@ -302,6 +318,28 @@ export default function MatrizSeguimiento() {
 
     load();
   }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (
+      loadingMatrix ||
+      !notificationTemplateId ||
+      !entregables.some((item) => item.id === notificationTemplateId)
+    ) {
+      return;
+    }
+    setFilterMonth(ALL);
+    setFilterCategory(ALL);
+    setFilterExcelStatus(ALL);
+    setCollapsed({});
+    setCollapsedPhase({});
+    setExpandedRow(notificationTemplateId);
+    const timer = window.setTimeout(() => {
+      document
+        .getElementById(`entregable-${notificationTemplateId}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [entregables, loadingMatrix, notificationTemplateId]);
 
   const handleToggleCompletado = async (item: EntregableMatriz) => {
     const uid = currentUser?.id;
@@ -320,9 +358,6 @@ export default function MatrizSeguimiento() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             completado: next,
-            fecha_real_entrega: next
-              ? new Date().toISOString().slice(0, 10)
-              : null,
             url_evidencia: item.url_evidencia,
           }),
         }
@@ -331,13 +366,15 @@ export default function MatrizSeguimiento() {
         error?: string;
         semana_numero?: number;
         entregable_id?: number;
+        fecha_real_entrega?: string | null;
+        fecha_cargue_evidencia?: string | null;
       };
       if (res.status === 422) {
         setEntregables((list) =>
           list.map((x) => (x.id === item.id ? prevSnapshot : x))
         );
         const sn = data.semana_numero ?? item.semana_numero;
-        alert(
+        notify.warning(
           `Para marcar este entregable necesitas tener una iniciativa asignada en la semana ${sn}. Pide al administrador que te asigne una.`
         );
         return;
@@ -346,16 +383,14 @@ export default function MatrizSeguimiento() {
         setEntregables((list) =>
           list.map((x) => (x.id === item.id ? prevSnapshot : x))
         );
-        setError(
-          typeof data.error === "string"
-            ? data.error
-            : "No se pudo guardar el estado del entregable."
+        notify.fromError(
+          data,
+          "No se pudo guardar el estado del entregable."
         );
         return;
       }
       const eid =
         data.entregable_id != null ? Number(data.entregable_id) : item.entregable_id;
-      const fechaHoy = new Date().toISOString().slice(0, 10);
       setEntregables((list) =>
         list.map((x) =>
           x.id === item.id
@@ -364,81 +399,54 @@ export default function MatrizSeguimiento() {
                 completado: next,
                 entregable_id: eid ?? x.entregable_id,
                 fecha_real_entrega: next
-                  ? fechaHoy
-                  : x.fecha_real_entrega,
+                  ? data.fecha_real_entrega ?? x.fecha_real_entrega
+                  : null,
+                fecha_cargue_evidencia: next
+                  ? data.fecha_cargue_evidencia ?? x.fecha_cargue_evidencia
+                  : null,
               }
             : x
         )
       );
-      setError(null);
+      notify.success(next ? "Entregable marcado como completado" : "Entregable desmarcado");
       const resStats = await fetch(`${API_BASE}/docente/${uid}/matriz-stats`);
       if (resStats.ok) setMatrizStats(await resStats.json());
     } catch {
       setEntregables((list) =>
         list.map((x) => (x.id === item.id ? prevSnapshot : x))
       );
-      setError("Error de conexión al guardar.");
+      notify.error("Error de conexión al guardar.");
     } finally {
       setSavingPlantilla((s) => ({ ...s, [item.id]: false }));
     }
   };
 
-  const handleUpdateFechaEntrega = async (
-    entregableId: number,
-    isoDate: string
-  ) => {
-    const uid = currentUser?.id;
-    if (!uid || !isoDate) return;
-    try {
-      const res = await fetch(
-        `${API_BASE}/docente/entregables/${entregableId}/fecha-entrega`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            fecha_real_entrega: isoDate,
-            docente_id: uid,
-          }),
-        }
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setError(
-          typeof data.error === "string"
-            ? data.error
-            : "No se pudo actualizar la fecha de entrega."
-        );
-        return;
-      }
-      const fecha =
-        typeof data.fecha_real_entrega === "string"
-          ? data.fecha_real_entrega
-          : isoDate;
-      setEntregables((list) =>
-        list.map((x) =>
-          x.entregable_id === entregableId ? { ...x, fecha_real_entrega: fecha } : x
-        )
-      );
-      setError(null);
-    } catch {
-      setError("Error de conexión al actualizar la fecha.");
-    }
-  };
-
   const stats = useMemo(() => {
     if (matrizStats?.resumen) {
-      const { total_entregables, completados, porcentaje_semestral } =
-        matrizStats.resumen;
+      const {
+        total_entregables,
+        completados,
+        porcentaje_semestral,
+        porcentaje_esperado,
+        cumplimiento_esperado,
+        exigibles_a_fecha,
+        brecha,
+      } = matrizStats.resumen;
       return {
         total: total_entregables,
         completed: completados,
         pct: Math.round(porcentaje_semestral),
+        expectedPct: Math.round(porcentaje_esperado),
+        compliancePct: Math.round(cumplimiento_esperado),
+        due: exigibles_a_fecha,
+        gap: Math.round(brecha),
         byMonth:
           matrizStats.por_mes?.map((m) => ({
             month: m.mes,
             total: m.total,
             done: m.completados,
             pct: Math.round(m.porcentaje_mensual),
+            expectedPct: Math.round(m.porcentaje_esperado),
           })) ?? [],
       };
     }
@@ -450,7 +458,17 @@ export default function MatrizSeguimiento() {
       })
     ).length;
     const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-    const months: MonthName[] = ["Febrero", "Marzo", "Abril", "Mayo"];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const due = entregables.filter(
+      (item) =>
+        item.fecha_fin_calculada &&
+        new Date(`${item.fecha_fin_calculada}T23:59:59`) <= today
+    ).length;
+    const expectedPct = total > 0 ? Math.round((due / total) * 100) : 0;
+    const months = [
+      ...new Set(entregables.map((item) => item.mes.trim()).filter(Boolean)),
+    ];
     const byMonth = months.map((month) => {
       const items = entregables.filter((e) => e.mes === month);
       const done = items.filter((e) =>
@@ -464,21 +482,32 @@ export default function MatrizSeguimiento() {
         total: items.length,
         done,
         pct: items.length > 0 ? Math.round((done / items.length) * 100) : 0,
+        expectedPct: 0,
       };
     });
-    return { total, completed, pct, byMonth };
+    return {
+      total,
+      completed,
+      pct,
+      expectedPct,
+      compliancePct: due > 0 ? Math.round((completed / due) * 100) : 100,
+      due,
+      gap: pct - expectedPct,
+      byMonth,
+    };
   }, [matrizStats, entregables]);
 
   const semesterReferenceWeek = useMemo(() => {
-    const ref = new Date("2026-02-10T00:00:00");
+    if (!currentSemester?.fecha_inicio) return 1;
+    const ref = new Date(`${currentSemester.fecha_inicio}T00:00:00`);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const diffDays = Math.floor(
       (today.getTime() - ref.getTime()) / (1000 * 60 * 60 * 24)
     );
     const w = Math.floor(diffDays / 7) + 1;
-    return Math.min(16, Math.max(1, w));
-  }, []);
+    return Math.min(currentSemester.numero_semanas, Math.max(1, w));
+  }, [currentSemester]);
 
   const semesterMetrics = useMemo(() => {
     const weeks = matrizStats?.por_semana ?? [];
@@ -545,12 +574,16 @@ export default function MatrizSeguimiento() {
     });
   }, [entregables, filterMonth, filterCategory, filterExcelStatus]);
 
+  const availableMonths = useMemo(
+    () => [...new Set(entregables.map((item) => item.mes.trim()).filter(Boolean))],
+    [entregables]
+  );
+
   const groupedByMonthPhase = useMemo(() => {
-    const months: MonthName[] =
-      filterMonth === ALL ? [...MONTHS] : [filterMonth as MonthName];
+    const months = filterMonth === ALL ? availableMonths : [filterMonth];
 
     const blocks: {
-      month: MonthName;
+      month: string;
       items: EntregableMatriz[];
       phases: { phase: string; items: EntregableMatriz[] }[];
     }[] = [];
@@ -580,7 +613,7 @@ export default function MatrizSeguimiento() {
     }
 
     return blocks;
-  }, [filtered, filterMonth]);
+  }, [availableMonths, filtered, filterMonth]);
 
   const phaseKey = (month: string, phase: string) => `${month}||${phase}`;
 
@@ -594,11 +627,11 @@ export default function MatrizSeguimiento() {
   };
 
   const complianceColor =
-    stats.pct >= 90
+    stats.compliancePct >= 100
       ? "text-emerald-600"
-      : stats.pct >= 80
+      : stats.compliancePct >= 90
       ? "text-blue-600"
-      : stats.pct >= 60
+      : stats.compliancePct >= 75
       ? "text-amber-600"
       : "text-red-600";
 
@@ -668,11 +701,6 @@ export default function MatrizSeguimiento() {
         </div>
       ) : (
         <div className="p-6 space-y-6">
-          {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-              {error}
-            </div>
-          )}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <h1 className="text-gray-900">Matriz de Seguimiento</h1>
@@ -687,7 +715,7 @@ export default function MatrizSeguimiento() {
               style={{ fontWeight: 600 }}
             >
               <FileText className="w-4 h-4" />
-              Reportar avance
+              Reportar entregable
             </button>
           </div>
 
@@ -831,7 +859,7 @@ export default function MatrizSeguimiento() {
                   className="text-gray-500 text-xs"
                   style={{ fontWeight: 500 }}
                 >
-                  Cumplimiento general
+                  Avance real del semestre
                 </p>
                 <p
                   className="text-gray-800 mt-1"
@@ -842,6 +870,15 @@ export default function MatrizSeguimiento() {
                 <p className="text-gray-400 text-xs mt-0.5">
                   entregables completados
                 </p>
+                <div className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-xs">
+                  <p className="font-semibold text-amber-800">
+                    Esperado a hoy: {stats.expectedPct}%
+                  </p>
+                  <p className={stats.gap >= 0 ? "text-emerald-700" : "text-red-700"}>
+                    Cumplimiento: {stats.compliancePct}% · Brecha {stats.gap >= 0 ? "+" : ""}
+                    {stats.gap} pts
+                  </p>
+                </div>
                 <div className="flex items-center gap-1.5 mt-2">
                   <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
                   <span
@@ -893,6 +930,11 @@ export default function MatrizSeguimiento() {
                   >
                     {m.done} / {m.total} entregables
                   </p>
+                  {!empty && (
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      Esperado: {m.expectedPct}%
+                    </p>
+                  )}
                 </button>
               );
             })}
@@ -975,44 +1017,38 @@ export default function MatrizSeguimiento() {
               <Filter className="w-4 h-4" /> Filtrar:
             </div>
 
-            <select
+            <AppSelect
               value={filterMonth}
-              onChange={(e) => setFilterMonth(e.target.value)}
-              className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-            >
-              <option value={ALL}>Todos los meses</option>
-              {MONTHS.map((m) => (
-                <option key={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
+              onValueChange={(value) => setFilterMonth(value)}
+              options={[
+                { value: ALL, label: "Todos los meses" },
+                ...availableMonths.map((m) => ({ value: m, label: m })),
+              ]}
+            />
 
-            <select
+            <AppSelect
               value={filterCategory}
-              onChange={(e) => setFilterCategory(e.target.value)}
-              className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-            >
-              <option value={ALL}>Todas las categorías</option>
-              {Object.entries(categoryConfig).map(([key, cfg]) => (
-                <option key={key} value={key}>
-                  {cfg.label}
-                </option>
-              ))}
-            </select>
+              onValueChange={(value) => setFilterCategory(value)}
+              options={[
+                { value: ALL, label: "Todas las categorías" },
+                ...Object.entries(categoryConfig).map(([key, cfg]) => ({
+                  value: key,
+                  label: cfg.label,
+                })),
+              ]}
+            />
 
-            <select
+            <AppSelect
               value={filterExcelStatus}
-              onChange={(e) => setFilterExcelStatus(e.target.value)}
-              className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-            >
-              <option value={ALL}>Todos los estados</option>
-              {EXCEL_STATUS_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+              onValueChange={(value) => setFilterExcelStatus(value)}
+              options={[
+                { value: ALL, label: "Todos los estados" },
+                ...EXCEL_STATUS_OPTIONS.map((opt) => ({
+                  value: opt.value,
+                  label: opt.label,
+                })),
+              ]}
+            />
 
             {(filterMonth !== ALL ||
               filterCategory !== ALL ||
@@ -1218,7 +1254,15 @@ export default function MatrizSeguimiento() {
                                   }
 
                                   return (
-                                    <li key={e.id}>
+                                    <li
+                                      key={e.id}
+                                      id={`entregable-${e.id}`}
+                                      className={
+                                        e.id === notificationTemplateId
+                                          ? "scroll-mt-24 rounded-lg ring-2 ring-blue-400 ring-offset-2"
+                                          : undefined
+                                      }
+                                    >
                                       <div
                                         role="button"
                                         tabIndex={0}
@@ -1291,6 +1335,19 @@ export default function MatrizSeguimiento() {
                                             ) : null}
                                           </div>
                                         </div>
+                                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                                          <span className="font-semibold text-gray-500">
+                                            Iniciativa:
+                                          </span>
+                                          <span className="text-gray-800">
+                                            {e.iniciativa_titulo}
+                                          </span>
+                                          {e.tiene_excepcion && (
+                                            <span className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800">
+                                              Ajuste individual
+                                            </span>
+                                          )}
+                                        </div>
                                         <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
                                           <Calendar className="w-3.5 h-3.5 shrink-0" />
                                           <span>
@@ -1357,6 +1414,18 @@ export default function MatrizSeguimiento() {
                                                 )
                                               : e.entregable}
                                           </p>
+                                          {e.enlace_referencia && (
+                                            <a
+                                              href={e.enlace_referencia}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              onClick={(ev) => ev.stopPropagation()}
+                                              className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-blue-700 underline"
+                                            >
+                                              <ExternalLink className="h-3.5 w-3.5" />
+                                              Abrir recurso o formulario de referencia
+                                            </a>
+                                          )}
                                           <div className="mt-3 flex flex-wrap gap-4 items-start">
                                             <div className="space-y-1 text-xs text-gray-600 min-w-0">
                                               <p>
@@ -1388,49 +1457,28 @@ export default function MatrizSeguimiento() {
                                                   —
                                                 </p>
                                               )}
-                                              {(e.entregable_id ||
-                                                e.completado) && (
-                                                <div className="flex flex-col gap-1 pt-2">
-                                                  <label className="text-xs text-gray-500 font-medium">
-                                                    Fecha real de entrega
-                                                  </label>
-                                                  <input
-                                                    type="date"
-                                                    key={`dr-${e.id}-${e.entregable_id ?? "x"}-${e.fecha_real_entrega ?? ""}`}
-                                                    defaultValue={
-                                                      e.fecha_real_entrega ?? ""
+                                              {e.fecha_cargue_evidencia && (
+                                                <p className="pt-1 text-gray-600">
+                                                  <span style={{ fontWeight: 600 }}>
+                                                    Registro automático: {" "}
+                                                  </span>
+                                                  {new Date(e.fecha_cargue_evidencia).toLocaleString(
+                                                    "es-CO",
+                                                    {
+                                                      dateStyle: "medium",
+                                                      timeStyle: "short",
                                                     }
-                                                    max={
-                                                      new Date()
-                                                        .toISOString()
-                                                        .split("T")[0]
-                                                    }
-                                                    onClick={(ev) =>
-                                                      ev.stopPropagation()
-                                                    }
-                                                    onBlur={(ev) => {
-                                                      if (
-                                                        ev.target.value &&
-                                                        e.entregable_id
-                                                      ) {
-                                                        handleUpdateFechaEntrega(
-                                                          e.entregable_id,
-                                                          ev.target.value
-                                                        );
-                                                      }
-                                                    }}
-                                                    className="text-sm border border-gray-300 rounded px-2 py-1 w-40 focus:outline-none focus:ring-2 focus:ring-blue-400"
-                                                  />
-                                                  {e.fecha_real_entrega &&
-                                                    e.fecha_fin_calculada &&
-                                                    e.fecha_real_entrega >
-                                                      e.fecha_fin_calculada && (
-                                                      <span className="text-xs text-red-600">
-                                                        Entrega fuera de plazo
-                                                      </span>
-                                                    )}
-                                                </div>
+                                                  )}
+                                                </p>
                                               )}
+                                              {e.fecha_real_entrega &&
+                                                e.fecha_fin_calculada &&
+                                                e.fecha_real_entrega >
+                                                  e.fecha_fin_calculada && (
+                                                  <span className="text-xs text-red-600">
+                                                    Entrega fuera de plazo
+                                                  </span>
+                                                )}
                                               <p>
                                                 <span style={{ fontWeight: 600 }}>
                                                   Indicador:{" "}
@@ -1448,7 +1496,18 @@ export default function MatrizSeguimiento() {
                                               type="button"
                                               onClick={(ev) => {
                                                 ev.stopPropagation();
-                                                navigate("/docente/reportar");
+                                                const query = new URLSearchParams({
+                                                  plantilla: String(e.id),
+                                                });
+                                                if (e.iniciativa_id != null) {
+                                                  query.set(
+                                                    "iniciativa",
+                                                    String(e.iniciativa_id)
+                                                  );
+                                                }
+                                                navigate(
+                                                  `/docente/reportar?${query.toString()}`
+                                                );
                                               }}
                                               className="mt-3 text-xs text-white bg-[#1e3a8a] hover:bg-[#1d4ed8] px-3 py-1.5 rounded-lg transition-colors"
                                               style={{ fontWeight: 500 }}

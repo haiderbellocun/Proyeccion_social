@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router";
 import {
   CheckCircle2,
   XCircle,
@@ -12,7 +12,9 @@ import {
   User,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
-import { API_BASE } from "../config/api";
+import { AppSelect } from "../components/AppSelect";
+import { API_BASE, apiFetch as fetch } from "../config/api";
+import { notify } from "../lib/notify";
 
 const API_BASE_URL = API_BASE;
 
@@ -43,12 +45,19 @@ type AdminMetricas = {
 
 export default function ReportReview() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const notificationReportId = useMemo(() => {
+    const parsed = Number(new URLSearchParams(location.search).get("reporte"));
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }, [location.search]);
   const [current, setCurrent] = useState(0);
   const [comment, setComment] = useState("");
   const [reviewed, setReviewed] = useState<Record<number, string>>({});
   const [reports, setReports] = useState<ReportItem[]>([]);
   const [loadingReports, setLoadingReports] = useState(false);
   const [savingDecision, setSavingDecision] = useState(false);
+  const [notificationMessage, setNotificationMessage] = useState("");
+  const [sendingNotification, setSendingNotification] = useState(false);
   const [metricas, setMetricas] = useState<AdminMetricas | null>(null);
   const [selectedSchool, setSelectedSchool] = useState<string>("Todas");
   const [selectedProgram, setSelectedProgram] = useState<string>("Todos");
@@ -58,15 +67,23 @@ export default function ReportReview() {
     { name: string; programs: { id: number; name: string; code: string; teachers: { id: number; fullName: string }[] }[] }[]
   >([]);
   const [loadingCatalogs, setLoadingCatalogs] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [limit] = useState(20);
   const [total, setTotal] = useState(0);
 
+  const loadMetricas = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/admin/metricas`);
+      if (!res.ok) throw new Error("Error al cargar métricas");
+      setMetricas(await res.json().catch(() => ({})));
+    } catch {
+      setMetricas(null);
+    }
+  }, []);
+
   useEffect(() => {
     const loadCatalogs = async () => {
       try {
-        setError(null);
         setLoadingCatalogs(true);
         const res = await fetch(`${API_BASE_URL}/admin/catalogos`);
         if (!res.ok) throw new Error("Error al cargar catálogos");
@@ -74,7 +91,7 @@ export default function ReportReview() {
         setCatalogSchools(data.schools || []);
       } catch (err) {
         console.error(err);
-        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
       } finally {
         setLoadingCatalogs(false);
       }
@@ -83,26 +100,18 @@ export default function ReportReview() {
   }, []);
 
   useEffect(() => {
-    const loadMetricas = async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/admin/metricas`);
-        if (!res.ok) throw new Error("Error al cargar métricas");
-        const data = await res.json().catch(() => ({}));
-        setMetricas(data);
-      } catch {
-        setMetricas(null);
-      }
-    };
     void loadMetricas();
-  }, []);
+  }, [loadMetricas]);
 
   useEffect(() => {
     const loadReports = async () => {
       try {
-        setError(null);
         setLoadingReports(true);
+        const reportFilter = notificationReportId
+          ? `&reporte=${notificationReportId}`
+          : "";
         const res = await fetch(
-          `${API_BASE_URL}/admin/reportes-revision?page=${page}&limit=${limit}`
+          `${API_BASE_URL}/admin/reportes-revision?page=${page}&limit=${limit}${reportFilter}`
         );
         if (!res.ok) throw new Error("Error al cargar reportes de revisión");
         const data = await res.json();
@@ -116,7 +125,7 @@ export default function ReportReview() {
             id: Number(r.id),
             docente_id: r.docente_id != null ? Number(r.docente_id) : null,
             teacher: r.docente_nombre || "Docente",
-            school: "Sin escuela",
+            school: r.escuela_nombre || "Sin escuela",
             program: r.programa_nombre || "Sin programa",
             email: r.docente_correo || "",
             project: r.proyecto_titulo || "Iniciativa",
@@ -141,17 +150,24 @@ export default function ReportReview() {
           };
         });
         // Con backend corregido solo deberían llegar 'enviado'. Si llegara algo 'observado', se oculta.
-        setReports(mapped.filter((x) => x.status !== "review"));
+        const visibleReports = mapped.filter((x) => x.status !== "review");
+        setReports(visibleReports);
+        if (notificationReportId) {
+          const targetIndex = visibleReports.findIndex(
+            (item) => item.id === notificationReportId
+          );
+          setCurrent(targetIndex >= 0 ? targetIndex : 0);
+        }
       } catch (err) {
         console.error(err);
-        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
         setReports([]);
       } finally {
         setLoadingReports(false);
       }
     };
     loadReports();
-  }, [page, limit]);
+  }, [page, limit, notificationReportId]);
 
   const schools = catalogSchools.map((s) => s.name);
 
@@ -199,11 +215,10 @@ export default function ReportReview() {
         ? "observado"
         : "observado";
     if (action !== "approve" && !comment.trim()) {
-      alert("Para solicitar ajustes o rechazar, debes ingresar un comentario.");
+      notify.warning("Para solicitar ajustes o rechazar, debes ingresar un comentario.");
       return;
     }
     try {
-      setError(null);
       setSavingDecision(true);
       const res = await fetch(`${API_BASE_URL}/admin/reportes-revision/${report.id}`, {
         method: "PUT",
@@ -212,9 +227,15 @@ export default function ReportReview() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        alert(data.error || "No se pudo guardar la revisión.");
+        notify.fromError(data, "No se pudo guardar la revisión.");
         return;
       }
+      const successMessages = {
+        approve: "Reporte aprobado",
+        adjust: "Ajustes solicitados",
+        reject: "Reporte rechazado",
+      };
+      notify.success(successMessages[action]);
       setReviewed({ ...reviewed, [report.id]: action });
       setComment("");
       setReports((prev) =>
@@ -232,13 +253,38 @@ export default function ReportReview() {
             : r
         )
       );
+      setTotal((currentTotal) => Math.max(0, currentTotal - 1));
+      await loadMetricas();
       if (safeIndex < filteredReports.length - 1) setCurrent(safeIndex + 1);
     } catch (err) {
       console.error(err);
-      setError("No se pudo cargar la información. Intente de nuevo más tarde.");
-      alert("Error de conexión al guardar la revisión.");
+      notify.error("Error de conexión al guardar la revisión.");
     } finally {
       setSavingDecision(false);
+    }
+  };
+
+  const handleNotification = async () => {
+    if (!report?.docente_id || !notificationMessage.trim()) return;
+    try {
+      setSendingNotification(true);
+      const response = await fetch(`${API_BASE_URL}/admin/notificaciones`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          docente_id: report.docente_id,
+          referencia_id: report.id,
+          mensaje: notificationMessage.trim(),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "No se pudo enviar la notificación");
+      setNotificationMessage("");
+      notify.success("Notificación enviada");
+    } catch (cause) {
+      notify.fromError(cause, "No se pudo enviar la notificación");
+    } finally {
+      setSendingNotification(false);
     }
   };
 
@@ -281,11 +327,6 @@ export default function ReportReview() {
 
   return (
     <div className="p-6 space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-          {error}
-        </div>
-      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-gray-900">Revisión de Reportes</h1>
@@ -352,57 +393,45 @@ export default function ReportReview() {
           </span>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <select
+          <AppSelect
             value={selectedSchool}
-            onChange={(e) => {
-              const value = e.target.value;
+            onValueChange={(value) => {
               setSelectedSchool(value);
               setSelectedProgram("Todos");
               setSelectedTeacher("Todos");
               setCurrent(0);
             }}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-          >
-            <option value="Todas">Todas las escuelas</option>
-            {schools.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-          <select
+            options={[
+              { value: "Todas", label: "Todas las escuelas" },
+              ...schools.map((s) => ({ value: s, label: s })),
+            ]}
+            className="w-full"
+          />
+          <AppSelect
             value={selectedProgram}
-            onChange={(e) => {
-              const value = e.target.value;
+            onValueChange={(value) => {
               setSelectedProgram(value);
               setSelectedTeacher("Todos");
               setCurrent(0);
             }}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-          >
-            <option value="Todos">Todos los programas</option>
-            {programsForSchool.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-          <select
+            options={[
+              { value: "Todos", label: "Todos los programas" },
+              ...programsForSchool.map((p) => ({ value: p, label: p })),
+            ]}
+            className="w-full"
+          />
+          <AppSelect
             value={selectedTeacher}
-            onChange={(e) => {
-              const value = e.target.value;
+            onValueChange={(value) => {
               setSelectedTeacher(value);
               setCurrent(0);
             }}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-          >
-            <option value="Todos">Todos los docentes</option>
-            {teachersForProgram.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: "Todos", label: "Todos los docentes" },
+              ...teachersForProgram.map((t) => ({ value: t, label: t })),
+            ]}
+            className="w-full"
+          />
         </div>
       </div>
 
@@ -574,11 +603,20 @@ export default function ReportReview() {
             <h3 className="text-gray-800 mb-3">Notificar Docente</h3>
             <textarea
               rows={3}
+              value={notificationMessage}
+              onChange={(event) => {
+                setNotificationMessage(event.target.value);
+              }}
               placeholder="Mensaje personalizado para el docente..."
               className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50 resize-none mb-3"
             />
-            <button className="w-full flex items-center justify-center gap-2 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50 transition-colors">
-              <Send className="w-4 h-4" /> Enviar notificación
+            <button
+              type="button"
+              onClick={() => void handleNotification()}
+              disabled={!report.docente_id || !notificationMessage.trim() || sendingNotification}
+              className="w-full flex items-center justify-center gap-2 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Send className="w-4 h-4" /> {sendingNotification ? "Enviando…" : "Enviar notificación"}
             </button>
           </div>
         </div>

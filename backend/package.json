@@ -5,12 +5,23 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "dev": "node src/index.js"
+    "dev": "node src/index.js",
+    "start": "node src/index.js",
+    "migrate": "node scripts/migrate.js",
+    "bootstrap-admin": "node scripts/bootstrap-admin.js",
+    "test:entregables": "node scripts/test-entregables-operativos.js",
+    "test:notificaciones": "node scripts/test-notificaciones.js",
+    "test:avatar": "node scripts/test-avatar.js",
+    "test:correos": "node scripts/test-correos.js",
+    "emails:process": "node scripts/process-notification-emails.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
+    "google-auth-library": "^11.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "nodemailer": "^9.0.5",
     "pg": "^8.13.1"
   }
 }

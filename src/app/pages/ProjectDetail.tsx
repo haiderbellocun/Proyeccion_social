@@ -10,7 +10,8 @@ import {
 } from "lucide-react";
 import { Badge } from "../components/Badge";
 import { useCurrentUser } from "../hooks/useCurrentUser";
-import { API_BASE } from "../config/api";
+import { API_BASE, apiFetch as fetch } from "../config/api";
+import { notify } from "../lib/notify";
 
 const API_BASE_URL = API_BASE;
 
@@ -54,7 +55,6 @@ export default function ProjectDetail() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<number | null>(null);
   const [evidenceInputs, setEvidenceInputs] = useState<Record<number, string>>({});
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const userId = currentUser?.id ?? null;
@@ -66,7 +66,6 @@ export default function ProjectDetail() {
     const load = async () => {
       try {
         setLoading(true);
-        setError(null);
         const res = await fetch(
           `${API_BASE_URL}/docente/${userId}/iniciativas/${id}`
         );
@@ -86,7 +85,7 @@ export default function ProjectDetail() {
         setEvidenceInputs(inputs);
       } catch (err) {
         console.error(err);
-        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
         setInitiative(null);
       } finally {
         setLoading(false);
@@ -110,17 +109,18 @@ export default function ProjectDetail() {
           body: JSON.stringify({
             completado: nuevoCompletado,
             url_evidencia: evidenceInputs[entregable.id] || null,
-            fecha_real_entrega: nuevoCompletado
-              ? new Date().toISOString().slice(0, 10)
-              : null,
+            docente_id: currentUser?.id,
           }),
         }
       );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        alert(data.error || "No se pudo guardar el entregable.");
+        notify.fromError(data, "No se pudo guardar el entregable.");
         return;
       }
+      const saved = await res.json().catch(() => ({}));
+
+      notify.success("Entregable guardado");
 
       setInitiative((prev) => {
         if (!prev) return prev;
@@ -135,10 +135,10 @@ export default function ProjectDetail() {
                 completado: nuevoCompletado,
                 url_evidencia: evidenceInputs[entregable.id] || null,
                 fecha_real_entrega: nuevoCompletado
-                  ? new Date().toISOString().slice(0, 10)
+                  ? saved.fecha_real_entrega ?? e.fecha_real_entrega
                   : null,
                 fecha_completado: nuevoCompletado
-                  ? new Date().toISOString().slice(0, 10)
+                  ? saved.fecha_real_entrega ?? e.fecha_completado
                   : null,
               };
             }),
@@ -147,7 +147,7 @@ export default function ProjectDetail() {
       });
     } catch (err) {
       console.error(err);
-      alert("Error de conexión al guardar el entregable.");
+      notify.error("Error de conexión al guardar el entregable.");
     } finally {
       setSaving(null);
     }
@@ -188,11 +188,6 @@ export default function ProjectDetail() {
 
   return (
     <div className="p-6 space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-          {error}
-        </div>
-      )}
       <div>
         <button
           onClick={() => navigate("/docente/proyectos")}

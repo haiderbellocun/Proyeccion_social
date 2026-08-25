@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { Search, Filter, ArrowRight } from "lucide-react";
 import { Badge } from "../components/Badge";
+import { AppSelect } from "../components/AppSelect";
 import { useCurrentUser } from "../hooks/useCurrentUser";
-import { API_BASE } from "../config/api";
+import { API_BASE, apiFetch as fetch } from "../config/api";
+import { notify } from "../lib/notify";
 
 const API_BASE_URL = API_BASE;
 
@@ -25,8 +27,8 @@ export default function MyProjects() {
   const currentUser = useCurrentUser();
   const [projects, setProjects] = useState<DocenteProject[]>([]);
   const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState<"all" | DocenteProject["type"]>("all");
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const docenteId = currentUser?.id ?? null;
@@ -38,7 +40,6 @@ export default function MyProjects() {
 
     const load = async () => {
       try {
-        setError(null);
         const res = await fetch(`${API_BASE_URL}/docente/${docenteId}/dashboard`);
         if (!res.ok) throw new Error("Error al cargar proyectos del docente");
         const data = await res.json();
@@ -62,7 +63,7 @@ export default function MyProjects() {
             name: row.titulo,
             type: visualType,
             hours: row.horas_totales ?? null,
-            progress: 0,
+            progress: Number(row.porcentaje_avance ?? 0),
             status: visualStatus,
             description: row.descripcion || "",
             program: row.programa_nombre || "Programa no especificado",
@@ -74,7 +75,7 @@ export default function MyProjects() {
         setProjects(mapped);
       } catch (e) {
         console.error(e);
-        setError("No se pudo cargar la información. Intente de nuevo más tarde.");
+        notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
       } finally {
         setLoading(false);
       }
@@ -85,22 +86,18 @@ export default function MyProjects() {
 
   const filteredProjects = useMemo(() => {
     const term = search.toLowerCase();
-    if (!term) return projects;
     return projects.filter(
       (p) =>
-        p.name.toLowerCase().includes(term) ||
-        p.program.toLowerCase().includes(term) ||
-        p.coordinator.toLowerCase().includes(term)
+        (typeFilter === "all" || p.type === typeFilter) &&
+        (!term ||
+          p.name.toLowerCase().includes(term) ||
+          p.program.toLowerCase().includes(term) ||
+          p.coordinator.toLowerCase().includes(term))
     );
-  }, [projects, search]);
+  }, [projects, search, typeFilter]);
 
   return (
     <div className="p-6 space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-          {error}
-        </div>
-      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-gray-900">Mis Iniciativas</h1>
@@ -124,10 +121,20 @@ export default function MyProjects() {
             className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-white"
           />
         </div>
-        <button className="flex items-center gap-2 px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-600 bg-white hover:bg-gray-50 transition-colors">
-          <Filter className="w-4 h-4" />
-          Filtrar por tipo
-        </button>
+        <div className="flex items-center gap-2 text-sm text-gray-600">
+          <Filter className="w-4 h-4 shrink-0" />
+          <AppSelect
+            value={typeFilter}
+            onValueChange={(value) => setTypeFilter(value as typeof typeFilter)}
+            options={[
+              { value: "all", label: "Todos los tipos" },
+              { value: "project", label: "Proyectos" },
+              { value: "agreement", label: "Convenios" },
+              { value: "activity", label: "Actividades" },
+            ]}
+            className="w-full sm:w-44"
+          />
+        </div>
       </div>
 
       {/* Cards grid */}

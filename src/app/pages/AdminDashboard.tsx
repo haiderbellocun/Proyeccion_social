@@ -22,7 +22,8 @@ import {
   Legend,
 } from "recharts";
 import { Badge } from "../components/Badge";
-import { API_BASE } from "../config/api";
+import { API_BASE, apiFetch as fetch } from "../config/api";
+import { notify } from "../lib/notify";
 
 interface DashboardStats {
   total_docentes: number;
@@ -77,20 +78,18 @@ export default function AdminDashboard() {
   const navigate = useNavigate();
   const [data, setData] = useState<AdminDashboardPayload | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
       try {
         setLoading(true);
-        setError(null);
         const res = await fetch(`${API_BASE}/admin/dashboard`);
         if (!res.ok) throw new Error("Error al cargar dashboard admin");
         const json = await res.json();
         setData(json);
       } catch (err) {
         console.error(err);
-        setError("No se pudo cargar el dashboard.");
+        notify.error("No se pudo cargar el dashboard.");
         setData(null);
       } finally {
         setLoading(false);
@@ -164,11 +163,6 @@ export default function AdminDashboard() {
 
   return (
     <div className="p-6 space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
-          {error}
-        </div>
-      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-gray-900">Dashboard Administrativo</h1>

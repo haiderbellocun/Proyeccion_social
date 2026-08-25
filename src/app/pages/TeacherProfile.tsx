@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useCurrentUser } from "../hooks/useCurrentUser";
-import { API_BASE } from "../config/api";
+import { API_BASE, apiFetch as fetch } from "../config/api";
+import { notify } from "../lib/notify";
 
 const API_BASE_URL = API_BASE;
 
@@ -25,14 +26,6 @@ type PerfilPayload = {
     num_convenios_nuevos: number;
     num_convenios_dinamizados: number;
   } | null;
-  perfil_indicador: {
-    id: number;
-    nombre: string;
-    num_proyectos: number;
-    num_actividades: number;
-    num_convenios_nuevos: number;
-    num_convenios_dinamizados: number;
-  } | null;
   stats: {
     total_plantillas: number;
     completados: number;
@@ -49,16 +42,15 @@ export default function TeacherProfile() {
   const userId = currentUser?.id ?? null;
 
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [perfil, setPerfil] = useState<PerfilPayload | null>(null);
   const [driveLink, setDriveLink] = useState("");
   const [savingDrive, setSavingDrive] = useState(false);
-  const [driveSaved, setDriveSaved] = useState(false);
 
   const load = useCallback(async () => {
     if (!userId) return;
     setLoading(true);
-    setError(null);
+    setLoadFailed(false);
     try {
       const res = await fetch(`${API_BASE_URL}/docente/${userId}/perfil`);
       if (!res.ok) throw new Error("perfil");
@@ -67,8 +59,9 @@ export default function TeacherProfile() {
       setDriveLink(data.link_drive || "");
     } catch (e) {
       console.error(e);
-      setError("No se pudo cargar el perfil.");
+      notify.error("No se pudo cargar el perfil.");
       setPerfil(null);
+      setLoadFailed(true);
     } finally {
       setLoading(false);
     }
@@ -82,23 +75,21 @@ export default function TeacherProfile() {
     if (!userId) return;
     setSavingDrive(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/admin/docentes/${userId}/info-contacto`, {
+      const res = await fetch(`${API_BASE_URL}/docente/${userId}/info-contacto`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ link_drive: driveLink }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        setError(String(j.error || "No se pudo guardar."));
+        notify.fromError(j, "No se pudo guardar.");
         return;
       }
-      setError(null);
-      setDriveSaved(true);
-      setTimeout(() => setDriveSaved(false), 2000);
+      notify.success("Perfil actualizado");
       await load();
     } catch (e) {
       console.error(e);
-      setError("Error de conexión al guardar.");
+      notify.error("Error de conexión al guardar.");
     } finally {
       setSavingDrive(false);
     }
@@ -107,9 +98,7 @@ export default function TeacherProfile() {
   if (!userId) {
     return (
       <div className="p-6">
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
-          Inicia sesión para ver tu perfil.
-        </div>
+        <p className="text-sm text-gray-600">Inicia sesión para ver tu perfil.</p>
       </div>
     );
   }
@@ -128,11 +117,9 @@ export default function TeacherProfile() {
   if (!perfil) {
     return (
       <div className="p-6">
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
-            {error}
-          </div>
-        )}
+        <p className="text-sm text-gray-600">
+          {loadFailed ? "No se pudo cargar el perfil." : "Perfil no disponible."}
+        </p>
       </div>
     );
   }
@@ -144,12 +131,6 @@ export default function TeacherProfile() {
 
   return (
     <div className="p-6 space-y-6 max-w-3xl mx-auto">
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
-          {error}
-        </div>
-      )}
-
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 flex flex-col sm:flex-row gap-4 sm:items-center">
         <div className="w-16 h-16 rounded-full bg-[#1e3a8a] text-white flex items-center justify-center text-lg font-bold shrink-0">
           {iniciales}
@@ -262,9 +243,6 @@ export default function TeacherProfile() {
             Guardar
           </button>
         </div>
-        {driveSaved && (
-          <span className="text-sm text-emerald-600 font-medium">Guardado ✓</span>
-        )}
       </div>
     </div>
   );
