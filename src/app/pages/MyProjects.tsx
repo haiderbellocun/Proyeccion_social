@@ -4,6 +4,7 @@ import { Search, Filter, ArrowRight } from "lucide-react";
 import { Badge } from "../components/Badge";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE } from "../config/api";
+import { formatFecha } from "../lib/fechas";
 
 const API_BASE_URL = API_BASE;
 
@@ -157,7 +158,7 @@ export default function MyProjects() {
               <div>
                 <p className="text-xs text-gray-400">Fecha límite</p>
                 <p className="text-gray-700 text-sm mt-0.5" style={{ fontWeight: 600 }}>
-                  {project.deadline ? project.deadline : "No definida"}
+                  {project.deadline ? formatFecha(project.deadline) : "No definida"}
                 </p>
               </div>
             </div>

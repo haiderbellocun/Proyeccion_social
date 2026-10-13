@@ -11,6 +11,7 @@ import {
 import { Badge } from "../components/Badge";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE } from "../config/api";
+import { formatFecha, hoyBogota } from "../lib/fechas";
 
 const API_BASE_URL = API_BASE;
 
@@ -110,15 +111,21 @@ export default function ProjectDetail() {
           body: JSON.stringify({
             completado: nuevoCompletado,
             url_evidencia: evidenceInputs[entregable.id] || null,
-            fecha_real_entrega: nuevoCompletado
-              ? new Date().toISOString().slice(0, 10)
-              : null,
+            docente_id: currentUser?.id,
           }),
         }
       );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         alert(data.error || "No se pudo guardar el entregable.");
+        return;
+      }
+      // Las fechas (primer envío, entrega) las fija el servidor en hora de Bogotá: se vuelve a leer el detalle.
+      const resDetalle = await fetch(
+        `${API_BASE_URL}/docente/${currentUser?.id}/iniciativas/${id}`
+      );
+      if (resDetalle.ok) {
+        setInitiative((await resDetalle.json()) as InitiativeDetail);
         return;
       }
 
@@ -134,12 +141,8 @@ export default function ProjectDetail() {
                 ...e,
                 completado: nuevoCompletado,
                 url_evidencia: evidenceInputs[entregable.id] || null,
-                fecha_real_entrega: nuevoCompletado
-                  ? new Date().toISOString().slice(0, 10)
-                  : null,
-                fecha_completado: nuevoCompletado
-                  ? new Date().toISOString().slice(0, 10)
-                  : null,
+                fecha_real_entrega: nuevoCompletado ? hoyBogota() : null,
+                fecha_completado: nuevoCompletado ? hoyBogota() : null,
               };
             }),
           })),
@@ -178,8 +181,7 @@ export default function ProjectDetail() {
     );
   }
 
-  const formatDate = (f: string | null) =>
-    f ? new Date(f).toLocaleDateString("es-CO") : "—";
+  const formatDate = (f: string | null) => formatFecha(f, { day: "2-digit", month: "2-digit", year: "numeric" });
 
   const allEntregables = initiative.semanasDetalle.flatMap((s) => s.entregables);
   const totalEnt = allEntregables.length;

@@ -163,55 +163,84 @@ export const statusConfig: Record<
   },
 };
 
-export function isDeliverableCompleted(d: {
-  completado?: boolean;
-  actualDate?: string | null;
-  fecha_real_entrega?: string | null;
-}): boolean {
-  return d.completado === true || !!d.actualDate || !!d.fecha_real_entrega;
+// ─── ESTADOS E INDICADORES (calculados por el backend; el frontend solo los muestra) ───
+
+export type EstadoEntregable =
+  | "no_iniciado"
+  | "borrador"
+  | "enviado"
+  | "observado"
+  | "aprobado";
+
+export const estadoEntregableConfig: Record<
+  EstadoEntregable,
+  { label: string; badge: string; dot: string }
+> = {
+  no_iniciado: { label: "No iniciado", badge: "bg-gray-100 text-gray-600", dot: "bg-gray-400" },
+  borrador: { label: "Borrador", badge: "bg-slate-100 text-slate-700", dot: "bg-slate-400" },
+  enviado: { label: "En revisión", badge: "bg-blue-100 text-blue-700", dot: "bg-blue-500" },
+  observado: { label: "Observado", badge: "bg-amber-100 text-amber-800", dot: "bg-amber-500" },
+  aprobado: { label: "Aprobado", badge: "bg-green-100 text-green-700", dot: "bg-green-500" },
+};
+
+export type Semaforo = "verde" | "amarillo" | "rojo" | "sin_exigibles" | "sin_datos";
+
+export const semaforoConfig: Record<Semaforo, { label: string; badge: string; dot: string }> = {
+  verde: { label: "En regla", badge: "bg-green-100 text-green-700", dot: "bg-green-500" },
+  amarillo: { label: "En riesgo", badge: "bg-yellow-100 text-yellow-800", dot: "bg-yellow-500" },
+  rojo: { label: "Crítico", badge: "bg-red-100 text-red-700", dot: "bg-red-500" },
+  sin_exigibles: { label: "Sin vencimientos", badge: "bg-gray-100 text-gray-600", dot: "bg-gray-400" },
+  sin_datos: { label: "Sin matriz", badge: "bg-gray-100 text-gray-500", dot: "bg-gray-300" },
+};
+
+/** Indicadores de seguimiento: misma definición para todas las pantallas (ver backend/src/services/matrizService.js). */
+export interface IndicadoresSeguimiento {
+  total: number;
+  reportados: number;
+  aprobados: number;
+  enviados_pendientes_revision: number;
+  observados: number;
+  borradores: number;
+  no_iniciados: number;
+  vencidos: number;
+  exigibles: number;
+  exigibles_aprobados: number;
+  exigibles_reportados: number;
+  esperado: number;
+  pct_reportado: number;
+  pct_aprobado: number;
+  pct_esperado: number;
+  brecha: number;
+  brecha_pct: number;
+  cumplimiento_exigible: number | null;
+  cumplimiento_reportado_exigible: number | null;
+  semaforo: Semaforo;
 }
 
-export type SimpleDeliveryStatus = "completado" | "pendiente" | "atrasado";
-
-export function computeSimpleStatus(d: {
-  completado?: boolean;
-  actualDate?: string | null;
-  fecha_real_entrega?: string | null;
-  scheduledDate?: string | null;
-}): SimpleDeliveryStatus {
-  if (isDeliverableCompleted(d)) return "completado";
-  const sched = d.scheduledDate;
-  if (!sched) return "pendiente";
-  const scheduled = new Date(`${sched}T00:00:00`);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  if (scheduled < today) return "atrasado";
-  return "pendiente";
+export interface SemanaActual {
+  semestre: string | null;
+  hoy: string;
+  numero: number | null;
+  total_semanas: number;
+  estado: "sin_iniciar" | "en_curso" | "finalizado";
+  fecha_inicio_semana?: string;
+  fecha_fin_semana?: string;
+  fecha_inicio_semestre: string;
+  fecha_fin_semestre: string;
+  calendario_por_defecto: boolean;
 }
 
-export function computeStatus(
-  scheduledDate: string | null | undefined,
-  actualDate?: string | null
-): DeliveryStatus {
-  if (!scheduledDate) return "no_iniciado";
-  const scheduled = new Date(`${scheduledDate}T00:00:00`);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+export function etiquetaSemana(s: SemanaActual | null | undefined): string {
+  if (!s) return "—";
+  if (s.estado === "en_curso" && s.numero != null) return `Semana ${s.numero} de ${s.total_semanas}`;
+  if (s.estado === "finalizado") return "Semestre finalizado";
+  return "Semestre por iniciar";
+}
 
-  if (actualDate) {
-    const actual = new Date(`${actualDate}T00:00:00`);
-    if (actual < scheduled) return "entrega_anticipada";
-    if (actual.toDateString() === scheduled.toDateString()) return "entrega_a_tiempo";
-    return "entrega_fuera";
-  }
-
-  const weekEnd = new Date(scheduled);
-  const weekStart = new Date(scheduled);
-  weekStart.setDate(weekStart.getDate() - 4);
-
-  if (scheduled > today) return "no_iniciado";
-  if (today >= weekStart && today <= weekEnd) return "semana_en_curso";
-  return "vencido";
+/** Un entregable cuenta como reportado si fue enviado para revisión o ya está aprobado. */
+export function isDeliverableCompleted(d: { estado?: EstadoEntregable | null; completado?: boolean }): boolean {
+  if (d.estado) return d.estado === "enviado" || d.estado === "aprobado";
+  return d.completado === true;
 }
 
 export const MONTHS: MonthName[] = ["Febrero", "Marzo", "Abril", "Mayo"];

@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { Badge } from "../components/Badge";
 import { API_BASE } from "../config/api";
+import { useCurrentUser } from "../hooks/useCurrentUser";
+import { formatFecha } from "../lib/fechas";
 
 const API_BASE_URL = API_BASE;
 
@@ -30,6 +32,12 @@ type ReportItem = {
   description: string;
   progress: number;
   evidences: { name: string; type: "LINK" | "TEXT" }[];
+  esReenvio: boolean;
+  numEnvios: number;
+  fechaPrimerEnvio: string | null;
+  fechaUltimoEnvio: string | null;
+  evidenciaExenta: boolean;
+  justificacionExencion: string;
   status: "pending" | "review" | "approved";
 };
 
@@ -43,6 +51,7 @@ type AdminMetricas = {
 
 export default function ReportReview() {
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
   const [current, setCurrent] = useState(0);
   const [comment, setComment] = useState("");
   const [reviewed, setReviewed] = useState<Record<number, string>>({});
@@ -121,9 +130,7 @@ export default function ReportReview() {
             email: r.docente_correo || "",
             project: r.proyecto_titulo || "Iniciativa",
             week: `Semana ${r.semana_numero || "—"}`,
-            date: r.fecha_real_entrega
-              ? new Date(String(r.fecha_real_entrega) + "T12:00:00").toLocaleDateString("es-CO")
-              : "—",
+            date: r.fecha_real_entrega ? formatFecha(String(r.fecha_real_entrega).slice(0, 10)) : "—",
             activity:
               r.actividad_reportada ||
               r.actividad ||
@@ -137,6 +144,12 @@ export default function ReportReview() {
             evidences: r.url_evidencia
               ? [{ name: r.url_evidencia, type: "LINK" as const }]
               : [{ name: "Sin URL de evidencia", type: "TEXT" as const }],
+            esReenvio: r.es_reenvio === true,
+            numEnvios: Number(r.num_envios ?? 0),
+            fechaPrimerEnvio: r.fecha_primer_envio ?? null,
+            fechaUltimoEnvio: r.fecha_ultimo_envio ?? null,
+            evidenciaExenta: r.evidencia_exenta === true,
+            justificacionExencion: r.justificacion_exencion || "",
             status,
           };
         });
@@ -208,7 +221,11 @@ export default function ReportReview() {
       const res = await fetch(`${API_BASE_URL}/admin/reportes-revision/${report.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ estado_revision, comentario_revision: comment || null }),
+        body: JSON.stringify({
+          estado_revision,
+          comentario_revision: comment || null,
+          admin_id: currentUser?.id ?? null,
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -261,7 +278,7 @@ export default function ReportReview() {
     );
   }
 
-  if (!report && !loadingReports) {
+  if (!report) {
     return (
       <div className="p-6 space-y-6">
         <div>
@@ -448,6 +465,12 @@ export default function ReportReview() {
                   </div>
                   <Badge variant={report.status} />
                 </div>
+                {report.esReenvio && (
+                  <p className="mt-3 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs bg-blue-100 text-blue-700" style={{ fontWeight: 500 }}>
+                    Reenvío tras corrección · {report.numEnvios} envíos
+                    {report.fechaUltimoEnvio ? ` · último ${formatFecha(report.fechaUltimoEnvio)}` : ""}
+                  </p>
+                )}
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4">
                   <div>
                     <p className="text-xs text-gray-400">Proyecto</p>
@@ -491,6 +514,12 @@ export default function ReportReview() {
           {/* Evidences */}
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
             <h3 className="text-gray-800 mb-3">Evidencias</h3>
+            {report.evidenciaExenta && (
+              <div className="mb-3 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg p-3">
+                <span style={{ fontWeight: 600 }}>Sin evidencia — justificación del docente: </span>
+                {report.justificacionExencion || "—"}
+              </div>
+            )}
             <div className="space-y-2">
               {report.evidences.map((ev, i) => (
                 <div

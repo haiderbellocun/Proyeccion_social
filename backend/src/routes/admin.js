@@ -1,5 +1,25 @@
 import express from "express";
 import { pool } from "../db.js";
+import {
+  calcularMetricas,
+  fechaBogota,
+  hoyBogota,
+  itemParaApi,
+  mesDeFecha,
+  metricasPorMes,
+  metricasPorSemana,
+  normalizarCalendario,
+  rangoSemana,
+  resumenParaApi,
+  round1,
+  semanaActual,
+} from "../services/matrizService.js";
+import {
+  aplicarRevisionAdmin,
+  cargarMatrizDocentes,
+  reabrirEntregable,
+  responderError,
+} from "../services/matrizRepo.js";
 
 const router = express.Router();
 
@@ -16,306 +36,142 @@ async function ensureReportFieldsColumns(client) {
   reportFieldsColumnsEnsured = true;
 }
 
-const mesFromSemana = (semana) => {
-  const w = Number(semana) || 0;
-  if (w <= 4) return "Febrero";
-  if (w <= 8) return "Marzo";
-  if (w <= 12) return "Abril";
-  return "Mayo";
-};
-
-const round1 = (x) => Math.round(Number(x) * 10) / 10;
-
-const toDateOnlyISO = (d) => {
-  if (d == null) return null;
-  const dt = d instanceof Date ? d : new Date(d);
-  if (isNaN(dt.getTime())) return null;
-  return dt.toISOString().slice(0, 10);
-};
-
-const ADMIN_MATRIZ_PLANTILLA_JOIN = `
-  FROM plantilla_entregables tpl
-  INNER JOIN usuarios u
-    ON u.id = $1
-   AND u.rol = 'docente'
-   AND u.grupo_matriz_id = tpl.grupo_id
-  LEFT JOIN LATERAL (
-    SELECT
-      e.id,
-      e.completado,
-      e.fecha_real_entrega,
-      e.url_evidencia,
-      e.estado_revision,
-      e.comentario_revision,
-      e.porcentaje_avance,
-      e.actividad_reportada,
-      e.horas
-    FROM proyecto_entregables e
-    INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-    INNER JOIN proyectos p ON p.id = s.proyecto_id
-    WHERE s.numero = tpl.semana_numero
-      AND (
-        p.docente_responsable_id = u.id
-        OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-      )
-      AND (
-        TRIM(e.descripcion) = TRIM(tpl.entregable)
-        OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-      )
-    ORDER BY e.id DESC
-    LIMIT 1
-  ) pe ON true
-`;
-
-const ADMIN_MATRIZ_ORDER = `
-  ORDER BY
-    CASE LOWER(TRIM(tpl.mes))
-      WHEN 'febrero' THEN 1
-      WHEN 'marzo' THEN 2
-      WHEN 'abril' THEN 3
-      WHEN 'mayo' THEN 4
-      ELSE 5
-    END,
-    tpl.semana_numero NULLS LAST,
-    tpl.numero
-`;
-
-const mapCategorySlug = (categoria, fase) => {
-  const text = `${categoria || ""} ${fase || ""}`.toLowerCase();
-  if (text.includes("capacit")) return "capacitacion";
-  if (text.includes("conveni")) {
-    if (text.includes("nuevo")) return "convenio_nuevo";
-    if (text.includes("dinam")) return "convenio_dinamizado";
-    return "convenio_dinamizado";
-  }
-  if (text.includes("presup")) return "presupuesto";
-  if (text.includes("proyect")) return "proyecto";
-  const m = text.match(/actividad\s*(\d+)/i);
-  if (m) {
-    const n = Number(m[1]);
-    if (n >= 1 && n <= 4) return `actividad${n}`;
-  }
-  if (text.includes("actividad")) return "actividad1";
-  return "proyecto";
-};
-
 const SEMESTRE_REGEX = /^\d{4}[AB]$/;
 function isValidSemestreValue(s) {
   return typeof s === "string" && SEMESTRE_REGEX.test(String(s).trim());
 }
 
-// Dashboard admin (expuesto: stats, progreso_semanal, cumplimiento_por_programa, docentes_recientes)
+// Dashboard admin: todos los indicadores salen de matrizService (misma regla que las demás pantallas).
 router.get("/dashboard", async (_req, res) => {
   const client = await pool.connect();
   try {
-    const totalDocentesR = await client.query(
-      `SELECT COUNT(*)::int AS total FROM usuarios WHERE rol = 'docente'`
-    );
+    const hoy = hoyBogota();
+    const docentes = await cargarMatrizDocentes(client, { hoy });
+
     const proyectosActivosR = await client.query(
       `SELECT COUNT(*)::int AS total FROM proyectos WHERE estado = 'en_ejecucion'`
     );
 
+    // Conteos globales de entregables registrados (incluye los que no pertenecen a una plantilla).
     const reportesR = await client.query(`
       SELECT
-        COUNT(*) FILTER (WHERE COALESCE(completado, false) = true)::int AS enviados,
-        COUNT(*) FILTER (
-          WHERE COALESCE(completado, false) = true
-            AND COALESCE(estado_revision, 'enviado') = 'aprobado'
-        )::int AS aprobados
+        COUNT(*) FILTER (WHERE estado_revision = 'aprobado'
+          OR (COALESCE(completado, false) AND estado_revision = 'enviado'))::int AS reportados,
+        COUNT(*) FILTER (WHERE COALESCE(completado, false) AND estado_revision = 'enviado')::int AS pendientes_revision,
+        COUNT(*) FILTER (WHERE estado_revision = 'aprobado')::int AS aprobados,
+        COUNT(*) FILTER (WHERE estado_revision = 'observado')::int AS observados
       FROM proyecto_entregables
     `);
+
+    // Calendario de referencia = el del semestre más reciente con docentes asignados.
+    const conCalendario = docentes.filter((d) => d.docente.semestre);
+    const ref = conCalendario.sort((a, b) => String(b.docente.semestre).localeCompare(String(a.docente.semestre)))[0];
+    const calendarioRef = ref?.calendario ?? normalizarCalendario(null, null);
+    const totalSemanas = Math.max(calendarioRef.num_semanas, ...docentes.map((d) => d.calendario.num_semanas));
 
     const semanaRows = await client.query(`
       SELECT
         s.numero AS semana,
-        COUNT(e.id) FILTER (WHERE COALESCE(e.completado, false) = true)::int AS enviados,
-        COUNT(e.id) FILTER (
-          WHERE COALESCE(e.completado, false) = true
-            AND COALESCE(e.estado_revision, 'enviado') = 'aprobado'
-        )::int AS aprobados
+        COUNT(e.id) FILTER (WHERE e.estado_revision = 'aprobado'
+          OR (COALESCE(e.completado, false) AND e.estado_revision = 'enviado'))::int AS reportados,
+        COUNT(e.id) FILTER (WHERE e.estado_revision = 'aprobado')::int AS aprobados
       FROM proyecto_semanas s
       LEFT JOIN proyecto_entregables e ON e.proyecto_semana_id = s.id
       GROUP BY s.numero
       ORDER BY s.numero
     `);
-
-    const semanaMap = new Map();
-    for (const r of semanaRows.rows || []) {
-      semanaMap.set(Number(r.semana), {
-        enviados: Number(r.enviados || 0),
-        aprobados: Number(r.aprobados || 0),
-      });
-    }
+    const semanaMap = new Map(semanaRows.rows.map((r) => [Number(r.semana), r]));
     const progreso_semanal = [];
-    for (let semana = 1; semana <= 16; semana++) {
-      const row = semanaMap.get(semana) || { enviados: 0, aprobados: 0 };
+    for (let semana = 1; semana <= totalSemanas; semana++) {
+      const r = semanaMap.get(semana);
+      const { fin } = rangoSemana(calendarioRef, semana);
       progreso_semanal.push({
         semana,
-        mes: mesFromSemana(semana),
-        enviados: row.enviados,
-        aprobados: row.aprobados,
+        mes: mesDeFecha(fin),
+        enviados: Number(r?.reportados || 0), // alias histórico = reportados
+        reportados: Number(r?.reportados || 0),
+        aprobados: Number(r?.aprobados || 0),
       });
     }
 
-    const cumplimientoR = await client.query(`
-      WITH docente_tpl AS (
-        SELECT
-          u.id AS docente_id,
-          u.programa_id,
-          COUNT(tpl.id)::int AS total_tpl,
-          COUNT(DISTINCT pe.id) FILTER (WHERE COALESCE(pe.completado, false))::int AS done_tpl
-        FROM usuarios u
-        INNER JOIN plantilla_entregables tpl
-          ON tpl.grupo_id = u.grupo_matriz_id
-        LEFT JOIN LATERAL (
-          SELECT e.id, e.completado
-          FROM proyecto_entregables e
-          INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-          INNER JOIN proyectos p ON p.id = s.proyecto_id
-          WHERE u.grupo_matriz_id IS NOT NULL
-            AND s.numero = tpl.semana_numero
-            AND (
-              p.docente_responsable_id = u.id
-              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-            )
-            AND (
-              TRIM(e.descripcion) = TRIM(tpl.entregable)
-              OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-            )
-          ORDER BY e.id DESC
-          LIMIT 1
-        ) pe ON true
-        WHERE u.rol = 'docente'
-          AND u.programa_id IS NOT NULL
-        GROUP BY u.id, u.programa_id
-      ),
-      por_prog AS (
-        SELECT
-          programa_id,
-          COUNT(*)::int AS docentes,
-          AVG(
-            CASE
-              WHEN total_tpl > 0 THEN (100.0 * done_tpl / total_tpl)
-              ELSE 0::numeric
-            END
-          ) AS porcentaje
-        FROM docente_tpl
-        GROUP BY programa_id
-      )
-      SELECT
-        p.nombre AS programa,
-        pp.docentes,
-        ROUND(pp.porcentaje::numeric, 1)::float AS porcentaje
-      FROM por_prog pp
-      JOIN programas p ON p.id = pp.programa_id
-      ORDER BY pp.docentes DESC, p.nombre
-      LIMIT 8
-    `);
+    const porDocente = docentes.map(({ docente, items }) => ({ docente, items, m: calcularMetricas(items, hoy) }));
 
-    const cumplimiento_por_programa = (cumplimientoR.rows || []).map((r) => ({
-      programa: r.programa || "Sin nombre",
-      porcentaje: round1(r.porcentaje ?? 0),
-      docentes: Number(r.docentes || 0),
+    const porPrograma = new Map();
+    for (const { docente, items, m } of porDocente) {
+      if (!docente.programa_id || items.length === 0) continue;
+      const g = porPrograma.get(docente.programa_id) ?? { programa: docente.programa, docentes: 0, rep: 0, apr: 0, esp: 0 };
+      g.docentes += 1;
+      g.rep += m.pct_reportado;
+      g.apr += m.pct_aprobado;
+      g.esp += m.pct_esperado;
+      porPrograma.set(docente.programa_id, g);
+    }
+    const cumplimiento_por_programa = [...porPrograma.values()]
+      .sort((a, b) => b.docentes - a.docentes || String(a.programa).localeCompare(String(b.programa)))
+      .slice(0, 8)
+      .map((g) => ({
+        programa: g.programa || "Sin nombre",
+        docentes: g.docentes,
+        porcentaje: round1(g.rep / g.docentes), // alias histórico = reportado
+        porcentaje_reportado: round1(g.rep / g.docentes),
+        porcentaje_aprobado: round1(g.apr / g.docentes),
+        porcentaje_esperado: round1(g.esp / g.docentes),
+      }));
+
+    const docentes_recientes = porDocente.map(({ docente, items, m }) => ({
+      id: docente.id,
+      nombre: docente.nombre || "—",
+      programa: docente.programa || "Sin programa",
+      regional: docente.regional || "—",
+      porcentaje_avance: m.pct_reportado, // alias histórico = reportado
+      porcentaje_reportado: m.pct_reportado,
+      porcentaje_aprobado: m.pct_aprobado,
+      porcentaje_esperado: m.pct_esperado,
+      brecha: m.brecha,
+      brecha_pct: m.brecha_pct,
+      cumplimiento_exigible: m.cumplimiento_exigible,
+      semaforo: m.semaforo,
+      pendientes_revision: m.enviados_pendientes_revision,
+      observados: m.observados,
+      vencidos: m.vencidos,
+      reportes_enviados: m.reportados,
+      estado: items.length === 0 ? "sin_actividad" : m.vencidos > 0 ? "atrasado" : "al_dia",
     }));
 
-    const docentesR = await client.query(`
-      WITH base AS (
-        SELECT
-          u.id,
-          u.nombre,
-          u.apellido,
-          COALESCE(pr.nombre, 'Sin programa') AS programa,
-          COALESCE(NULLIF(TRIM(u.regional), ''), '—') AS regional,
-          u.grupo_matriz_id,
-          COUNT(tpl.id)::int AS total_tpl,
-          COUNT(DISTINCT pe.id) FILTER (WHERE COALESCE(pe.completado, false))::int AS done_tpl,
-          (
-            SELECT COUNT(*)::int
-            FROM proyecto_entregables e2
-            JOIN proyecto_semanas s2 ON s2.id = e2.proyecto_semana_id
-            JOIN proyectos p2 ON p2.id = s2.proyecto_id
-            WHERE COALESCE(e2.completado, false) = true
-              AND (
-                p2.docente_responsable_id = u.id
-                OR p2.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-              )
-          ) AS reportes_enviados
-        FROM usuarios u
-        LEFT JOIN programas pr ON pr.id = u.programa_id
-        LEFT JOIN plantilla_entregables tpl ON tpl.grupo_id = u.grupo_matriz_id
-        LEFT JOIN LATERAL (
-          SELECT e.id, e.completado
-          FROM proyecto_entregables e
-          INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-          INNER JOIN proyectos p ON p.id = s.proyecto_id
-          WHERE u.grupo_matriz_id IS NOT NULL
-            AND tpl.grupo_id = u.grupo_matriz_id
-            AND s.numero = tpl.semana_numero
-            AND (
-              p.docente_responsable_id = u.id
-              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-            )
-            AND (
-              TRIM(e.descripcion) = TRIM(tpl.entregable)
-              OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-            )
-          ORDER BY e.id DESC
-          LIMIT 1
-        ) pe ON true
-        WHERE u.rol = 'docente'
-        GROUP BY u.id, u.nombre, u.apellido, pr.nombre, u.regional, u.grupo_matriz_id
-      )
-      SELECT
-        id,
-        nombre,
-        apellido,
-        programa,
-        regional,
-        total_tpl,
-        done_tpl,
-        reportes_enviados,
-        CASE
-          WHEN grupo_matriz_id IS NULL OR total_tpl = 0 THEN 'sin_actividad'
-          WHEN total_tpl > 0 AND (100.0 * done_tpl / total_tpl) < 40 THEN 'atrasado'
-          ELSE 'al_dia'
-        END AS estado,
-        CASE
-          WHEN total_tpl > 0 THEN ROUND((100.0 * done_tpl / total_tpl)::numeric, 1)::float
-          ELSE 0::float
-        END AS porcentaje_avance
-      FROM base
-      ORDER BY apellido, nombre
-    `);
-
-    const docentes_recientes = (docentesR.rows || []).map((r) => ({
-      id: Number(r.id),
-      nombre: [r.nombre, r.apellido].filter(Boolean).join(" ").trim() || "—",
-      programa: r.programa || "—",
-      regional: r.regional || "—",
-      porcentaje_avance: round1(r.porcentaje_avance ?? 0),
-      reportes_enviados: Number(r.reportes_enviados || 0),
-      estado: r.estado,
-    }));
-
+    const conPlantilla = porDocente.filter((d) => d.items.length > 0);
+    const promedio = (campo) =>
+      conPlantilla.length ? round1(conPlantilla.reduce((s, d) => s + d.m[campo], 0) / conPlantilla.length) : 0;
     const docentes_atrasados = docentes_recientes.filter((d) => d.estado === "atrasado").length;
+    const rep0 = reportesR.rows[0] || {};
 
     res.json({
       stats: {
-        total_docentes: totalDocentesR.rows[0]?.total ?? 0,
-        reportes_enviados: Number(reportesR.rows[0]?.enviados ?? 0),
+        total_docentes: docentes.length,
+        reportes_enviados: Number(rep0.reportados ?? 0),
+        pendientes_revision: Number(rep0.pendientes_revision ?? 0),
+        reportes_aprobados: Number(rep0.aprobados ?? 0),
+        reportes_observados: Number(rep0.observados ?? 0),
         docentes_atrasados,
         proyectos_activos: proyectosActivosR.rows[0]?.total ?? 0,
+        avance_reportado_promedio: promedio("pct_reportado"),
+        avance_aprobado_promedio: promedio("pct_aprobado"),
+        avance_esperado_promedio: promedio("pct_esperado"),
+        semaforo: {
+          verde: docentes_recientes.filter((d) => d.semaforo === "verde").length,
+          amarillo: docentes_recientes.filter((d) => d.semaforo === "amarillo").length,
+          rojo: docentes_recientes.filter((d) => d.semaforo === "rojo").length,
+        },
       },
+      semana_actual: semanaActual(calendarioRef, hoy),
       progreso_semanal,
       cumplimiento_por_programa,
       docentes_recientes,
-      docentes: totalDocentesR.rows[0]?.total,
+      docentes: docentes.length,
       proyectos_activos: proyectosActivosR.rows[0]?.total,
-      reportes: reportesR.rows[0],
+      reportes: { enviados: Number(rep0.reportados ?? 0), aprobados: Number(rep0.aprobados ?? 0) },
     });
   } catch (error) {
-    console.error("Error en /admin/dashboard", error);
-    res.status(500).json({ error: "Error interno" });
+    responderError(res, error, "Error en /admin/dashboard");
   } finally {
     client.release();
   }
@@ -364,7 +220,7 @@ router.get("/notificaciones", async (_req, res) => {
               )
               AND COALESCE(pe.completado, false) = true
               AND COALESCE(pe.fecha_completado, pe.fecha_real_entrega)
-                  >= CURRENT_DATE - INTERVAL '14 days'
+                  >= ((NOW() AT TIME ZONE 'America/Bogota')::date - 14)
           )
       ) AS sub
       ORDER BY fecha DESC NULLS LAST
@@ -458,212 +314,79 @@ router.get("/metricas", async (_req, res) => {
       };
     });
 
-    const porGrupoR = await client.query(`
-      WITH pairs AS (
-        SELECT
-          u.grupo_matriz_id AS grupo_id,
-          u.id AS docente_id,
-          tpl.id AS tpl_id,
-          COALESCE(pe.completado, false) AS ok
-        FROM usuarios u
-        INNER JOIN plantilla_entregables tpl ON tpl.grupo_id = u.grupo_matriz_id
-        LEFT JOIN LATERAL (
-          SELECT e.completado
-          FROM proyecto_entregables e
-          INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-          INNER JOIN proyectos p ON p.id = s.proyecto_id
-          WHERE s.numero = tpl.semana_numero
-            AND (
-              p.docente_responsable_id = u.id
-              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-            )
-            AND (
-              TRIM(e.descripcion) = TRIM(tpl.entregable)
-              OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-            )
-          ORDER BY e.id DESC
-          LIMIT 1
-        ) pe ON true
-        WHERE u.rol = 'docente'
-          AND u.grupo_matriz_id IS NOT NULL
-      ),
-      agg AS (
-        SELECT
-          grupo_id,
-          COUNT(DISTINCT docente_id)::int AS total_docentes,
-          COUNT(*)::int AS entregables_total,
-          COUNT(*) FILTER (WHERE ok)::int AS entregables_completados
-        FROM pairs
-        GROUP BY grupo_id
-      )
-      SELECT
-        gm.id AS grupo_id,
-        gm.nombre AS grupo_nombre,
-        COALESCE(gm.tipo_docente, 'ANTIGUO') AS tipo_docente,
-        COALESCE(a.total_docentes, 0)::int AS total_docentes,
-        COALESCE(a.entregables_completados, 0)::int AS entregables_completados,
-        COALESCE(a.entregables_total, 0)::int AS entregables_total
-      FROM grupos_matriz gm
-      LEFT JOIN agg a ON a.grupo_id = gm.id
-      ORDER BY gm.nombre
-    `);
+    const hoy = hoyBogota();
+    const docentesMatriz = await cargarMatrizDocentes(client, { hoy });
+    const porDocente = docentesMatriz
+      .map(({ docente, items }) => ({ docente, items, m: calcularMetricas(items, hoy) }))
+      .filter((d) => d.items.length > 0);
 
-    const por_grupo = (porGrupoR.rows || []).map((r) => {
-      const total = Number(r.entregables_total || 0);
-      const done = Number(r.entregables_completados || 0);
-      const pct = total > 0 ? round1((done / total) * 100) : 0;
+    const gruposR = await client.query(`
+      SELECT id AS grupo_id, nombre AS grupo_nombre, COALESCE(tipo_docente, 'ANTIGUO') AS tipo_docente
+      FROM grupos_matriz
+      ORDER BY nombre
+    `);
+    const por_grupo = (gruposR.rows || []).map((g) => {
+      const miembros = porDocente.filter((d) => d.docente.grupo_id === Number(g.grupo_id));
+      const total = miembros.reduce((s, d) => s + d.m.total, 0);
+      const reportados = miembros.reduce((s, d) => s + d.m.reportados, 0);
+      const aprobados = miembros.reduce((s, d) => s + d.m.aprobados, 0);
+      const esperado = miembros.reduce((s, d) => s + d.m.esperado, 0);
       return {
-        grupo_id: Number(r.grupo_id),
-        grupo_nombre: r.grupo_nombre || "",
-        tipo_docente: r.tipo_docente === "NUEVO" ? "NUEVO" : "ANTIGUO",
-        total_docentes: Number(r.total_docentes || 0),
-        entregables_completados: done,
+        grupo_id: Number(g.grupo_id),
+        grupo_nombre: g.grupo_nombre || "",
+        tipo_docente: g.tipo_docente === "NUEVO" ? "NUEVO" : "ANTIGUO",
+        total_docentes: miembros.length,
+        entregables_completados: reportados, // alias histórico = reportados
+        entregables_reportados: reportados,
+        entregables_aprobados: aprobados,
+        entregables_esperados: esperado,
         entregables_total: total,
-        porcentaje: pct,
+        porcentaje: total > 0 ? round1((reportados / total) * 100) : 0,
+        porcentaje_aprobado: total > 0 ? round1((aprobados / total) * 100) : 0,
+        porcentaje_esperado: total > 0 ? round1((esperado / total) * 100) : 0,
       };
     });
 
-    const porRegionalR = await client.query(`
-      WITH docente_tpl AS (
-        SELECT
-          u.id AS docente_id,
-          COALESCE(NULLIF(TRIM(u.regional), ''), 'Sin regional') AS regional,
-          COUNT(tpl.id)::int AS total_tpl,
-          COUNT(DISTINCT pe.id) FILTER (WHERE COALESCE(pe.completado, false))::int AS done_tpl
-        FROM usuarios u
-        INNER JOIN plantilla_entregables tpl ON tpl.grupo_id = u.grupo_matriz_id
-        LEFT JOIN LATERAL (
-          SELECT e.id, e.completado
-          FROM proyecto_entregables e
-          INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-          INNER JOIN proyectos p ON p.id = s.proyecto_id
-          WHERE s.numero = tpl.semana_numero
-            AND (
-              p.docente_responsable_id = u.id
-              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-            )
-            AND (
-              TRIM(e.descripcion) = TRIM(tpl.entregable)
-              OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-            )
-          ORDER BY e.id DESC
-          LIMIT 1
-        ) pe ON true
-        WHERE u.rol = 'docente'
-        GROUP BY u.id, regional
+    const regionales = new Map();
+    for (const d of porDocente) {
+      const regional = (d.docente.regional || "").trim() || "Sin regional";
+      const g = regionales.get(regional) ?? { regional, docentes: 0, rep: 0, apr: 0 };
+      g.docentes += 1;
+      g.rep += d.m.pct_reportado;
+      g.apr += d.m.pct_aprobado;
+      regionales.set(regional, g);
+    }
+    const por_regional = [...regionales.values()]
+      .sort((a, b) => a.regional.localeCompare(b.regional))
+      .map((g) => ({
+        regional: g.regional,
+        docentes: g.docentes,
+        porcentaje_avance: round1(g.rep / g.docentes), // alias histórico = reportado
+        porcentaje_reportado: round1(g.rep / g.docentes),
+        porcentaje_aprobado: round1(g.apr / g.docentes),
+      }));
+
+    const top_atrasados = porDocente
+      .slice()
+      .sort(
+        (a, b) =>
+          b.m.vencidos - a.m.vencidos ||
+          a.m.pct_aprobado - b.m.pct_aprobado ||
+          a.docente.nombre.localeCompare(b.docente.nombre)
       )
-      SELECT
-        regional,
-        COUNT(*)::int AS docentes,
-        ROUND(AVG(
-          CASE
-            WHEN total_tpl > 0 THEN (100.0 * done_tpl / total_tpl)
-            ELSE 0::numeric
-          END
-        )::numeric, 1)::float AS porcentaje_avance
-      FROM docente_tpl
-      GROUP BY regional
-      ORDER BY regional
-    `);
-
-    const por_regional = (porRegionalR.rows || []).map((r) => ({
-      regional: r.regional || "—",
-      docentes: Number(r.docentes || 0),
-      porcentaje_avance: round1(r.porcentaje_avance ?? 0),
-    }));
-
-    const topAtrR = await client.query(`
-      WITH docente_tpl AS (
-        SELECT
-          u.id AS docente_id,
-          u.grupo_matriz_id,
-          u.nombre,
-          u.apellido,
-          COALESCE(pr.nombre, 'Sin programa') AS programa,
-          COALESCE(NULLIF(TRIM(u.regional), ''), '—') AS regional,
-          COALESCE(gm.nombre, '—') AS grupo,
-          COUNT(tpl.id)::int AS total_tpl,
-          COUNT(DISTINCT pe.id) FILTER (WHERE COALESCE(pe.completado, false))::int AS done_tpl
-        FROM usuarios u
-        LEFT JOIN programas pr ON pr.id = u.programa_id
-        LEFT JOIN grupos_matriz gm ON gm.id = u.grupo_matriz_id
-        LEFT JOIN plantilla_entregables tpl ON tpl.grupo_id = u.grupo_matriz_id
-        LEFT JOIN LATERAL (
-          SELECT e.id, e.completado
-          FROM proyecto_entregables e
-          INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-          INNER JOIN proyectos p ON p.id = s.proyecto_id
-          WHERE u.grupo_matriz_id IS NOT NULL
-            AND tpl.grupo_id = u.grupo_matriz_id
-            AND s.numero = tpl.semana_numero
-            AND (
-              p.docente_responsable_id = u.id
-              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-            )
-            AND (
-              TRIM(e.descripcion) = TRIM(tpl.entregable)
-              OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-            )
-          ORDER BY e.id DESC
-          LIMIT 1
-        ) pe ON true
-        WHERE u.rol = 'docente'
-        GROUP BY u.id, u.grupo_matriz_id, u.nombre, u.apellido, pr.nombre, u.regional, gm.nombre
-      )
-      SELECT
-        d.docente_id,
-        d.nombre,
-        d.apellido,
-        d.programa,
-        d.regional,
-        d.grupo,
-        d.total_tpl,
-        d.done_tpl,
-        CASE
-          WHEN d.total_tpl > 0 THEN ROUND((100.0 * d.done_tpl / d.total_tpl)::numeric, 1)::float
-          ELSE 0::float
-        END AS porcentaje_avance,
-        (
-          SELECT COUNT(*)::int
-          FROM plantilla_entregables tpl
-          WHERE tpl.grupo_id = d.grupo_matriz_id
-            AND d.grupo_matriz_id IS NOT NULL
-            AND tpl.dias_fin_desde_feb IS NOT NULL
-            AND (DATE '2026-02-10' + tpl.dias_fin_desde_feb * INTERVAL '1 day')::date < CURRENT_DATE
-            AND NOT EXISTS (
-              SELECT 1
-              FROM proyecto_entregables e
-              INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-              INNER JOIN proyectos p ON p.id = s.proyecto_id
-              WHERE s.numero = tpl.semana_numero
-                AND (
-                  p.docente_responsable_id = d.docente_id
-                  OR p.id IN (
-                    SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = d.docente_id
-                  )
-                )
-                AND (
-                  TRIM(e.descripcion) = TRIM(tpl.entregable)
-                  OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-                )
-                AND COALESCE(e.completado, false) = true
-            )
-        ) AS entregables_vencidos
-      FROM docente_tpl d
-      WHERE d.total_tpl > 0
-      ORDER BY porcentaje_avance ASC, entregables_vencidos DESC NULLS LAST
-      LIMIT 10
-    `);
-
-    const top_atrasados = (topAtrR.rows || []).map((r) => ({
-      docente_id: Number(r.docente_id),
-      nombre: [r.nombre, r.apellido].filter(Boolean).join(" ").trim(),
-      programa: r.programa || "—",
-      regional: r.regional || "—",
-      grupo: r.grupo || "—",
-      entregables_vencidos: Number(r.entregables_vencidos || 0),
-      porcentaje_avance: round1(r.porcentaje_avance ?? 0),
-    }));
+      .slice(0, 10)
+      .map(({ docente, m }) => ({
+        docente_id: docente.id,
+        nombre: docente.nombre,
+        programa: docente.programa || "—",
+        regional: docente.regional || "—",
+        grupo: docente.grupo_nombre || "—",
+        entregables_vencidos: m.vencidos,
+        porcentaje_avance: m.pct_reportado, // alias histórico = reportado
+        porcentaje_reportado: m.pct_reportado,
+        porcentaje_aprobado: m.pct_aprobado,
+        semaforo: m.semaforo,
+      }));
 
     res.json({
       resumen: {
@@ -694,22 +417,28 @@ router.get("/reportes-revision", async (req, res) => {
   const client = await pool.connect();
   try {
     await ensureReportFieldsColumns(client);
+    // Cola de revisión: entregables efectivamente enviados (completado + estado 'enviado').
     const countResult = await client.query(
       `
       SELECT COUNT(*)::int AS total
       FROM proyecto_entregables e
       WHERE COALESCE(e.completado, false) = true
-        AND COALESCE(e.estado_revision, 'enviado') = 'enviado'
+        AND e.estado_revision = 'enviado'
       `
     );
     const result = await client.query(
       `
       SELECT
         e.id,
-        COALESCE(e.estado_revision, 'enviado') AS estado_revision,
+        e.estado_revision,
         e.comentario_revision,
         e.fecha_real_entrega,
         e.fecha_completado,
+        e.fecha_primer_envio,
+        e.fecha_ultimo_envio,
+        COALESCE(e.num_envios, 0)::int AS num_envios,
+        e.evidencia_exenta,
+        e.justificacion_exencion,
         e.url_evidencia,
         COALESCE(e.actividad_reportada, e.descripcion) AS actividad_reportada,
         COALESCE(e.descripcion_reporte, '') AS descripcion_reporte,
@@ -729,19 +458,12 @@ router.get("/reportes-revision", async (req, res) => {
       LEFT JOIN programas prog ON prog.id = p.programa_id
       LEFT JOIN usuarios u ON u.id = p.docente_responsable_id
       WHERE COALESCE(e.completado, false) = true
-        AND COALESCE(e.estado_revision, 'enviado') = 'enviado'
+        AND e.estado_revision = 'enviado'
       ORDER BY
-        CASE COALESCE(e.estado_revision, 'enviado')
-          WHEN 'enviado' THEN 0
-          WHEN 'observado' THEN 1
-          WHEN 'aprobado' THEN 2
-          ELSE 3
-        END,
-        COALESCE(e.fecha_real_entrega, e.fecha_completado) DESC NULLS LAST,
+        COALESCE(e.fecha_ultimo_envio, e.fecha_real_entrega::timestamp, e.fecha_completado::timestamp) DESC NULLS LAST,
         e.id DESC
       LIMIT $1 OFFSET $2
-      `
-      ,
+      `,
       [limit, offset]
     );
 
@@ -751,6 +473,12 @@ router.get("/reportes-revision", async (req, res) => {
       comentario_revision: r.comentario_revision || "",
       fecha_real_entrega: r.fecha_real_entrega,
       fecha_completado: r.fecha_completado,
+      fecha_primer_envio: r.fecha_primer_envio ? fechaBogota(r.fecha_primer_envio) : null,
+      fecha_ultimo_envio: r.fecha_ultimo_envio ? fechaBogota(r.fecha_ultimo_envio) : null,
+      num_envios: r.num_envios,
+      es_reenvio: r.num_envios > 1,
+      evidencia_exenta: r.evidencia_exenta === true,
+      justificacion_exencion: r.justificacion_exencion || "",
       url_evidencia: r.url_evidencia || "",
       actividad_reportada: r.actividad_reportada || "Entregable",
       descripcion_reporte: r.descripcion_reporte || "",
@@ -768,76 +496,57 @@ router.get("/reportes-revision", async (req, res) => {
     res.json({
       reportes,
       data: reportes,
-      pagination: {
-        page,
-        limit,
-        total: countResult.rows[0]?.total ?? 0,
-      },
+      pagination: { page, limit, total: countResult.rows[0]?.total ?? 0 },
     });
   } catch (error) {
-    console.error("Error en /admin/reportes-revision", error);
-    res.status(500).json({ error: "Error interno" });
+    responderError(res, error, "Error en /admin/reportes-revision");
   } finally {
     client.release();
   }
 });
 
-// Cambiar estado de revisión admin para un entregable reportado
+// Decisión del administrador: aprobar u observar un entregable enviado.
+// Un aprobado no cambia de estado aquí: usa POST /admin/reportes-revision/:id/reabrir.
 router.put("/reportes-revision/:id", async (req, res) => {
   const entregableId = Number(req.params.id);
-  const { estado_revision, comentario_revision } = req.body || {};
+  const { estado_revision, comentario_revision, admin_id } = req.body || {};
   if (!entregableId) {
     return res.status(400).json({ error: "id inválido" });
   }
-  if (!["aprobado", "observado", "enviado"].includes(estado_revision)) {
-    return res.status(400).json({
-      error: "estado_revision debe ser aprobado, observado o enviado",
-    });
+  if (!["aprobado", "observado"].includes(estado_revision)) {
+    return res.status(400).json({ error: "estado_revision debe ser aprobado u observado" });
   }
-  if (estado_revision === "observado" && !String(comentario_revision || "").trim()) {
-    return res.status(400).json({
-      error: "Debes ingresar un comentario para estado observado",
-    });
-  }
-
-  const client = await pool.connect();
   try {
-    const current = await client.query(
-      `
-      SELECT COALESCE(estado_revision, 'enviado') AS estado_revision
-      FROM proyecto_entregables
-      WHERE id = $1
-      FOR UPDATE
-      `,
-      [entregableId]
-    );
-    if (current.rowCount === 0) {
-      return res.status(404).json({ error: "Entregable no encontrado" });
-    }
-    const currentStatus = current.rows[0].estado_revision;
-    if (currentStatus === "aprobado" && estado_revision !== "aprobado") {
-      return res.status(409).json({
-        error: "El reporte ya fue aprobado y no puede cambiarse de estado",
-      });
-    }
-
-    await client.query(
-      `
-      UPDATE proyecto_entregables
-      SET
-        estado_revision = $1,
-        comentario_revision = $2,
-        revisado_en = NOW()
-      WHERE id = $3
-      `,
-      [estado_revision, comentario_revision || null, entregableId]
-    );
-    res.json({ ok: true });
+    const out = await aplicarRevisionAdmin(pool, {
+      entregableId,
+      estadoNuevo: estado_revision,
+      comentario: comentario_revision,
+      actorId: admin_id != null && Number(admin_id) > 0 ? Number(admin_id) : null,
+    });
+    res.json(out);
   } catch (error) {
-    console.error("Error en PUT /admin/reportes-revision/:id", error);
-    res.status(500).json({ error: "Error interno" });
-  } finally {
-    client.release();
+    responderError(res, error, "Error en PUT /admin/reportes-revision/:id");
+  }
+});
+
+// Procedimiento administrativo controlado para devolver un entregable aprobado a revisión.
+router.post("/reportes-revision/:id/reabrir", async (req, res) => {
+  const entregableId = Number(req.params.id);
+  const { admin_id, motivo, destino } = req.body || {};
+  if (!entregableId) return res.status(400).json({ error: "id inválido" });
+  if (!admin_id || Number.isNaN(Number(admin_id))) {
+    return res.status(400).json({ error: "admin_id es obligatorio" });
+  }
+  try {
+    const out = await reabrirEntregable(pool, {
+      entregableId,
+      actorId: Number(admin_id),
+      motivo: String(motivo ?? ""),
+      destino: destino === "observado" ? "observado" : "enviado",
+    });
+    res.json(out);
+  } catch (error) {
+    responderError(res, error, "Error en POST /admin/reportes-revision/:id/reabrir");
   }
 });
 
@@ -2704,32 +2413,9 @@ router.get("/docentes/:docenteId/perfil", async (req, res) => {
     }
     const row = user.rows[0];
 
-    let totalPlantillas = 0;
-    if (row.grupo_matriz_id != null) {
-      const statsPlantilla = await pool.query(
-        `SELECT COUNT(*)::int AS n FROM plantilla_entregables WHERE grupo_id = $1`,
-        [row.grupo_matriz_id]
-      );
-      totalPlantillas = statsPlantilla.rows[0]?.n ?? 0;
-    }
-
-    const completadosQ = await pool.query(
-      `
-      SELECT COUNT(*)::int AS n
-      FROM proyecto_entregables e
-      JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-      JOIN proyectos p ON p.id = s.proyecto_id
-      WHERE COALESCE(e.completado, false) = true
-        AND (
-          p.docente_responsable_id = $1
-          OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
-        )
-      `,
-      [docenteId]
-    );
-    const completados = completadosQ.rows[0]?.n ?? 0;
-    const porcentajeAvance =
-      totalPlantillas > 0 ? Math.round((completados / totalPlantillas) * 100) : 0;
+    const hoy = hoyBogota();
+    const [d] = await cargarMatrizDocentes(pool, { docenteId, hoy });
+    const m = calcularMetricas(d?.items ?? [], hoy);
 
     res.json({
       id: row.id,
@@ -2771,9 +2457,15 @@ router.get("/docentes/:docenteId/perfil", async (req, res) => {
           }
         : null,
       stats: {
-        total_plantillas: totalPlantillas,
-        completados,
-        porcentaje_avance: porcentajeAvance,
+        total_plantillas: m.total,
+        // completados = reportados (alias histórico); porcentaje_avance = % reportado.
+        completados: m.reportados,
+        porcentaje_avance: m.pct_reportado,
+        reportados: m.reportados,
+        aprobados: m.aprobados,
+        pct_aprobado: m.pct_aprobado,
+        pct_esperado: m.pct_esperado,
+        vencidos: m.vencidos,
       },
     });
   } catch (error) {
@@ -2788,110 +2480,19 @@ router.get("/docentes/:docenteId/matriz-stats", async (req, res) => {
     return res.status(400).json({ error: "id de docente inválido" });
   }
 
-  const emptyPayload = () => ({
-    resumen: {
-      total_entregables: 0,
-      completados: 0,
-      porcentaje_semestral: 0,
-    },
-    por_mes: ["Febrero", "Marzo", "Abril", "Mayo"].map((mes) => ({
-      mes,
-      total: 0,
-      completados: 0,
-      porcentaje_mensual: 0,
-    })),
-    por_semana: [],
-  });
-
   try {
-    const userRes = await pool.query(
-      `SELECT grupo_matriz_id FROM usuarios WHERE id = $1 AND rol = 'docente'`,
-      [docenteId]
-    );
-
-    if (userRes.rowCount === 0) {
-      return res.status(404).json({ error: "docente no encontrado" });
-    }
-
-    if (!userRes.rows[0].grupo_matriz_id) {
-      return res.json(emptyPayload());
-    }
-
-    const baseRes = await pool.query(
-      `
-      SELECT
-        tpl.mes,
-        tpl.semana_numero,
-        COALESCE(pe.completado, false) AS completado
-      ${ADMIN_MATRIZ_PLANTILLA_JOIN}
-      ${ADMIN_MATRIZ_ORDER}
-      `,
-      [docenteId]
-    );
-
-    const rows = baseRes.rows || [];
-    const total = rows.length;
-    const completados = rows.filter((r) => r.completado).length;
-    const porcentaje_semestral = total > 0 ? round1((completados / total) * 100) : 0;
-
-    const mesLabels = ["Febrero", "Marzo", "Abril", "Mayo"];
-    const mesKeyToLabel = {
-      febrero: "Febrero",
-      marzo: "Marzo",
-      abril: "Abril",
-      mayo: "Mayo",
-    };
-
-    const por_mes = mesLabels.map((label) => {
-      const sub = rows.filter(
-        (r) => mesKeyToLabel[String(r.mes || "").toLowerCase()] === label
-      );
-      const t = sub.length;
-      const c = sub.filter((r) => r.completado).length;
-      return {
-        mes: label,
-        total: t,
-        completados: c,
-        porcentaje_mensual: t > 0 ? round1((c / t) * 100) : 0,
-      };
-    });
-
-    const weekNums = [...new Set(rows.map((r) => Number(r.semana_numero)).filter(Boolean))].sort(
-      (a, b) => a - b
-    );
-
-    const por_semana = weekNums.map((w) => {
-      const sub = rows.filter((r) => Number(r.semana_numero) === w);
-      const t = sub.length;
-      const c = sub.filter((r) => r.completado).length;
-      const accDone = rows.filter(
-        (r) => Number(r.semana_numero) <= w && r.completado
-      ).length;
-      const sampleMes = sub[0]?.mes;
-      const mes =
-        mesKeyToLabel[String(sampleMes || "").toLowerCase()] || "Febrero";
-      return {
-        semana_numero: w,
-        mes,
-        total: t,
-        completados: c,
-        porcentaje_semanal: t > 0 ? round1((c / t) * 100) : 0,
-        porcentaje_acumulado: total > 0 ? round1((accDone / total) * 100) : 0,
-      };
-    });
-
+    const hoy = hoyBogota();
+    const [d] = await cargarMatrizDocentes(pool, { docenteId, hoy });
+    if (!d) return res.status(404).json({ error: "docente no encontrado" });
     res.json({
-      resumen: {
-        total_entregables: total,
-        completados,
-        porcentaje_semestral,
-      },
-      por_mes,
-      por_semana,
+      resumen: resumenParaApi(calcularMetricas(d.items, hoy)),
+      por_mes: metricasPorMes(d.items, hoy),
+      por_semana: metricasPorSemana(d.items, hoy),
+      semana_actual: semanaActual(d.calendario, hoy),
+      hoy,
     });
   } catch (error) {
-    console.error("Error en GET /admin/docentes/:docenteId/matriz-stats", error);
-    res.status(500).json({ error: "Error interno" });
+    responderError(res, error, "Error en GET /admin/docentes/:docenteId/matriz-stats");
   }
 });
 
@@ -2902,84 +2503,17 @@ router.get("/docentes/:docenteId/matriz", async (req, res) => {
   }
 
   try {
-    const userRes = await pool.query(
-      `SELECT grupo_matriz_id FROM usuarios WHERE id = $1 AND rol = 'docente'`,
-      [docenteId]
-    );
-
-    if (userRes.rowCount === 0) {
-      return res.status(404).json({ error: "docente no encontrado" });
-    }
-
-    if (!userRes.rows[0].grupo_matriz_id) {
-      return res.json({ items: [] });
-    }
-
-    const tplRes = await pool.query(
-      `
-      SELECT
-        tpl.id,
-        tpl.numero,
-        tpl.categoria AS categoria_raw,
-        tpl.fase AS fase_raw,
-        tpl.mes,
-        tpl.semana_numero,
-        tpl.entregable,
-        tpl.descripcion_evidencia,
-        COALESCE(pe.horas, tpl.horas) AS horas_effective,
-        (DATE '2026-02-10' + COALESCE(tpl.dias_inicio_desde_feb, 0) * INTERVAL '1 day')::date AS fecha_inicio_calculada,
-        (DATE '2026-02-10' + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date AS fecha_fin_calculada,
-        pe.id AS entregable_id,
-        COALESCE(pe.completado, false) AS completado,
-        pe.fecha_real_entrega,
-        pe.url_evidencia,
-        pe.estado_revision,
-        pe.comentario_revision,
-        pe.porcentaje_avance,
-        pe.actividad_reportada
-      ${ADMIN_MATRIZ_PLANTILLA_JOIN}
-      ${ADMIN_MATRIZ_ORDER}
-      `,
-      [docenteId]
-    );
-
-    const monthKeyMap = {
-      febrero: "Febrero",
-      marzo: "Marzo",
-      abril: "Abril",
-      mayo: "Mayo",
-    };
-
-    const items = (tplRes.rows || []).map((row) => {
-      const mesKey = String(row.mes || "").toLowerCase();
-      return {
-        id: Number(row.id),
-        numero: row.numero != null ? Number(row.numero) : 0,
-        categoria: mapCategorySlug(row.categoria_raw, row.fase_raw),
-        fase: row.fase_raw ? String(row.fase_raw).trim() : "",
-        mes: monthKeyMap[mesKey] || row.mes || "",
-        semana_numero: row.semana_numero != null ? Number(row.semana_numero) : 0,
-        entregable: row.entregable,
-        descripcion_evidencia: row.descripcion_evidencia || "",
-        horas: row.horas_effective != null ? Number(row.horas_effective) : 0,
-        fecha_inicio_calculada: toDateOnlyISO(row.fecha_inicio_calculada),
-        fecha_fin_calculada: toDateOnlyISO(row.fecha_fin_calculada),
-        entregable_id: row.entregable_id != null ? Number(row.entregable_id) : null,
-        completado: Boolean(row.completado),
-        fecha_real_entrega: toDateOnlyISO(row.fecha_real_entrega),
-        url_evidencia: row.url_evidencia || null,
-        estado_revision: row.estado_revision || null,
-        comentario_revision: row.comentario_revision || null,
-        porcentaje_avance:
-          row.porcentaje_avance != null ? Number(row.porcentaje_avance) : null,
-        actividad_reportada: row.actividad_reportada || null,
-      };
+    const hoy = hoyBogota();
+    const [d] = await cargarMatrizDocentes(pool, { docenteId, hoy });
+    if (!d) return res.status(404).json({ error: "docente no encontrado" });
+    res.json({
+      items: d.items.map(itemParaApi),
+      resumen: resumenParaApi(calcularMetricas(d.items, hoy)),
+      semana_actual: semanaActual(d.calendario, hoy),
+      hoy,
     });
-
-    res.json({ items });
   } catch (error) {
-    console.error("Error en GET /admin/docentes/:docenteId/matriz", error);
-    res.status(500).json({ error: "Error interno" });
+    responderError(res, error, "Error en GET /admin/docentes/:docenteId/matriz");
   }
 });
 
@@ -2987,162 +2521,105 @@ router.get("/avance-consolidado", async (req, res) => {
   const semestreQ = req.query.semestre;
   const grupoIdQ = req.query.grupo_id;
   const semestre =
-    semestreQ != null && String(semestreQ).trim() !== ""
-      ? String(semestreQ).trim()
-      : null;
-  const grupoId =
-    grupoIdQ != null && String(grupoIdQ).trim() !== ""
-      ? Number(String(grupoIdQ).trim())
-      : null;
+    semestreQ != null && String(semestreQ).trim() !== "" ? String(semestreQ).trim() : null;
+  const grupoIdNum =
+    grupoIdQ != null && String(grupoIdQ).trim() !== "" ? Number(String(grupoIdQ).trim()) : null;
+  const grupoId = grupoIdNum != null && !Number.isNaN(grupoIdNum) ? grupoIdNum : null;
 
   try {
-    const result = await pool.query(
-      `
-      SELECT
-        u.id,
-        u.nombre || ' ' || u.apellido AS nombre,
-        pr.nombre AS programa,
-        u.regional,
-        u.grupo_matriz_id AS grupo_id,
-        gm.nombre AS grupo_nombre,
-        COALESCE(u.tipo_docente, 'ANTIGUO') AS tipo_docente,
-        COUNT(tpl.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'febrero') AS total_feb,
-        COUNT(pe.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'febrero' AND COALESCE(pe.completado, false)) AS comp_feb,
-        COUNT(tpl.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'marzo') AS total_mar,
-        COUNT(pe.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'marzo' AND COALESCE(pe.completado, false)) AS comp_mar,
-        COUNT(tpl.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'abril') AS total_abr,
-        COUNT(pe.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'abril' AND COALESCE(pe.completado, false)) AS comp_abr,
-        COUNT(tpl.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'mayo') AS total_may,
-        COUNT(pe.id) FILTER (WHERE LOWER(TRIM(tpl.mes)) = 'mayo' AND COALESCE(pe.completado, false)) AS comp_may,
-        COUNT(tpl.id) AS total_global,
-        COUNT(pe.id) FILTER (WHERE COALESCE(pe.completado, false)) AS comp_global,
-        MAX(pe.fecha_completado) AS ultimo_reporte
-      FROM usuarios u
-      LEFT JOIN programas pr ON pr.id = u.programa_id
-      LEFT JOIN grupos_matriz gm ON gm.id = u.grupo_matriz_id
-      LEFT JOIN plantilla_entregables tpl ON tpl.grupo_id = u.grupo_matriz_id
-      LEFT JOIN LATERAL (
-        SELECT e.id, e.completado, e.fecha_completado
-        FROM proyecto_entregables e
-        INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-        INNER JOIN proyectos p ON p.id = s.proyecto_id
-        WHERE s.numero = tpl.semana_numero
-          AND (
-            p.docente_responsable_id = u.id
-            OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-          )
-          AND (
-            TRIM(e.descripcion) = TRIM(tpl.entregable)
-            OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-          )
-        ORDER BY e.id DESC
-        LIMIT 1
-      ) pe ON true
-      WHERE u.rol = 'docente'
-        AND ($1::text IS NULL OR gm.semestre = $1)
-        AND ($2::int IS NULL OR u.grupo_matriz_id = $2)
-      GROUP BY u.id, u.nombre, u.apellido, pr.nombre, u.regional,
-               u.grupo_matriz_id, gm.nombre, u.tipo_docente
-      ORDER BY u.nombre, u.apellido
-      `,
-      [semestre, grupoId != null && !Number.isNaN(grupoId) ? grupoId : null]
-    );
+    const hoy = hoyBogota();
+    // Con filtro de semestre/grupo solo se listan docentes que pertenecen a un grupo (igual que antes).
+    const docentes = await cargarMatrizDocentes(pool, { semestre, grupoId, hoy });
 
-    const rows = result.rows || [];
-
-    const docentesPayload = [];
-    for (const r of rows) {
-      const gid = r.grupo_id != null ? Number(r.grupo_id) : null;
-      let entregablesVencidos = 0;
-      if (gid != null) {
-        const venR = await pool.query(
-          `
-          SELECT COUNT(*)::int AS n
-          FROM plantilla_entregables tpl
-          WHERE tpl.grupo_id = $1
-            AND tpl.dias_fin_desde_feb IS NOT NULL
-            AND (DATE '2026-02-10' + tpl.dias_fin_desde_feb * INTERVAL '1 day')::date < CURRENT_DATE
-            AND NOT EXISTS (
-              SELECT 1
-              FROM proyecto_entregables e
-              INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-              INNER JOIN proyectos p ON p.id = s.proyecto_id
-              WHERE s.numero = tpl.semana_numero
-                AND (
-                  p.docente_responsable_id = $2
-                  OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
-                )
-                AND (
-                  TRIM(e.descripcion) = TRIM(tpl.entregable)
-                  OR TRIM(COALESCE(e.actividad_reportada, '')) = TRIM(tpl.entregable)
-                )
-                AND COALESCE(e.completado, false) = true
-            )
-          `,
-          [gid, Number(r.id)]
-        );
-        entregablesVencidos = venR.rows[0]?.n ?? 0;
-      }
-
-      const pct = (c, t) => (t > 0 ? round1((c / t) * 100) : 0);
-      const tf = Number(r.total_feb || 0);
-      const cf = Number(r.comp_feb || 0);
-      const tm = Number(r.total_mar || 0);
-      const cm = Number(r.comp_mar || 0);
-      const ta = Number(r.total_abr || 0);
-      const ca = Number(r.comp_abr || 0);
-      const ty = Number(r.total_may || 0);
-      const cy = Number(r.comp_may || 0);
-      const tg = Number(r.total_global || 0);
-      const cg = Number(r.comp_global || 0);
-
-      docentesPayload.push({
-        id: Number(r.id),
-        nombre: String(r.nombre || "").trim() || "—",
-        programa: r.programa || "—",
-        regional: r.regional || "—",
-        grupo_id: gid,
-        grupo_nombre: r.grupo_nombre || "—",
-        tipo_docente: r.tipo_docente === "NUEVO" ? "NUEVO" : "ANTIGUO",
-        avance_global: tg > 0 ? round1((cg / tg) * 100) : 0,
+    const docentesPayload = docentes.map(({ docente, calendario, items }) => {
+      const m = calcularMetricas(items, hoy);
+      const porMes = Object.fromEntries(
+        metricasPorMes(items, hoy).map((x) => [
+          x.mes.toLowerCase(),
+          {
+            completados: x.reportados, // alias histórico = reportados
+            reportados: x.reportados,
+            aprobados: x.aprobados,
+            total: x.total,
+            porcentaje: x.pct_reportado,
+            porcentaje_aprobado: x.pct_aprobado,
+          },
+        ])
+      );
+      const vacio = { completados: 0, reportados: 0, aprobados: 0, total: 0, porcentaje: 0, porcentaje_aprobado: 0 };
+      const ultimoEnvio = items
+        .map((i) => i.fecha_ultimo_envio)
+        .filter(Boolean)
+        .map((f) => new Date(f).getTime())
+        .sort((a, b) => b - a)[0];
+      return {
+        id: docente.id,
+        nombre: docente.nombre || "—",
+        programa: docente.programa || "—",
+        regional: docente.regional || "—",
+        grupo_id: docente.grupo_id,
+        grupo_nombre: docente.grupo_nombre || "—",
+        tipo_docente: docente.tipo_docente,
+        // avance_global = % reportado (alias histórico); ver también avance_aprobado / avance_esperado.
+        avance_global: m.pct_reportado,
+        avance_reportado: m.pct_reportado,
+        avance_aprobado: m.pct_aprobado,
+        avance_esperado: m.pct_esperado,
+        brecha: m.brecha,
+        brecha_pct: m.brecha_pct,
+        cumplimiento_exigible: m.cumplimiento_exigible,
+        cumplimiento_reportado_exigible: m.cumplimiento_reportado_exigible,
+        semaforo: m.semaforo,
+        pendientes_revision: m.enviados_pendientes_revision,
+        observados: m.observados,
+        total_entregables: m.total,
+        reportados: m.reportados,
+        aprobados: m.aprobados,
         avance_por_mes: {
-          febrero: { completados: cf, total: tf, porcentaje: pct(cf, tf) },
-          marzo: { completados: cm, total: tm, porcentaje: pct(cm, tm) },
-          abril: { completados: ca, total: ta, porcentaje: pct(ca, ta) },
-          mayo: { completados: cy, total: ty, porcentaje: pct(cy, ty) },
+          febrero: porMes.febrero ?? vacio,
+          marzo: porMes.marzo ?? vacio,
+          abril: porMes.abril ?? vacio,
+          mayo: porMes.mayo ?? vacio,
+          ...porMes,
         },
-        entregables_vencidos: entregablesVencidos,
-        ultimo_reporte: toDateOnlyISO(r.ultimo_reporte),
-      });
-    }
+        entregables_vencidos: m.vencidos,
+        ultimo_reporte: ultimoEnvio ? fechaBogota(new Date(ultimoEnvio)) : null,
+        semana_actual: semanaActual(calendario, hoy).numero,
+      };
+    });
 
-    const n = docentesPayload.length;
-    const avg = (arr) =>
-      arr.length === 0 ? 0 : round1(arr.reduce((a, b) => a + b, 0) / arr.length);
+    // Con filtros, los docentes sin grupo no pertenecen al semestre/grupo consultado.
+    const lista = semestre != null || grupoId != null ? docentesPayload.filter((d) => d.grupo_id != null) : docentesPayload;
 
-    const promedio_global =
-      n > 0 ? round1(docentesPayload.reduce((s, d) => s + d.avance_global, 0) / n) : 0;
+    const n = lista.length;
+    const avg = (arr) => (arr.length === 0 ? 0 : round1(arr.reduce((a, b) => a + b, 0) / arr.length));
+    const conGrupo = lista.filter((d) => d.grupo_id != null && d.total_entregables > 0);
 
-    const mesKeys = ["febrero", "marzo", "abril", "mayo"];
     const por_mes = {};
-    for (const mk of mesKeys) {
-      const vals = docentesPayload
-        .filter((d) => d.grupo_id != null && d.avance_por_mes[mk].total > 0)
-        .map((d) => d.avance_por_mes[mk].porcentaje);
-      por_mes[mk] = avg(vals);
+    for (const mk of ["febrero", "marzo", "abril", "mayo"]) {
+      por_mes[mk] = avg(lista.filter((d) => d.grupo_id != null && d.avance_por_mes[mk].total > 0).map((d) => d.avance_por_mes[mk].porcentaje));
     }
 
     res.json({
-      docentes: docentesPayload,
+      docentes: lista,
       totales: {
         docentes: n,
-        promedio_global,
+        promedio_global: n > 0 ? round1(lista.reduce((s, d) => s + d.avance_global, 0) / n) : 0,
+        promedio_aprobado: avg(conGrupo.map((d) => d.avance_aprobado)),
+        promedio_esperado: avg(conGrupo.map((d) => d.avance_esperado)),
+        con_retraso: lista.filter((d) => d.entregables_vencidos > 0).length,
+        pendientes_revision: lista.reduce((s, d) => s + d.pendientes_revision, 0),
+        semaforo: {
+          verde: lista.filter((d) => d.semaforo === "verde").length,
+          amarillo: lista.filter((d) => d.semaforo === "amarillo").length,
+          rojo: lista.filter((d) => d.semaforo === "rojo").length,
+        },
         por_mes,
       },
+      hoy,
     });
   } catch (error) {
-    console.error("Error en GET /admin/avance-consolidado", error);
-    res.status(500).json({ error: "Error interno" });
+    responderError(res, error, "Error en GET /admin/avance-consolidado");
   }
 });
 

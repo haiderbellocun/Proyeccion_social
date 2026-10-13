@@ -13,10 +13,16 @@ import {
 } from "lucide-react";
 import {
   categoryConfig,
+  estadoEntregableConfig,
+  etiquetaSemana,
   MONTHS,
-  type MonthName,
   type Category,
+  type EstadoEntregable,
+  type IndicadoresSeguimiento,
+  type MonthName,
+  type SemanaActual,
 } from "../data/matrizConstants";
+import { formatFecha } from "../lib/fechas";
 import { CategoryTag } from "../components/CategoryTag";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE } from "../config/api";
@@ -37,8 +43,19 @@ export interface EntregableMatrizAdmin {
   fecha_fin_calculada: string | null;
   entregable_id: number | null;
   completado: boolean;
+  estado: EstadoEntregable;
+  vencido: boolean;
+  exigible: boolean;
+  entrega_tardia: boolean;
   fecha_real_entrega: string | null;
+  fecha_primer_envio: string | null;
+  fecha_ultimo_envio: string | null;
+  num_envios: number;
   url_evidencia: string | null;
+  evidencias?: string[];
+  evidencia_exenta: boolean;
+  justificacion_exencion: string | null;
+  iniciativa: { id: number; titulo: string | null; tipo: string | null } | null;
   estado_revision: string | null;
   comentario_revision?: string | null;
   porcentaje_avance: number | null;
@@ -65,70 +82,26 @@ interface PerfilDocente {
     total_plantillas: number;
     completados: number;
     porcentaje_avance: number;
+    reportados?: number;
+    aprobados?: number;
   };
 }
 
-type ExcelEstatusKey = "completado" | "en_curso" | "vencido" | "no_iniciada";
+type ExcelEstatusKey = EstadoEntregable | "vencido";
 
+// El estado y la condición "vencido" los calcula el backend (misma regla para todas las pantallas).
 const EXCEL_STATUS_OPTIONS: { value: ExcelEstatusKey; label: string }[] = [
-  { value: "completado", label: "Completado" },
-  { value: "en_curso", label: "En Curso" },
-  { value: "vencido", label: "Vencido" },
-  { value: "no_iniciada", label: "No iniciada" },
+  { value: "aprobado", label: estadoEntregableConfig.aprobado.label },
+  { value: "enviado", label: estadoEntregableConfig.enviado.label },
+  { value: "observado", label: estadoEntregableConfig.observado.label },
+  { value: "borrador", label: estadoEntregableConfig.borrador.label },
+  { value: "no_iniciado", label: estadoEntregableConfig.no_iniciado.label },
+  { value: "vencido", label: "Vencido (condición)" },
 ];
 
-function computeEstatus(item: EntregableMatrizAdmin): {
-  label: string;
-  key: ExcelEstatusKey;
-  color: string;
-  bg: string;
-  dot: string;
-} {
-  if (item.completado) {
-    return {
-      label: "Completado",
-      key: "completado",
-      color: "text-green-700",
-      bg: "bg-green-100",
-      dot: "bg-green-500",
-    };
-  }
-  const hoy = new Date();
-  hoy.setHours(0, 0, 0, 0);
-  const inicio = item.fecha_inicio_calculada
-    ? new Date(`${item.fecha_inicio_calculada}T12:00:00`)
-    : null;
-  const fin = item.fecha_fin_calculada
-    ? new Date(`${item.fecha_fin_calculada}T12:00:00`)
-    : null;
-  if (inicio) inicio.setHours(0, 0, 0, 0);
-  if (fin) fin.setHours(0, 0, 0, 0);
-
-  if (fin && fin < hoy) {
-    return {
-      label: "Vencido",
-      key: "vencido",
-      color: "text-red-700",
-      bg: "bg-red-100",
-      dot: "bg-red-500",
-    };
-  }
-  if (inicio && inicio <= hoy && (!fin || fin >= hoy)) {
-    return {
-      label: "En Curso",
-      key: "en_curso",
-      color: "text-blue-700",
-      bg: "bg-blue-100",
-      dot: "bg-blue-500",
-    };
-  }
-  return {
-    label: "No iniciada",
-    key: "no_iniciada",
-    color: "text-gray-600",
-    bg: "bg-gray-100",
-    dot: "bg-gray-400",
-  };
+function matchesStatusFilter(item: EntregableMatrizAdmin, f: string): boolean {
+  if (f === "vencido") return item.vencido;
+  return item.estado === f;
 }
 
 function parseTextWithLinks(text: string): React.ReactNode {
@@ -152,12 +125,7 @@ function parseTextWithLinks(text: string): React.ReactNode {
   });
 }
 
-const formatDate = (iso: string) =>
-  new Date(iso).toLocaleDateString("es-CO", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+const formatDate = (iso: string) => formatFecha(iso);
 
 function categoryUi(c: string): Category {
   if (c in categoryConfig) return c as Category;
@@ -165,7 +133,7 @@ function categoryUi(c: string): Category {
 }
 
 interface MatrizStatsPayload {
-  resumen: {
+  resumen: Partial<IndicadoresSeguimiento> & {
     total_entregables: number;
     completados: number;
     porcentaje_semestral: number;
@@ -174,8 +142,17 @@ interface MatrizStatsPayload {
     mes: string;
     total: number;
     completados: number;
+    reportados: number;
+    aprobados: number;
+    esperado: number;
+    observados: number;
+    vencidos: number;
     porcentaje_mensual: number;
+    pct_reportado: number;
+    pct_aprobado: number;
+    pct_esperado: number;
   }[];
+  semana_actual?: SemanaActual;
 }
 
 export default function AdminMatrizDocente() {
@@ -257,49 +234,26 @@ export default function AdminMatrizDocente() {
     void load();
   }, [isAdmin, docenteId]);
 
-  const pctSemestral = Math.round(
-    matrizStats?.resumen.porcentaje_semestral ?? perfil?.stats?.porcentaje_avance ?? 0
+  const resumen = matrizStats?.resumen;
+  const totalTpl = resumen?.total_entregables ?? perfil?.stats?.total_plantillas ?? 0;
+  const reportados = resumen?.reportados ?? resumen?.completados ?? perfil?.stats?.completados ?? 0;
+  const aprobados = resumen?.aprobados ?? perfil?.stats?.aprobados ?? 0;
+  const pctReportado = Math.round(
+    resumen?.pct_reportado ?? resumen?.porcentaje_semestral ?? perfil?.stats?.porcentaje_avance ?? 0
   );
-  const totalTpl = matrizStats?.resumen.total_entregables ?? perfil?.stats?.total_plantillas ?? 0;
-  const doneTpl = matrizStats?.resumen.completados ?? perfil?.stats?.completados ?? 0;
-
-  const mesDelCalendario = useMemo(() => {
-    const m = new Date().getMonth() + 1;
-    const map: Record<number, string> = {
-      2: "Febrero",
-      3: "Marzo",
-      4: "Abril",
-      5: "Mayo",
-    };
-    return map[m] ?? "Febrero";
-  }, []);
-
-  const statsMesActual = matrizStats?.por_mes.find((x) => x.mes === mesDelCalendario);
-
-  const vencidosCount = useMemo(
-    () => entregables.filter((e) => computeEstatus(e).key === "vencido").length,
-    [entregables]
-  );
-
-  const vencidosPorMes = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const m of MONTHS) {
-      map[m] = entregables.filter(
-        (e) => e.mes === m && computeEstatus(e).key === "vencido"
-      ).length;
-    }
-    return map;
-  }, [entregables]);
+  const pctAprobado = Math.round(resumen?.pct_aprobado ?? 0);
+  const pctEsperado = Math.round(resumen?.pct_esperado ?? 0);
+  const brecha = resumen?.brecha ?? 0;
+  const vencidosCount = resumen?.vencidos ?? entregables.filter((e) => e.vencido).length;
+  const semanaActual = matrizStats?.semana_actual ?? null;
 
   const filtered = useMemo(() => {
-    return entregables.filter((e) => {
-      const key = computeEstatus(e).key;
-      return (
+    return entregables.filter(
+      (e) =>
         (filterMonth === ALL || e.mes === filterMonth) &&
         (filterCategory === ALL || e.categoria === filterCategory) &&
-        (filterExcelStatus === ALL || key === filterExcelStatus)
-      );
-    });
+        (filterExcelStatus === ALL || matchesStatusFilter(e, filterExcelStatus))
+    );
   }, [entregables, filterMonth, filterCategory, filterExcelStatus]);
 
   const groupedByMonthPhase = useMemo(() => {
@@ -344,7 +298,7 @@ export default function AdminMatrizDocente() {
   };
 
   const badgePctClass =
-    pctSemestral >= 70 ? "bg-green-100 text-green-800" : pctSemestral >= 40 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800";
+    pctReportado >= 70 ? "bg-green-100 text-green-800" : pctReportado >= 40 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800";
 
   if (!isAdmin) {
     return (
@@ -401,8 +355,11 @@ export default function AdminMatrizDocente() {
               Matriz de Seguimiento — {nombreDocente}
             </h1>
             <span className={`text-sm font-semibold px-3 py-1 rounded-full ${badgePctClass}`}>
-              {pctSemestral}% semestral
+              {pctReportado}% reportado · {pctAprobado}% aprobado
             </span>
+            {semanaActual && (
+              <span className="text-xs text-gray-500">{etiquetaSemana(semanaActual)}</span>
+            )}
           </div>
         </div>
       </div>
@@ -481,26 +438,44 @@ export default function AdminMatrizDocente() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
         <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">% Avance semestral</p>
-          <p className="text-3xl font-bold text-gray-900 mt-1">{pctSemestral}%</p>
-        </div>
-        <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Completados / total</p>
-          <p className="text-3xl font-bold text-gray-900 mt-1">
-            {doneTpl} / {totalTpl}
+          <p className="text-xs text-gray-500 uppercase">Avance reportado</p>
+          <p className="text-3xl font-bold text-gray-900 mt-1">{pctReportado}%</p>
+          <p className="text-xs text-gray-400 mt-1">
+            {reportados} / {totalTpl} enviados o aprobados
           </p>
         </div>
         <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Completados este mes ({mesDelCalendario})</p>
-          <p className="text-3xl font-bold text-gray-900 mt-1">
-            {statsMesActual ? `${statsMesActual.completados} / ${statsMesActual.total}` : "—"}
+          <p className="text-xs text-gray-500 uppercase">Avance aprobado</p>
+          <p className="text-3xl font-bold text-gray-900 mt-1">{pctAprobado}%</p>
+          <p className="text-xs text-gray-400 mt-1">
+            {aprobados} / {totalTpl} aprobados
           </p>
         </div>
         <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Vencidos sin completar</p>
+          <p className="text-xs text-gray-500 uppercase">Avance esperado</p>
+          <p className="text-3xl font-bold text-gray-900 mt-1">{pctEsperado}%</p>
+          <p className="text-xs text-gray-400 mt-1">
+            {resumen?.esperado ?? 0} con fecha límite hasta hoy
+            {resumen?.cumplimiento_exigible != null
+              ? ` · ${Math.round(resumen.cumplimiento_exigible)}% aprobado de lo exigible`
+              : ""}
+          </p>
+        </div>
+        <div className="bg-white rounded-xl border p-4 shadow-sm">
+          <p className="text-xs text-gray-500 uppercase">Brecha (aprobados − esperados)</p>
+          <p className={`text-3xl font-bold mt-1 ${brecha < 0 ? "text-red-600" : "text-gray-900"}`}>
+            {brecha > 0 ? `+${brecha}` : brecha}
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            {resumen?.enviados_pendientes_revision ?? 0} por revisar · {resumen?.observados ?? 0} observados
+          </p>
+        </div>
+        <div className="bg-white rounded-xl border p-4 shadow-sm">
+          <p className="text-xs text-gray-500 uppercase">Vencidos</p>
           <p className="text-3xl font-bold text-red-600 mt-1">{vencidosCount}</p>
+          <p className="text-xs text-gray-400 mt-1">Sin enviar o sin corregir tras su fecha límite</p>
         </div>
       </div>
 
@@ -509,26 +484,29 @@ export default function AdminMatrizDocente() {
           <div className="px-5 py-3 border-b border-gray-100">
             <h3 className="text-sm font-semibold text-gray-800">Avance por mes</h3>
           </div>
-          <table className="w-full text-sm min-w-[640px]">
+          <table className="w-full text-sm min-w-[760px]">
             <thead>
               <tr className="bg-gray-50 text-gray-500 text-xs uppercase">
                 <th className="text-left px-4 py-2">Mes</th>
                 <th className="text-left px-4 py-2">Total</th>
-                <th className="text-left px-4 py-2">Completados</th>
+                <th className="text-left px-4 py-2">Reportados</th>
+                <th className="text-left px-4 py-2">Aprobados</th>
+                <th className="text-left px-4 py-2">Esperados</th>
                 <th className="text-left px-4 py-2">Vencidos</th>
-                <th className="text-left px-4 py-2">% Avance</th>
+                <th className="text-left px-4 py-2">% Reportado</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {matrizStats.por_mes.map((row) => {
-                const vac = vencidosPorMes[row.mes] ?? 0;
-                const pct = row.total > 0 ? Math.round(row.porcentaje_mensual) : 0;
+                const pct = row.total > 0 ? Math.round(row.pct_reportado ?? row.porcentaje_mensual) : 0;
                 return (
                   <tr key={row.mes}>
                     <td className="px-4 py-2 font-medium text-gray-800">{row.mes}</td>
                     <td className="px-4 py-2 text-gray-600">{row.total}</td>
-                    <td className="px-4 py-2 text-gray-600">{row.completados}</td>
-                    <td className="px-4 py-2 text-gray-600">{vac}</td>
+                    <td className="px-4 py-2 text-gray-600">{row.reportados ?? row.completados}</td>
+                    <td className="px-4 py-2 text-gray-600">{row.aprobados}</td>
+                    <td className="px-4 py-2 text-gray-600">{row.esperado}</td>
+                    <td className="px-4 py-2 text-gray-600">{row.vencidos}</td>
                     <td className="px-4 py-2">
                       <div className="flex items-center gap-2">
                         <div className="flex-1 max-w-[120px] h-2 bg-gray-100 rounded-full overflow-hidden">
@@ -581,6 +559,9 @@ export default function AdminMatrizDocente() {
                     {opt.label}
                   </span>
                 ))}
+                <span className="text-[11px] text-gray-400 mt-1">
+                  Reportado = enviado o aprobado. Vencido no reemplaza el estado: se muestra además de él.
+                </span>
               </div>
             </div>
           </div>
@@ -645,7 +626,7 @@ export default function AdminMatrizDocente() {
 
       <div className="space-y-4">
         {groupedByMonthPhase.map(({ month, items, phases }) => {
-          const mDone = items.filter((e) => e.completado).length;
+          const mDone = items.filter((e) => e.estado === "enviado" || e.estado === "aprobado").length;
           const mTotal = items.length;
           const mPct = mTotal > 0 ? Math.round((mDone / mTotal) * 100) : 0;
 
@@ -659,7 +640,7 @@ export default function AdminMatrizDocente() {
                 <Calendar className="w-4 h-4 text-blue-700 shrink-0" />
                 <span className="font-semibold text-gray-800 text-sm">{month}</span>
                 <span className="text-xs text-gray-500">
-                  · {mDone}/{mTotal} ({mPct}%)
+                  · {mDone}/{mTotal} reportados ({mPct}%)
                 </span>
                 {collapsed[month] ? <ChevronDown className="w-4 h-4 ml-auto" /> : <ChevronUp className="w-4 h-4 ml-auto" />}
               </button>
@@ -695,7 +676,7 @@ export default function AdminMatrizDocente() {
                                 {weekNums.map((weekNum) => {
                                   const semanaItems = byWeek.get(weekNum)!;
                                   const mesHeader = semanaItems[0]?.mes ?? "";
-                                  const completadosSemana = semanaItems.filter((i) => i.completado).length;
+                                  const completadosSemana = semanaItems.filter((i) => i.estado === "enviado" || i.estado === "aprobado").length;
                                   const totalSemana = semanaItems.length;
                                   const horasSemana = semanaItems.reduce((acc, i) => acc + (i.horas || 0), 0);
                                   return (
@@ -716,7 +697,7 @@ export default function AdminMatrizDocente() {
                                                 : "text-blue-600"
                                             }`}
                                           >
-                                            {completadosSemana}/{totalSemana} completados
+                                            {completadosSemana}/{totalSemana} reportados
                                           </span>
                                           <div className="w-12 sm:w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden hidden sm:block">
                                             <div
@@ -734,9 +715,10 @@ export default function AdminMatrizDocente() {
                                       </div>
                                       <ul className="divide-y divide-gray-50">
                                         {semanaItems.map((e) => {
-                                          const estatus = computeEstatus(e);
+                                          const estatus = estadoEntregableConfig[e.estado] ?? estadoEntregableConfig.no_iniciado;
                                           const catCfg = categoryConfig[categoryUi(e.categoria)];
-                                          const isCurrent = estatus.key === "en_curso";
+                                          const isCurrent =
+                                            semanaActual?.numero != null && e.semana_numero === semanaActual.numero;
                                           const isExpanded = expandedRow === e.id;
                                           const progInicio = e.fecha_inicio_calculada;
                                           const progFin = e.fecha_fin_calculada;
@@ -767,11 +749,17 @@ export default function AdminMatrizDocente() {
                                                   </div>
                                                   <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 shrink-0">
                                                     <span
-                                                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${estatus.bg} ${estatus.color}`}
+                                                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${estatus.badge}`}
                                                     >
                                                       <span className={`w-1.5 h-1.5 rounded-full ${estatus.dot}`} />
                                                       {estatus.label}
                                                     </span>
+                                                    {e.vencido && (
+                                                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                                                        Vencido
+                                                      </span>
+                                                    )}
                                                     <span className="inline-flex items-center gap-1">
                                                       <Clock className="w-3.5 h-3.5" />
                                                       {e.horas}h
@@ -816,31 +804,61 @@ export default function AdminMatrizDocente() {
                                                         : "—"}
                                                     </p>
                                                     <p>
-                                                      <span className="font-semibold">Fecha real: </span>
-                                                      {e.fecha_real_entrega ? formatDate(e.fecha_real_entrega) : "—"}
+                                                      <span className="font-semibold">Fecha límite: </span>
+                                                      {progFin ? formatDate(progFin) : "—"}
                                                     </p>
                                                     <p>
-                                                      <span className="font-semibold">Estado revisión: </span>
-                                                      {e.estado_revision ?? "—"}
+                                                      <span className="font-semibold">Fecha real de entrega: </span>
+                                                      {e.fecha_real_entrega ? formatDate(e.fecha_real_entrega) : "—"}
                                                     </p>
+                                                    <p className={e.entrega_tardia ? "text-red-600" : undefined}>
+                                                      <span className="font-semibold">Primer envío: </span>
+                                                      {e.fecha_primer_envio ? formatDate(e.fecha_primer_envio) : "—"}
+                                                      {e.entrega_tardia ? " · entrega tardía" : ""}
+                                                      {e.fecha_ultimo_envio && e.num_envios > 1
+                                                        ? ` · último reenvío ${formatDate(e.fecha_ultimo_envio)} (${e.num_envios} envíos)`
+                                                        : ""}
+                                                    </p>
+                                                    <p>
+                                                      <span className="font-semibold">Estado: </span>
+                                                      {estatus.label}
+                                                      {e.vencido ? " (vencido)" : ""}
+                                                    </p>
+                                                    {e.iniciativa && (
+                                                      <p>
+                                                        <span className="font-semibold">Iniciativa: </span>
+                                                        {e.iniciativa.titulo ?? `#${e.iniciativa.id}`}
+                                                      </p>
+                                                    )}
+                                                    {e.evidencia_exenta && (
+                                                      <p className="text-amber-800 bg-amber-50 rounded p-2 mt-2">
+                                                        <span className="font-semibold">Sin evidencia — justificación del docente: </span>
+                                                        {e.justificacion_exencion || "—"}
+                                                      </p>
+                                                    )}
                                                     {e.comentario_revision ? (
                                                       <p className="text-amber-800 bg-amber-50 rounded p-2 mt-2">
                                                         <span className="font-semibold">Comentario admin: </span>
                                                         {e.comentario_revision}
                                                       </p>
                                                     ) : null}
-                                                    {e.url_evidencia && (
-                                                      <p>
+                                                    {(e.evidencias && e.evidencias.length > 0
+                                                      ? e.evidencias
+                                                      : e.url_evidencia
+                                                      ? [e.url_evidencia]
+                                                      : []
+                                                    ).map((u, i) => (
+                                                      <p key={u}>
                                                         <a
-                                                          href={e.url_evidencia}
+                                                          href={u}
                                                           target="_blank"
                                                           rel="noopener noreferrer"
                                                           className="text-blue-600 underline"
                                                         >
-                                                          Abrir evidencia
+                                                          Abrir evidencia{(e.evidencias?.length ?? 0) > 1 ? ` ${i + 1}` : ""}
                                                         </a>
                                                       </p>
-                                                    )}
+                                                    ))}
                                                   </div>
                                                 </div>
                                               )}
