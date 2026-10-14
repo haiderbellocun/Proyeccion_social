@@ -1,0 +1,70 @@
+/*
+ * ProySocial · prototipo B — tokens (única fuente de verdad)
+ * Paleta tomada de la referencia visual (muestreo directo de píxeles) y del encargo.
+ * No hay colores arbitrarios en los componentes: todo sale de estas variables.
+ */
+:root {
+  /* Marca */
+  --c-header: #261e36;        /* barra superior */
+  --c-context: #242329;       /* barra secundaria de filtros */
+  --c-primary: #503296;       /* morado principal */
+  --c-primary-hover: #432983; /* variación: hover/presionado del primario */
+  --c-select: #edeaf5;        /* selección / elemento activo */
+  --c-on-dark: #ffffff;
+  --c-on-dark-2: #bdb8cb;     /* texto secundario sobre oscuro */
+  --c-dark-field: #322d43;    /* campo de búsqueda sobre la barra superior (muestreado) */
+  --c-dark-line: #3d3850;     /* separadores sobre oscuro */
+
+  /* Superficies */
+  --c-bg: #f6f6f6;            /* fondo principal */
+  --c-surface: #ffffff;       /* tablas, barras, controles */
+  --c-hover: #f8f7fb;         /* hover discreto de fila (variación del selecto) */
+
+  /* Texto */
+  --c-text: #201c2b;          /* gris carbón casi negro (muestreado) */
+  --c-text-2: #55526a;
+  --c-text-3: #6b6878;        /* contraste ≥ 4.5:1 sobre blanco */
+
+  /* Líneas */
+  --c-line: #e6e5ea;          /* divisores discretos */
+  --c-line-2: #d6d5dd;        /* bordes de controles */
+
+  /* Cronograma y estados */
+  --c-bar: #666b7f;           /* barras de grupo / aprobado */
+  --c-danger: #d31312;        /* vencimientos críticos */
+  --c-danger-soft: #fdecec;   /* variación: fondo de alerta */
+  --c-today: var(--c-primary);
+
+  /* Tipografía */
+  --f-ui: "Nunito Sans Variable", "Segoe UI", system-ui, sans-serif;
+  --fs-xs: 11.5px;
+  --fs-sm: 12.5px;
+  --fs-md: 13.5px;
+  --fs-lg: 15px;
+  --fs-title: 21px;
+
+  /* Medidas de la estructura (de la referencia) */
+  --h-header: 48px;
+  --h-context: 32px;
+  --w-side: 52px;
+  --w-side-open: 212px;
+  --w-logo: 208px;            /* bloque blanco del logo, 13 % de la referencia */
+  --h-row: 34px;
+  --h-thead: 46px;
+  --h-ctl: 34px;
+  --r: 4px;
+
+  /* Movimiento */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --t-fast: 140ms;
+  --t-pop: 160ms;
+  --t-panel: 220ms;
+
+  /* Capas */
+  --z-sticky: 5;
+  --z-header: 30;
+  --z-pop: 60;
+  --z-dialog: 80;
+  --z-toast: 90;
+}

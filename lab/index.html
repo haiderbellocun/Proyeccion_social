@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ProySocial · Laboratorio de diseño</title>
+    <style>
+      .op a { color: #0b4f9e; text-underline-offset: 3px; }
+      :root { color-scheme: light; }
+      body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: #f4f4f2; color: #1a1a17; }
+      main { max-width: 980px; margin: 0 auto; padding: 56px 24px; }
+      h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.02em; }
+      p.lead { margin: 0 0 36px; color: #55554d; max-width: 62ch; }
+      .par { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+      .op { display: block; padding: 24px; background: #fff; text-decoration: none; color: inherit; border-radius: 12px; border: 1px solid #d9d9d3; transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1); }
+      
+      .op h2 { margin: 0 0 6px; font-size: 20px; }
+      .op p { margin: 0 0 14px; color: #55554d; font-size: 15px; }
+      .op ul { margin: 0; padding-left: 18px; font-size: 14px; color: #3a3a34; }
+      small { display: block; margin-top: 28px; color: #77776e; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Laboratorio de diseño · ProySocial</h1>
+      <p class="lead">Dos conceptos visuales aislados, con datos sintéticos del entorno de desarrollo. No forman parte de la aplicación ni de su build. El diseño «Tinta» fue descartado.</p>
+      <div class="par">
+        <div class="op">
+          <h2>Concepto A · Gaceta</h2>
+          <p>Editorial operativa: el semestre como una edición de 16 semanas.</p>
+          <ul>
+            <li><a href="/lab/a.html#/panel">Panel administrativo</a></li>
+            <li><a href="/lab/a.html#/matriz">Matriz de seguimiento</a></li>
+            <li><a href="/lab/a.html#/componentes">Componentes</a></li>
+          </ul>
+        </div>
+        <div class="op">
+          <h2>Concepto B · Conductor</h2>
+          <p>Cabecera morada, barra lateral, tabla + cronograma y panel de cola (referencia CONDUCTOR).</p>
+          <ul>
+            <li><a href="/lab/b.html#/panel">Panel de operaciones</a></li>
+            <li><a href="/lab/b.html#/matriz">Matriz con eje de tiempo</a></li>
+            <li><a href="/lab/b.html#/componentes">Componentes</a></li>
+          </ul>
+        </div>
+      </div>
+      <small>Solo disponible con el servidor de desarrollo (npm run dev).</small>
+    </main>
+  </body>
+</html>
