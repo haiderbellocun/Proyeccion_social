@@ -12,6 +12,7 @@ import { Badge } from "../components/Badge";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
+import { formatDateOnly } from "../lib/date";
 
 const API_BASE_URL = API_BASE;
 
@@ -109,7 +110,6 @@ export default function ProjectDetail() {
           body: JSON.stringify({
             completado: nuevoCompletado,
             url_evidencia: evidenceInputs[entregable.id] || null,
-            docente_id: currentUser?.id,
           }),
         }
       );
@@ -178,8 +178,7 @@ export default function ProjectDetail() {
     );
   }
 
-  const formatDate = (f: string | null) =>
-    f ? new Date(f).toLocaleDateString("es-CO") : "—";
+  const formatDate = (f: string | null) => formatDateOnly(f);
 
   const allEntregables = initiative.semanasDetalle.flatMap((s) => s.entregables);
   const totalEnt = allEntregables.length;

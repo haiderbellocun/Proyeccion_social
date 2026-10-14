@@ -15,7 +15,12 @@ import {
 } from "lucide-react";
 import {
   categoryConfig,
+  etiquetaSemana,
+  semaforoConfig,
   type Category,
+  type EstadoEntregable,
+  type IndicadoresSeguimiento,
+  type SemanaActual,
 } from "../data/matrizConstants";
 import { CategoryTag } from "../components/CategoryTag";
 import { AppSelect } from "../components/AppSelect";
@@ -23,7 +28,7 @@ import { useConfirmationDialog } from "../components/ConfirmationDialog";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
-import { toDateOnly } from "../lib/date";
+import { formatDateOnly, formatDateTimeBogota, toDateOnly } from "../lib/date";
 
 const ALL = "all";
 
@@ -40,7 +45,17 @@ export interface EntregableMatrizAdmin {
   fecha_inicio_calculada: string | null;
   fecha_fin_calculada: string | null;
   entregable_id: number | null;
+  /** Histórico: true cuando fue enviado (en revisión o aprobado). */
   completado: boolean;
+  estado: EstadoEntregable;
+  vencido: boolean;
+  exigible: boolean;
+  entrega_tardia: boolean;
+  num_envios: number;
+  fecha_primer_envio: string | null;
+  evidencias?: string[];
+  evidencia_exenta: boolean;
+  justificacion_exencion: string | null;
   fecha_real_entrega: string | null;
   fecha_cargue_evidencia: string | null;
   url_evidencia: string | null;
@@ -96,67 +111,51 @@ interface PerfilDocente {
   };
 }
 
-type ExcelEstatusKey = "completado" | "en_curso" | "vencido" | "no_iniciada";
+interface ReabrirState {
+  item: EntregableMatrizAdmin;
+  motivo: string;
+  destino: "enviado" | "observado";
+}
 
-const EXCEL_STATUS_OPTIONS: { value: ExcelEstatusKey; label: string }[] = [
-  { value: "completado", label: "Completado" },
-  { value: "en_curso", label: "En Curso" },
-  { value: "vencido", label: "Vencido" },
-  { value: "no_iniciada", label: "No iniciada" },
+type EstatusKey =
+  | "aprobado"
+  | "en_revision"
+  | "observado"
+  | "borrador"
+  | "en_curso"
+  | "no_iniciada"
+  | "vencido";
+
+const EXCEL_STATUS_OPTIONS: { value: EstatusKey; label: string }[] = [
+  { value: "aprobado", label: "Aprobado" },
+  { value: "en_revision", label: "En revisión" },
+  { value: "observado", label: "Observado" },
+  { value: "borrador", label: "Borrador" },
+  { value: "en_curso", label: "En curso (semana actual)" },
+  { value: "no_iniciada", label: "No iniciado" },
+  { value: "vencido", label: "Vencido (fecha límite pasada)" },
 ];
 
-function computeEstatus(item: EntregableMatrizAdmin): {
-  label: string;
-  key: ExcelEstatusKey;
-  color: string;
-  bg: string;
-  dot: string;
-} {
-  if (item.completado) {
-    return {
-      label: "Completado",
-      key: "completado",
-      color: "text-green-700",
-      bg: "bg-green-100",
-      dot: "bg-green-500",
-    };
+/** El estado lo calcula el backend; "vencido" es una condición adicional, no un estado. */
+function computeEstatus(
+  item: EntregableMatrizAdmin,
+  semanaActual: number | null
+): { label: string; key: EstatusKey; color: string; bg: string; dot: string } {
+  switch (item.estado) {
+    case "aprobado":
+      return { label: "Aprobado", key: "aprobado", color: "text-green-700", bg: "bg-green-100", dot: "bg-green-500" };
+    case "enviado":
+      return { label: "En revisión", key: "en_revision", color: "text-blue-700", bg: "bg-blue-100", dot: "bg-blue-500" };
+    case "observado":
+      return { label: "Observado", key: "observado", color: "text-amber-800", bg: "bg-amber-100", dot: "bg-amber-500" };
+    case "borrador":
+      return { label: "Borrador", key: "borrador", color: "text-slate-700", bg: "bg-slate-100", dot: "bg-slate-400" };
+    default:
+      if (semanaActual != null && item.semana_numero === semanaActual) {
+        return { label: "En curso", key: "en_curso", color: "text-sky-700", bg: "bg-sky-100", dot: "bg-sky-500" };
+      }
+      return { label: "No iniciado", key: "no_iniciada", color: "text-gray-600", bg: "bg-gray-100", dot: "bg-gray-400" };
   }
-  const hoy = new Date();
-  hoy.setHours(0, 0, 0, 0);
-  const inicio = item.fecha_inicio_calculada
-    ? new Date(`${item.fecha_inicio_calculada}T12:00:00`)
-    : null;
-  const fin = item.fecha_fin_calculada
-    ? new Date(`${item.fecha_fin_calculada}T12:00:00`)
-    : null;
-  if (inicio) inicio.setHours(0, 0, 0, 0);
-  if (fin) fin.setHours(0, 0, 0, 0);
-
-  if (fin && fin < hoy) {
-    return {
-      label: "Vencido",
-      key: "vencido",
-      color: "text-red-700",
-      bg: "bg-red-100",
-      dot: "bg-red-500",
-    };
-  }
-  if (inicio && inicio <= hoy && (!fin || fin >= hoy)) {
-    return {
-      label: "En Curso",
-      key: "en_curso",
-      color: "text-blue-700",
-      bg: "bg-blue-100",
-      dot: "bg-blue-500",
-    };
-  }
-  return {
-    label: "No iniciada",
-    key: "no_iniciada",
-    color: "text-gray-600",
-    bg: "bg-gray-100",
-    dot: "bg-gray-400",
-  };
 }
 
 function parseTextWithLinks(text: string): React.ReactNode {
@@ -180,12 +179,8 @@ function parseTextWithLinks(text: string): React.ReactNode {
   });
 }
 
-const formatDate = (iso: string) =>
-  new Date(iso.includes("T") ? iso : `${iso}T12:00:00`).toLocaleDateString("es-CO", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+// Fechas de calendario (YYYY-MM-DD): sin pasar por la zona horaria del navegador.
+const formatDate = (iso: string) => formatDateOnly(iso);
 
 function categoryUi(c: string): Category {
   if (c in categoryConfig) return c as Category;
@@ -193,7 +188,7 @@ function categoryUi(c: string): Category {
 }
 
 interface MatrizStatsPayload {
-  resumen: {
+  resumen: IndicadoresSeguimiento & {
     total_entregables: number;
     completados: number;
     porcentaje_semestral: number;
@@ -207,8 +202,14 @@ interface MatrizStatsPayload {
     mes: string;
     total: number;
     completados: number;
+    reportados: number;
+    aprobados: number;
+    vencidos: number;
+    esperado: number;
     porcentaje_mensual: number;
   }[];
+  semana_actual: SemanaActual;
+  hoy: string;
 }
 
 export default function AdminMatrizDocente() {
@@ -234,6 +235,8 @@ export default function AdminMatrizDocente() {
   const [exceptionItem, setExceptionItem] = useState<EntregableMatrizAdmin | null>(null);
   const [exceptionForm, setExceptionForm] = useState(EMPTY_EXCEPTION_FORM);
   const [savingException, setSavingException] = useState(false);
+  const [reabrir, setReabrir] = useState<ReabrirState | null>(null);
+  const [savingReabrir, setSavingReabrir] = useState(false);
 
   const isAdmin = currentUser?.rol === "admin";
 
@@ -403,20 +406,49 @@ export default function AdminMatrizDocente() {
     }
   };
 
-  const pctSemestral = Math.round(
-    matrizStats?.resumen.porcentaje_semestral ?? perfil?.stats?.porcentaje_avance ?? 0
-  );
-  const totalTpl = matrizStats?.resumen.total_entregables ?? perfil?.stats?.total_plantillas ?? 0;
-  const doneTpl = matrizStats?.resumen.completados ?? perfil?.stats?.completados ?? 0;
-  const expectedPct = Math.round(matrizStats?.resumen.porcentaje_esperado ?? 0);
-  const expectedCompliance = Math.round(
-    matrizStats?.resumen.cumplimiento_esperado ?? 100
-  );
+  const confirmarReabrir = async () => {
+    if (!reabrir || !reabrir.item.entregable_id) return;
+    if (reabrir.motivo.trim().length < 10) {
+      notify.warning("El motivo de la reapertura debe tener al menos 10 caracteres.");
+      return;
+    }
+    setSavingReabrir(true);
+    try {
+      const response = await fetch(
+        `${API_BASE}/admin/reportes-revision/${reabrir.item.entregable_id}/reabrir`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ motivo: reabrir.motivo.trim(), destino: reabrir.destino }),
+        }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        notify.fromError(data, "No se pudo reabrir el entregable.");
+        return;
+      }
+      await refreshMatrix();
+      setReabrir(null);
+      notify.success("Entregable reabierto: volvió a revisión");
+    } catch (error) {
+      console.error(error);
+      notify.error("Error de conexión al reabrir el entregable.");
+    } finally {
+      setSavingReabrir(false);
+    }
+  };
 
-  const vencidosCount = useMemo(
-    () => entregables.filter((e) => computeEstatus(e).key === "vencido").length,
-    [entregables]
-  );
+  const resumen = matrizStats?.resumen ?? null;
+  const semana = matrizStats?.semana_actual ?? null;
+  const semanaNumero = semana?.numero ?? null;
+  // Todos los indicadores salen del backend (misma fórmula en todas las pantallas).
+  const pctReportado = Math.round(resumen?.pct_reportado ?? perfil?.stats?.porcentaje_avance ?? 0);
+  const pctAprobado = Math.round(resumen?.pct_aprobado ?? 0);
+  const totalTpl = resumen?.total ?? perfil?.stats?.total_plantillas ?? 0;
+  const reportadosTpl = resumen?.reportados ?? perfil?.stats?.completados ?? 0;
+  const expectedPct = Math.round(resumen?.pct_esperado ?? 0);
+  const vencidosCount = resumen?.vencidos ?? 0;
+  const semaforoUi = resumen ? semaforoConfig[resumen.semaforo] : null;
 
   const availableMonths = useMemo(
     () => [...new Set(entregables.map((item) => item.mes.trim()).filter(Boolean))],
@@ -426,23 +458,24 @@ export default function AdminMatrizDocente() {
   const vencidosPorMes = useMemo(() => {
     const map: Record<string, number> = {};
     for (const m of availableMonths) {
-      map[m] = entregables.filter(
-        (e) => e.mes === m && computeEstatus(e).key === "vencido"
-      ).length;
+      map[m] = entregables.filter((e) => e.mes === m && e.vencido).length;
     }
     return map;
   }, [availableMonths, entregables]);
 
   const filtered = useMemo(() => {
     return entregables.filter((e) => {
-      const key = computeEstatus(e).key;
+      const key = computeEstatus(e, semanaNumero).key;
+      const coincideEstado =
+        filterExcelStatus === ALL ||
+        (filterExcelStatus === "vencido" ? e.vencido : key === filterExcelStatus);
       return (
         (filterMonth === ALL || e.mes === filterMonth) &&
         (filterCategory === ALL || e.categoria === filterCategory) &&
-        (filterExcelStatus === ALL || key === filterExcelStatus)
+        coincideEstado
       );
     });
-  }, [entregables, filterMonth, filterCategory, filterExcelStatus]);
+  }, [entregables, filterMonth, filterCategory, filterExcelStatus, semanaNumero]);
 
   const groupedByMonthPhase = useMemo(() => {
     const months = filterMonth === ALL ? availableMonths : [filterMonth];
@@ -485,7 +518,7 @@ export default function AdminMatrizDocente() {
   };
 
   const badgePctClass =
-    pctSemestral >= 70 ? "bg-green-100 text-green-800" : pctSemestral >= 40 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800";
+    semaforoUi ? semaforoUi.badge : "bg-gray-100 text-gray-700";
 
   if (!isAdmin) {
     return (
@@ -536,8 +569,9 @@ export default function AdminMatrizDocente() {
               Matriz de Seguimiento — {nombreDocente}
             </h1>
             <span className={`text-sm font-semibold px-3 py-1 rounded-full ${badgePctClass}`}>
-              {pctSemestral}% semestral
+              {pctAprobado}% aprobado · {pctReportado}% reportado
             </span>
+            <span className="text-xs text-gray-500">{etiquetaSemana(semana)}</span>
           </div>
         </div>
       </div>
@@ -616,34 +650,66 @@ export default function AdminMatrizDocente() {
         </div>
       )}
 
+      {resumen && resumen.semaforo && semaforoUi && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full ${semaforoUi.badge}`} style={{ fontWeight: 600 }}>
+            <span className={`w-1.5 h-1.5 rounded-full ${semaforoUi.dot}`} />
+            Riesgo: {semaforoUi.label}
+          </span>
+          <span className="px-2.5 py-1 rounded-full bg-blue-100 text-blue-700" style={{ fontWeight: 600 }}>
+            {resumen.enviados_pendientes_revision} en revisión
+          </span>
+          <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800" style={{ fontWeight: 600 }}>
+            {resumen.observados} observados
+          </span>
+          <span className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-700" style={{ fontWeight: 600 }}>
+            {resumen.borradores} borradores
+          </span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
         <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">% Avance semestral</p>
-          <p className="text-3xl font-bold text-gray-900 mt-1">{pctSemestral}%</p>
+          <p className="text-xs text-gray-500 uppercase">Avance reportado</p>
+          <p className="text-3xl font-bold text-gray-900 mt-1">{pctReportado}%</p>
+          <p className="text-xs text-gray-400 mt-1">
+            {reportadosTpl} / {totalTpl} enviados o aprobados
+          </p>
+        </div>
+        <div className="bg-white rounded-xl border p-4 shadow-sm">
+          <p className="text-xs text-gray-500 uppercase">Avance aprobado</p>
+          <p className="text-3xl font-bold text-emerald-600 mt-1">{pctAprobado}%</p>
+          <p className="text-xs text-gray-400 mt-1">
+            {resumen?.aprobados ?? 0} / {totalTpl} aprobados
+          </p>
         </div>
         <div className="bg-white rounded-xl border p-4 shadow-sm">
           <p className="text-xs text-gray-500 uppercase">Avance esperado a hoy</p>
           <p className="text-3xl font-bold text-amber-600 mt-1">{expectedPct}%</p>
+          <p className="text-xs text-gray-400 mt-1">
+            {resumen?.esperado ?? 0} entregables con fecha límite hasta {matrizStats?.hoy ? formatDate(matrizStats.hoy) : "hoy"}
+          </p>
         </div>
         <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Cumplimiento esperado</p>
+          <p className="text-xs text-gray-500 uppercase">Brecha de cumplimiento</p>
           <p
-            className={`text-3xl font-bold mt-1 ${
-              expectedCompliance >= 100 ? "text-emerald-600" : "text-red-600"
-            }`}
+            className={`text-3xl font-bold mt-1 ${(resumen?.brecha_entregables ?? 0) < 0 ? "text-red-600" : "text-emerald-600"}`}
           >
-            {expectedCompliance}%
+            {(resumen?.brecha_entregables ?? 0) > 0 ? "+" : ""}
+            {resumen?.brecha_entregables ?? 0}
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            aprobados − esperados · cumplimiento exigible{" "}
+            {resumen?.cumplimiento_exigible != null ? `${Math.round(resumen.cumplimiento_exigible)}%` : "—"}
           </p>
         </div>
         <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Completados / total</p>
-          <p className="text-3xl font-bold text-gray-900 mt-1">
-            {doneTpl} / {totalTpl}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Vencidos sin completar</p>
+          <p className="text-xs text-gray-500 uppercase">Vencidos</p>
           <p className="text-3xl font-bold text-red-600 mt-1">{vencidosCount}</p>
+          <p className="text-xs text-gray-400 mt-1">fecha límite pasada sin enviar o corregir</p>
+          <p className="text-xs text-gray-500 mt-1">
+            Horas: {resumen?.horas_programadas ?? 0} programadas · {resumen?.horas_reportadas ?? 0} reportadas · {resumen?.horas_aprobadas ?? 0} aprobadas
+          </p>
         </div>
       </div>
 
@@ -657,9 +723,11 @@ export default function AdminMatrizDocente() {
               <tr className="bg-gray-50 text-gray-500 text-xs uppercase">
                 <th className="text-left px-4 py-2">Mes</th>
                 <th className="text-left px-4 py-2">Total</th>
-                <th className="text-left px-4 py-2">Completados</th>
+                <th className="text-left px-4 py-2">Reportados</th>
+                <th className="text-left px-4 py-2">Aprobados</th>
+                <th className="text-left px-4 py-2">Esperados</th>
                 <th className="text-left px-4 py-2">Vencidos</th>
-                <th className="text-left px-4 py-2">% Avance</th>
+                <th className="text-left px-4 py-2">% Reportado</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
@@ -670,8 +738,10 @@ export default function AdminMatrizDocente() {
                   <tr key={row.mes}>
                     <td className="px-4 py-2 font-medium text-gray-800">{row.mes}</td>
                     <td className="px-4 py-2 text-gray-600">{row.total}</td>
-                    <td className="px-4 py-2 text-gray-600">{row.completados}</td>
-                    <td className="px-4 py-2 text-gray-600">{vac}</td>
+                    <td className="px-4 py-2 text-gray-600">{row.reportados ?? row.completados}</td>
+                    <td className="px-4 py-2 text-gray-600">{row.aprobados ?? 0}</td>
+                    <td className="px-4 py-2 text-gray-600">{row.esperado ?? 0}</td>
+                    <td className="px-4 py-2 text-gray-600">{row.vencidos ?? vac}</td>
                     <td className="px-4 py-2">
                       <div className="flex items-center gap-2">
                         <div className="flex-1 max-w-[120px] h-2 bg-gray-100 rounded-full overflow-hidden">
@@ -699,7 +769,7 @@ export default function AdminMatrizDocente() {
         >
           <div className="flex items-center gap-2 text-sm text-gray-700 font-medium">
             <Info className="w-4 h-4 text-gray-400" />
-            Leyenda de categorías y estados
+            Leyenda de categorías y estados (Vencido se suma al estado cuando pasó la fecha límite)
           </div>
           {showLegend ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
         </button>
@@ -782,7 +852,7 @@ export default function AdminMatrizDocente() {
 
       <div className="space-y-4">
         {groupedByMonthPhase.map(({ month, items, phases }) => {
-          const mDone = items.filter((e) => e.completado).length;
+          const mDone = items.filter((e) => e.completado).length; // reportados
           const mTotal = items.length;
           const mPct = mTotal > 0 ? Math.round((mDone / mTotal) * 100) : 0;
 
@@ -796,7 +866,7 @@ export default function AdminMatrizDocente() {
                 <Calendar className="w-4 h-4 text-blue-700 shrink-0" />
                 <span className="font-semibold text-gray-800 text-sm">{month}</span>
                 <span className="text-xs text-gray-500">
-                  · {mDone}/{mTotal} ({mPct}%)
+                  · {mDone}/{mTotal} reportados ({mPct}%)
                 </span>
                 {collapsed[month] ? <ChevronDown className="w-4 h-4 ml-auto" /> : <ChevronUp className="w-4 h-4 ml-auto" />}
               </button>
@@ -853,7 +923,7 @@ export default function AdminMatrizDocente() {
                                                 : "text-blue-600"
                                             }`}
                                           >
-                                            {completadosSemana}/{totalSemana} completados
+                                            {completadosSemana}/{totalSemana} reportados
                                           </span>
                                           <div className="w-12 sm:w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden hidden sm:block">
                                             <div
@@ -871,7 +941,7 @@ export default function AdminMatrizDocente() {
                                       </div>
                                       <ul className="divide-y divide-gray-50">
                                         {semanaItems.map((e) => {
-                                          const estatus = computeEstatus(e);
+                                          const estatus = computeEstatus(e, semanaNumero);
                                           const catCfg = categoryConfig[categoryUi(e.categoria)];
                                           const isCurrent = estatus.key === "en_curso";
                                           const isExpanded = expandedRow === e.id;
@@ -909,6 +979,12 @@ export default function AdminMatrizDocente() {
                                                       <span className={`w-1.5 h-1.5 rounded-full ${estatus.dot}`} />
                                                       {estatus.label}
                                                     </span>
+                                                    {e.vencido && (
+                                                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                                                        Vencido
+                                                      </span>
+                                                    )}
                                                     <span className="inline-flex items-center gap-1">
                                                       <Clock className="w-3.5 h-3.5" />
                                                       {e.horas}h
@@ -972,19 +1048,40 @@ export default function AdminMatrizDocente() {
                                                     {e.fecha_cargue_evidencia && (
                                                       <p>
                                                         <span className="font-semibold">
-                                                          Registro automático: {" "}
+                                                          Último envío (registro automático): {" "}
                                                         </span>
-                                                        {new Date(
-                                                          e.fecha_cargue_evidencia
-                                                        ).toLocaleString("es-CO", {
-                                                          dateStyle: "medium",
-                                                          timeStyle: "short",
-                                                        })}
+                                                        {formatDateTimeBogota(e.fecha_cargue_evidencia)}
+                                                      </p>
+                                                    )}
+                                                    {e.fecha_primer_envio && (
+                                                      <p>
+                                                        <span className="font-semibold">Primer envío: </span>
+                                                        {formatDate(e.fecha_primer_envio)}
+                                                        {e.entrega_tardia && (
+                                                          <span className="ml-2 text-red-600">
+                                                            (posterior a la fecha límite)
+                                                          </span>
+                                                        )}
+                                                      </p>
+                                                    )}
+                                                    {e.num_envios > 1 && (
+                                                      <p>
+                                                        <span className="font-semibold">Envíos: </span>
+                                                        {e.num_envios} (incluye reenvíos tras observaciones)
+                                                      </p>
+                                                    )}
+                                                    {e.evidencia_exenta && e.justificacion_exencion && (
+                                                      <p className="text-amber-800 bg-amber-50 rounded p-2 mt-2">
+                                                        <span className="font-semibold">
+                                                          Sin evidencia — justificación del docente:{" "}
+                                                        </span>
+                                                        {e.justificacion_exencion}
                                                       </p>
                                                     )}
                                                     <p>
-                                                      <span className="font-semibold">Estado revisión: </span>
-                                                      {e.estado_revision ?? "—"}
+                                                      <span className="font-semibold">Estado: </span>
+                                                      {estatus.label}
+                                                      {e.vencido ? " · vencido" : ""}
                                                     </p>
                                                     {e.comentario_revision ? (
                                                       <p className="text-amber-800 bg-amber-50 rounded p-2 mt-2">
@@ -992,20 +1089,37 @@ export default function AdminMatrizDocente() {
                                                         {e.comentario_revision}
                                                       </p>
                                                     ) : null}
-                                                    {e.url_evidencia && (
-                                                      <p>
+                                                    {(e.evidencias && e.evidencias.length > 0
+                                                      ? e.evidencias
+                                                      : e.url_evidencia
+                                                      ? [e.url_evidencia]
+                                                      : []
+                                                    ).map((url, i) => (
+                                                      <p key={url}>
                                                         <a
-                                                          href={e.url_evidencia}
+                                                          href={url}
                                                           target="_blank"
                                                           rel="noopener noreferrer"
                                                           className="text-blue-600 underline"
                                                         >
-                                                          Abrir evidencia
+                                                          Abrir evidencia{e.evidencias && e.evidencias.length > 1 ? ` ${i + 1}` : ""}
                                                         </a>
                                                       </p>
-                                                    )}
+                                                    ))}
                                                   </div>
                                                   <div className="mt-4 flex flex-wrap gap-2 border-t border-gray-200 pt-3">
+                                                    {e.estado === "aprobado" && e.entregable_id != null && (
+                                                      <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                          setReabrir({ item: e, motivo: "", destino: "enviado" })
+                                                        }
+                                                        className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
+                                                      >
+                                                        <RotateCcw className="h-3.5 w-3.5" />
+                                                        Reabrir
+                                                      </button>
+                                                    )}
                                                     <button
                                                       type="button"
                                                       onClick={() => openExceptionModal(e)}
@@ -1051,6 +1165,67 @@ export default function AdminMatrizDocente() {
 
       {groupedByMonthPhase.length === 0 && (
         <p className="text-center text-gray-400 text-sm py-8">No hay entregables con los filtros seleccionados.</p>
+      )}
+
+      {reabrir && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl">
+            <div className="border-b border-gray-100 px-6 py-4">
+              <h2 className="text-lg font-semibold text-gray-900">Reabrir entregable aprobado</h2>
+              <p className="mt-1 text-sm text-gray-500">
+                {reabrir.item.entregable}. Es un procedimiento controlado: queda registrado con tu usuario y el motivo.
+              </p>
+            </div>
+            <div className="space-y-3 p-6">
+              <div>
+                <label className="text-xs font-semibold text-gray-600">
+                  Volver a <span className="text-red-600">*</span>
+                </label>
+                <AppSelect
+                  value={reabrir.destino}
+                  onValueChange={(value) =>
+                    setReabrir((r) => (r ? { ...r, destino: value === "observado" ? "observado" : "enviado" } : r))
+                  }
+                  className="mt-1 w-full"
+                  options={[
+                    { value: "enviado", label: "En revisión (pendiente de nueva decisión)" },
+                    { value: "observado", label: "Observado (el docente debe corregir)" },
+                  ]}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-600">
+                  Motivo (mínimo 10 caracteres) <span className="text-red-600">*</span>
+                </label>
+                <textarea
+                  rows={3}
+                  value={reabrir.motivo}
+                  onChange={(event) => setReabrir((r) => (r ? { ...r, motivo: event.target.value } : r))}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                  placeholder="Ej.: el acta cargada corresponde a otra semana"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-gray-100 px-6 py-4">
+              <button
+                type="button"
+                onClick={() => setReabrir(null)}
+                disabled={savingReabrir}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmarReabrir()}
+                disabled={savingReabrir}
+                className="rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                {savingReabrir ? "Reabriendo…" : "Reabrir entregable"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {exceptionItem && (

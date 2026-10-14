@@ -198,7 +198,7 @@ export default function ReportsMetrics() {
           <h3 className="text-gray-800" style={{ fontWeight: 600 }}>
             Cumplimiento por grupo de matriz
           </h3>
-          <p className="text-gray-500 text-xs mt-0.5">Entregables de plantilla marcados como completados</p>
+          <p className="text-gray-500 text-xs mt-0.5">Entregables de plantilla reportados (enviados a revisión o aprobados)</p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -207,7 +207,7 @@ export default function ReportsMetrics() {
                 <th className="text-left px-6 py-3">Grupo</th>
                 <th className="text-left px-6 py-3">Tipo</th>
                 <th className="text-left px-6 py-3">Docentes</th>
-                <th className="text-left px-6 py-3">Completados</th>
+                <th className="text-left px-6 py-3">Reportados</th>
                 <th className="text-left px-6 py-3">Total</th>
                 <th className="text-left px-6 py-3 min-w-[200px]">Progreso</th>
               </tr>

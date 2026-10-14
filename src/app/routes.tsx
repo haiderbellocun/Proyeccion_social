@@ -20,6 +20,7 @@ const SystemAdmin = lazy(() => import("./pages/SystemAdmin"));
 const IndicadoresGrupo = lazy(() => import("./pages/IndicadoresGrupo"));
 const AdminMatrizDocente = lazy(() => import("./pages/AdminMatrizDocente"));
 const AvanceConsolidado = lazy(() => import("./pages/AvanceConsolidado"));
+const ImportarMatriz = lazy(() => import("./pages/ImportarMatriz"));
 
 export const router = createBrowserRouter([
   { path: "/", Component: Login },
@@ -55,6 +56,7 @@ export const router = createBrowserRouter([
       { path: "avance", Component: AvanceConsolidado },
       { path: "docentes/:docenteId/matriz", Component: AdminMatrizDocente },
       { path: "indicadores", Component: IndicadoresGrupo },
+      { path: "importar-matriz", Component: ImportarMatriz },
       { path: "sistema", Component: SystemAdmin },
     ],
   },

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { FileText, Plus, Pencil, Trash2, Link2, UsersRound } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
+import { FileSpreadsheet, FileText, Plus, Pencil, Trash2, Link2, UsersRound } from "lucide-react";
 import { AppSelect } from "../../components/AppSelect";
 import { useConfirmationDialog } from "../../components/ConfirmationDialog";
 import { API_BASE, apiFetch as fetch } from "../../config/api";
 import { notify } from "../../lib/notify";
-import { formatDateOnly, toDateOnly } from "../../lib/date";
+import { formatDateOnly, formatDateTimeBogota, toDateOnly } from "../../lib/date";
 
 interface GrupoRow {
   id: number;
@@ -29,6 +30,20 @@ interface PlantillaRow {
   dias_fin_desde_feb?: number | null;
   fecha_inicio_calculada?: string | null;
   fecha_fin_calculada?: string | null;
+  importacion_id?: number | null;
+  importacion_lote?: string | null;
+  importacion_fecha?: string | null;
+  importacion_archivo?: string | null;
+  origen_fila?: number | null;
+  semana_original?: number | null;
+  numero_original?: number | null;
+}
+
+interface GrupoResumen {
+  grupo: { id: number; nombre: string; semestre: string; numero_semanas: number | null; horas_totales: number | null };
+  docentes: { id: number; nombre: string; apellido: string; estado: string }[];
+  importaciones: { id: number; lote: string; creado_en: string; archivo_nombre: string | null; usuario: string | null; resumen: Record<string, number | boolean> }[];
+  totales: { total: number; importadas: number; horas: number; con_ajustes: number };
 }
 
 interface MassPreview {
@@ -53,8 +68,20 @@ const emptyForm = {
   fecha_fin: "",
 };
 
-export default function PlantillaManagement() {
+export default function PlantillaManagement({
+  initialSemestre,
+  initialGrupoId = null,
+}: {
+  initialSemestre?: string;
+  initialGrupoId?: number | null;
+} = {}) {
+  const navigate = useNavigate();
   const requestConfirmation = useConfirmationDialog();
+  const aplicadoInicial = useRef(false);
+  const [resumen, setResumen] = useState<GrupoResumen | null>(null);
+  const [todosDocentes, setTodosDocentes] = useState<{ id: number; name: string }[]>([]);
+  const [docenteAsignar, setDocenteAsignar] = useState("");
+  const [asignando, setAsignando] = useState(false);
   const [semestre, setSemestre] = useState("");
   const [semestresList, setSemestresList] = useState<string[]>([]);
   const [grupos, setGrupos] = useState<GrupoRow[]>([]);
@@ -82,7 +109,7 @@ export default function PlantillaManagement() {
         const j = await r.json();
         const s: string[] = j.semestres || [];
         setSemestresList(s);
-        if (s.length) setSemestre((prev) => prev || s[0]);
+        if (s.length) setSemestre((prev) => prev || (initialSemestre && s.includes(initialSemestre) ? initialSemestre : s[0]));
       } catch {
         setSemestresList([]);
       }
@@ -108,6 +135,52 @@ export default function PlantillaManagement() {
     void loadGrupos();
   }, [loadGrupos]);
 
+  // Grupo indicado en la URL (p. ej. al terminar una importación): se selecciona una sola vez.
+  useEffect(() => {
+    if (aplicadoInicial.current || !initialGrupoId || grupos.length === 0) return;
+    if (grupos.some((g) => g.id === initialGrupoId)) {
+      aplicadoInicial.current = true;
+      setSelectedGrupoId(initialGrupoId);
+    }
+  }, [grupos, initialGrupoId]);
+
+  const loadResumen = useCallback(async (grupoId: number) => {
+    try {
+      const r = await fetch(`${API_BASE}/admin/grupos-matriz/${grupoId}/resumen`);
+      setResumen(r.ok ? await r.json() : null);
+    } catch {
+      setResumen(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/admin/docentes?limit=500`)
+      .then((r) => r.json())
+      .then((d) => setTodosDocentes(Array.isArray(d.docentes) ? d.docentes.map((x: { id: number; name: string }) => ({ id: x.id, name: x.name })) : []))
+      .catch(() => setTodosDocentes([]));
+  }, []);
+
+  const asignarDocente = async () => {
+    if (!docenteAsignar || selectedGrupoId == null) return;
+    setAsignando(true);
+    try {
+      const r = await fetch(`${API_BASE}/admin/docentes/${docenteAsignar}/grupo-matriz`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ grupo_matriz_id: selectedGrupoId }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || "No se pudo asignar el docente");
+      notify.success("Grupo asignado al docente");
+      setDocenteAsignar("");
+      void loadResumen(selectedGrupoId);
+    } catch (e) {
+      notify.fromError(e, "No se pudo asignar el docente");
+    } finally {
+      setAsignando(false);
+    }
+  };
+
   const loadPlantillas = useCallback(async (grupoId: number) => {
     setLoadingPlantillas(true);
     try {
@@ -125,11 +198,13 @@ export default function PlantillaManagement() {
   useEffect(() => {
     if (selectedGrupoId != null) {
       void loadPlantillas(selectedGrupoId);
+      void loadResumen(selectedGrupoId);
       setPage(1);
     } else {
       setPlantillas([]);
+      setResumen(null);
     }
-  }, [selectedGrupoId, loadPlantillas]);
+  }, [selectedGrupoId, loadPlantillas, loadResumen]);
 
   const selectedGrupo = grupos.find((g) => g.id === selectedGrupoId);
 
@@ -411,6 +486,60 @@ export default function PlantillaManagement() {
         {!selectedGrupoId && <p className="text-sm text-gray-400">Elige un grupo a la izquierda.</p>}
         {selectedGrupoId != null && (
           <>
+            {resumen && (
+              <div className="bg-white border border-gray-100 rounded-xl shadow-sm p-4 space-y-3">
+                <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-gray-700">
+                  <span><strong>{resumen.totales.total}</strong> entregables · <strong>{resumen.totales.horas}</strong> h programadas</span>
+                  <span>Semestre <strong>{resumen.grupo.semestre}</strong>{resumen.grupo.numero_semanas ? ` · ${resumen.grupo.numero_semanas} semanas` : ""}</span>
+                  {resumen.totales.importadas > 0 && <span>{resumen.totales.importadas} provienen de importación</span>}
+                  {resumen.totales.con_ajustes > 0 && <span className="text-amber-700">{resumen.totales.con_ajustes} con ajuste administrativo (semana o número)</span>}
+                </div>
+                {resumen.importaciones.length > 0 ? (
+                  <div className="text-xs text-gray-600 space-y-0.5">
+                    <p className="flex items-center gap-1 text-gray-800"><FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" /> Origen (importaciones de Excel)</p>
+                    {resumen.importaciones.map((i) => (
+                      <p key={i.id}>
+                        {formatDateTimeBogota(i.creado_en)} · {i.archivo_nombre ?? "archivo"} · lote <code>{i.lote.slice(0, 8)}</code> · {i.usuario ?? "—"} · {Number(i.resumen?.creadas ?? 0)} creadas, {Number(i.resumen?.actualizadas ?? 0)} actualizadas
+                      </p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-400">Este grupo no proviene de una importación de Excel.</p>
+                )}
+                <div className="border-t border-gray-100 pt-3 space-y-2">
+                  <p className="text-sm text-gray-800 flex items-center gap-1"><UsersRound className="w-4 h-4" /> Docentes con este grupo ({resumen.docentes.length})</p>
+                  {resumen.docentes.length === 0 && <p className="text-xs text-gray-400">Ningún docente tiene asignado este grupo todavía.</p>}
+                  <div className="flex flex-wrap gap-2">
+                    {resumen.docentes.map((d) => (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={() => navigate(`/admin/docentes/${d.id}/matriz`)}
+                        className="px-3 py-1.5 rounded-full text-xs border border-blue-200 text-blue-800 hover:bg-blue-50"
+                        title="Abrir la matriz individual del docente"
+                      >
+                        {d.nombre} {d.apellido} · ver su matriz
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap items-end gap-2 max-w-xl">
+                    <div className="flex-1 min-w-[14rem]">
+                      <label className="block text-xs text-gray-500 mb-1">Asignar este grupo a otro docente</label>
+                      <AppSelect
+                        value={docenteAsignar}
+                        onValueChange={setDocenteAsignar}
+                        options={todosDocentes.filter((d) => !resumen.docentes.some((x) => x.id === d.id)).map((d) => ({ value: String(d.id), label: d.name }))}
+                        placeholder="Selecciona el docente"
+                        emptyValue="__ninguno__"
+                      />
+                    </div>
+                    <button type="button" disabled={!docenteAsignar || asignando} onClick={() => void asignarDocente()} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm disabled:opacity-40">
+                      Asignar
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
             {loadingPlantillas && <p className="text-sm text-gray-400">Cargando plantillas…</p>}
             {!loadingPlantillas && (
               <div className="bg-white border border-gray-100 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
@@ -423,6 +552,7 @@ export default function PlantillaManagement() {
                       <th className="text-left px-2 py-2">Mes</th>
                       <th className="text-left px-2 py-2">Fase</th>
                       <th className="text-left px-2 py-2">Entregable</th>
+                      <th className="text-left px-2 py-2">Instrucciones</th>
                       <th className="text-left px-2 py-2">Horas</th>
                       <th className="text-left px-2 py-2">Acciones</th>
                     </tr>
@@ -433,8 +563,19 @@ export default function PlantillaManagement() {
                         p.entregable.length > 60 ? `${p.entregable.slice(0, 60)}…` : p.entregable;
                       return (
                         <tr key={p.id} className="hover:bg-gray-50/80">
-                          <td className="px-3 py-2 font-mono text-xs">{p.numero}</td>
-                          <td className="px-2 py-2">{p.semana_numero}</td>
+                          <td className="px-3 py-2 font-mono text-xs">
+                            {p.numero}
+                            {p.numero_original != null && <span className="block text-amber-700" title="Número original del Excel (renumerado por decisión administrativa)">Excel: {p.numero_original}</span>}
+                            {p.importacion_id != null && (
+                              <span className="block text-emerald-700 font-sans" title={`Importado de «${p.importacion_archivo ?? "Excel"}» · lote ${(p.importacion_lote ?? "").slice(0, 8)}`}>
+                                Excel f.{p.origen_fila ?? "?"}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-2 py-2">
+                            {p.semana_numero}
+                            {p.semana_original != null && <span className="block text-xs text-amber-700" title="Semana escrita en el Excel; se usó la semana de la fecha por decisión administrativa">Excel: {p.semana_original}</span>}
+                          </td>
                           <td className="px-2 py-2 whitespace-nowrap text-xs text-gray-500">
                             <div>{formatDateOnly(p.fecha_inicio_calculada)}</div>
                             <div>hasta {formatDateOnly(p.fecha_fin_calculada)}</div>
@@ -447,6 +588,9 @@ export default function PlantillaManagement() {
                             <span title={p.entregable} className="line-clamp-2">
                               {short}
                             </span>
+                          </td>
+                          <td className="px-2 py-2 max-w-[260px] text-xs text-gray-600">
+                            <span title={p.descripcion_evidencia ?? ""} className="line-clamp-2">{p.descripcion_evidencia || "—"}</span>
                           </td>
                           <td className="px-2 py-2">{p.horas}</td>
                           <td className="px-2 py-2 flex gap-1">
@@ -520,11 +664,11 @@ export default function PlantillaManagement() {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
-                <label className="text-xs text-gray-500">semana_numero (1–16)</label>
+                <label className="text-xs text-gray-500">semana_numero (1–{resumen?.grupo.numero_semanas ?? 16})</label>
                 <input
                   type="number"
                   min={1}
-                  max={16}
+                  max={resumen?.grupo.numero_semanas ?? 16}
                   value={form.semana_numero}
                   onChange={(e) => setForm((f) => ({ ...f, semana_numero: e.target.value }))}
                   className="w-full mt-1 px-2 py-1.5 border rounded text-sm"

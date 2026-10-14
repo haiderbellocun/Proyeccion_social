@@ -6,6 +6,7 @@ import { AppSelect } from "../components/AppSelect";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
+import { formatDateOnly } from "../lib/date";
 
 const API_BASE_URL = API_BASE;
 
@@ -164,7 +165,7 @@ export default function MyProjects() {
               <div>
                 <p className="text-xs text-gray-400">Fecha límite</p>
                 <p className="text-gray-700 text-sm mt-0.5" style={{ fontWeight: 600 }}>
-                  {project.deadline ? project.deadline : "No definida"}
+                  {project.deadline ? formatDateOnly(project.deadline) : "No definida"}
                 </p>
               </div>
             </div>

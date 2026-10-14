@@ -71,15 +71,14 @@ export default function ReportHistory() {
 
     setGuardandoEdicion(reporte.id);
     try {
-      const resPut = await fetch(`${API_BASE_URL}/docente/entregables/${reporte.id}`, {
-        method: "PUT",
+      // Las correcciones se guardan sin cambiar el estado («observado»); el reenvío es el paso siguiente.
+      const resPut = await fetch(`${API_BASE_URL}/docente/entregables/${reporte.id}/borrador`, {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          completado: true,
-          url_evidencia: urlEvidencia || null,
+          urls_evidencia: urlEvidencia || null,
           descripcion_reporte: descripcion || null,
           porcentaje_avance: porcentaje,
-          docente_id: uid,
         }),
       });
       if (!resPut.ok) {

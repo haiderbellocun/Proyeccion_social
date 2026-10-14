@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router";
 import { Building2, Calendar, CalendarRange, FileText, FolderKanban, Users } from "lucide-react";
 import UserManagement from "./UserManagement";
 import ProjectManagement from "./ProjectManagement";
@@ -19,7 +20,11 @@ const tabs: { id: TabType; label: string; icon: React.ElementType }[] = [
 ];
 
 export default function SystemAdminPage() {
-  const [activeTab, setActiveTab] = useState<TabType>("usuarios");
+  // Enlaces profundos: /admin/sistema?tab=plantillas&semestre=2026B&grupo=12
+  const [params] = useSearchParams();
+  const tabParam = params.get("tab") as TabType | null;
+  const [activeTab, setActiveTab] = useState<TabType>(tabParam && tabs.some((t) => t.id === tabParam) ? tabParam : "usuarios");
+  const grupoParam = Number(params.get("grupo"));
 
   return (
     <div className="p-6 space-y-6">
@@ -55,7 +60,12 @@ export default function SystemAdminPage() {
       {activeTab === "programas" && <ProgramManagement />}
       {activeTab === "proyectos" && <ProjectManagement />}
       {activeTab === "tareas" && <GroupManagement />}
-      {activeTab === "plantillas" && <PlantillaManagement />}
+      {activeTab === "plantillas" && (
+        <PlantillaManagement
+          initialSemestre={params.get("semestre") || undefined}
+          initialGrupoId={Number.isInteger(grupoParam) && grupoParam > 0 ? grupoParam : null}
+        />
+      )}
     </div>
   );
 }

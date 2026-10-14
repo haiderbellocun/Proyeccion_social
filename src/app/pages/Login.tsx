@@ -42,6 +42,8 @@ function loadGoogleIdentity(): Promise<void> {
   return waitForGoogleIdentity();
 }
 
+type DevUser = { id: number; nombre: string; apellido: string; correo: string; rol: "admin" | "docente" };
+
 export default function Login() {
   const navigate = useNavigate();
   const buttonRef = useRef<HTMLDivElement>(null);
@@ -62,6 +64,44 @@ export default function Login() {
       notify.warning("Falta configurar VITE_GOOGLE_CLIENT_ID en el archivo .env.");
     }
   }, [googleClientId, session]);
+
+  // Acceso de PRUEBAS locales: solo existe en `vite dev` y solo si el servidor lo habilita
+  // (base proysocial_dev, localhost). En una compilación de producción este bloque no se incluye
+  // y el servidor rechaza la ruta aunque se invoque.
+  const [devUsers, setDevUsers] = useState<DevUser[]>([]);
+  useEffect(() => {
+    if (!import.meta.env.DEV || session) return;
+    let cancelled = false;
+    window
+      .fetch(`${API_BASE}/auth/dev/usuarios`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d?.usuarios?.length) setDevUsers(d.usuarios);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  const handleDevLogin = async (correo: string) => {
+    try {
+      setLoading(true);
+      const response = await window.fetch(`${API_BASE}/auth/dev/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ correo }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "No se pudo iniciar la sesión de pruebas");
+      saveSession(data.token, data.user);
+      navigate(data.user.rol === "admin" ? "/admin" : "/docente", { replace: true });
+    } catch (cause) {
+      notify.fromError(cause, "No se pudo iniciar la sesión de pruebas");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleCredential = useCallback(
     async ({ credential }: { credential?: string }) => {
@@ -167,6 +207,32 @@ export default function Login() {
             <div className={loading ? "opacity-50 pointer-events-none" : ""}>
               <div ref={buttonRef} className="min-h-11 flex justify-center" />
               {loading && <p className="text-center text-xs text-gray-500 mt-3">Validando tu cuenta…</p>}
+            </div>
+          )}
+
+          {import.meta.env.DEV && devUsers.length > 0 && (
+            <div className="mt-5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-3">
+              <p className="text-xs font-semibold text-amber-900">Entorno de pruebas local · datos sintéticos</p>
+              <p className="text-xs text-amber-800 mt-0.5 mb-2">
+                Base <code>proysocial_dev</code>, solo en localhost. No es producción ni usa Google.
+              </p>
+              <div className="space-y-1.5">
+                {devUsers.map((u) => (
+                  <button
+                    key={u.correo}
+                    type="button"
+                    disabled={loading}
+                    onClick={() => handleDevLogin(u.correo)}
+                    className="w-full text-left text-xs border border-amber-300 bg-white hover:bg-amber-100 rounded-md px-3 py-2 disabled:opacity-50"
+                  >
+                    <span className="font-semibold text-gray-900">
+                      {u.nombre} {u.apellido}
+                    </span>{" "}
+                    <span className="text-gray-500">· {u.rol === "admin" ? "Administrador" : "Docente"}</span>
+                    <span className="block text-gray-400">{u.correo}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 

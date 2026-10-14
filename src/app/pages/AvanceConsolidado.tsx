@@ -5,6 +5,8 @@ import { AppSelect } from "../components/AppSelect";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { notify } from "../lib/notify";
+import { formatDateOnly } from "../lib/date";
+import { semaforoConfig, type Semaforo } from "../data/matrizConstants";
 
 interface AvanceMes {
   mes: string;
@@ -25,7 +27,15 @@ interface DocenteAvance {
   avance_real: number;
   avance_esperado: number;
   cumplimiento_esperado: number;
+  /** Puntos porcentuales: % aprobado − % esperado. */
   brecha: number;
+  avance_aprobado: number;
+  semaforo: Semaforo;
+  pendientes_revision: number;
+  observados: number;
+  reportados: number;
+  aprobados: number;
+  total_entregables: number;
   avance_por_mes: AvanceMes[];
   entregables_vencidos: number;
   ultimo_reporte: string | null;
@@ -39,6 +49,11 @@ interface Payload {
   totales: {
     docentes: number;
     promedio_global: number;
+    promedio_aprobado?: number;
+    promedio_esperado?: number;
+    con_retraso?: number;
+    pendientes_revision?: number;
+    semaforo?: { verde: number; amarillo: number; rojo: number };
     por_mes: { mes: string; porcentaje: number }[];
   };
 }
@@ -68,10 +83,8 @@ function barColor(pct: number) {
 
 function estadoRow(d: DocenteAvance): { label: string; className: string } {
   if (d.grupo_id == null) return { label: "Sin grupo", className: "bg-gray-100 text-gray-700" };
-  const compliance = d.cumplimiento_esperado;
-  if (compliance >= 100) return { label: "Al día", className: "bg-green-100 text-green-800" };
-  if (compliance >= 75) return { label: "En riesgo", className: "bg-amber-100 text-amber-800" };
-  return { label: "Crítico", className: "bg-red-100 text-red-800" };
+  const sem = semaforoConfig[d.semaforo] ?? semaforoConfig.sin_datos;
+  return { label: sem.label, className: sem.badge };
 }
 
 function MesCell({ c, t, p }: { c: number; t: number; p: number }) {
@@ -195,6 +208,15 @@ export default function AvanceConsolidado() {
       if (sortKey === "global") {
         va = a.avance_global;
         vb = b.avance_global;
+      } else if (sortKey === "aprobado") {
+        va = a.avance_aprobado;
+        vb = b.avance_aprobado;
+      } else if (sortKey === "brecha") {
+        va = a.brecha;
+        vb = b.brecha;
+      } else if (sortKey === "vencidos") {
+        va = a.entregables_vencidos;
+        vb = b.entregables_vencidos;
       } else if (sortKey === "esperado") {
         va = a.avance_esperado;
         vb = b.avance_esperado;
@@ -223,7 +245,7 @@ export default function AvanceConsolidado() {
   const riesgoCount = useMemo(
     () =>
       (data?.docentes ?? []).filter(
-        (d) => d.grupo_id != null && d.cumplimiento_esperado < 75
+        (d) => d.grupo_id != null && d.semaforo === "rojo"
       ).length,
     [data]
   );
@@ -247,7 +269,7 @@ export default function AvanceConsolidado() {
           <BarChart2 className="w-6 h-6 text-blue-800" />
           <div>
             <h1 className="text-gray-900 font-semibold text-lg">Avance Consolidado por Docente</h1>
-            <p className="text-xs text-gray-500">Vista tipo Excel · filtros y ordenamiento</p>
+            <p className="text-xs text-gray-500">Reportado = enviado o aprobado · Aprobado = revisado por administrador · Esperado = con fecha límite hasta hoy</p>
           </div>
         </div>
         <button
@@ -305,8 +327,22 @@ export default function AvanceConsolidado() {
           <p className="text-2xl font-bold text-gray-900">{tot?.docentes ?? "—"}</p>
         </div>
         <div className="bg-white border rounded-xl p-4 shadow-sm">
-          <p className="text-xs text-gray-500">Promedio avance global</p>
+          <p className="text-xs text-gray-500">Promedio reportado</p>
           <p className="text-2xl font-bold text-blue-800">{tot?.promedio_global ?? "—"}%</p>
+        </div>
+        <div className="bg-white border rounded-xl p-4 shadow-sm">
+          <p className="text-xs text-gray-500">Promedio aprobado</p>
+          <p className="text-2xl font-bold text-green-700">{tot?.promedio_aprobado ?? "—"}%</p>
+        </div>
+        <div className="bg-white border rounded-xl p-4 shadow-sm">
+          <p className="text-xs text-gray-500">Promedio esperado a la fecha</p>
+          <p className="text-2xl font-bold text-amber-700">{tot?.promedio_esperado ?? "—"}%</p>
+        </div>
+        <div className="bg-white border rounded-xl p-4 shadow-sm">
+          <p className="text-xs text-gray-500">Con retraso · por revisar</p>
+          <p className="text-2xl font-bold text-gray-800">
+            {tot?.con_retraso ?? "—"} · {tot?.pendientes_revision ?? "—"}
+          </p>
         </div>
         {meses.map((mes) => (
           <div key={mes} className="bg-white border rounded-xl p-4 shadow-sm">
@@ -317,13 +353,13 @@ export default function AvanceConsolidado() {
           </div>
         ))}
         <div className="bg-white border rounded-xl p-4 shadow-sm col-span-2 md:col-span-1">
-          <p className="text-xs text-gray-500">Docentes críticos (&lt;75% de lo esperado)</p>
+          <p className="text-xs text-gray-500">Docentes en riesgo crítico (semáforo)</p>
           <p className="text-2xl font-bold text-red-600">{riesgoCount}</p>
         </div>
       </div>
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-x-auto">
-        <table className="w-full text-sm min-w-[900px]">
+        <table className="w-full text-sm min-w-[1100px]">
           <thead>
             <tr className="bg-gray-50 text-gray-600 text-xs uppercase border-b">
               <th className="text-left px-3 py-2 font-semibold">
@@ -343,7 +379,12 @@ export default function AvanceConsolidado() {
               ))}
               <th className="text-left px-2 py-2">
                 <button type="button" onClick={() => toggleSort("global")} className="hover:underline font-semibold">
-                  Global {sortKey === "global" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+                  Reportado {sortKey === "global" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+                </button>
+              </th>
+              <th className="text-left px-2 py-2">
+                <button type="button" onClick={() => toggleSort("aprobado")} className="hover:underline font-semibold">
+                  Aprobado {sortKey === "aprobado" ? (sortDir === "asc" ? "↑" : "↓") : ""}
                 </button>
               </th>
               <th className="text-left px-2 py-2">
@@ -356,6 +397,18 @@ export default function AvanceConsolidado() {
                   Cumplimiento {sortKey === "cumplimiento" ? (sortDir === "asc" ? "↑" : "↓") : ""}
                 </button>
               </th>
+              <th className="text-left px-2 py-2">
+                <button type="button" onClick={() => toggleSort("brecha")} className="hover:underline font-semibold" title="Puntos porcentuales: aprobado − esperado">
+                  Brecha {sortKey === "brecha" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+                </button>
+              </th>
+              <th className="text-left px-2 py-2">Por revisar</th>
+              <th className="text-left px-2 py-2">
+                <button type="button" onClick={() => toggleSort("vencidos")} className="hover:underline font-semibold">
+                  Vencidos {sortKey === "vencidos" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+                </button>
+              </th>
+              <th className="text-left px-2 py-2">Último envío</th>
               <th className="text-left px-2 py-2">Estado</th>
               <th className="text-left px-2 py-2">Acciones</th>
             </tr>
@@ -386,6 +439,9 @@ export default function AvanceConsolidado() {
                     </span>
                   </td>
                   <td className="px-2 py-2">
+                    <span className="font-semibold text-green-700">{d.avance_aprobado}%</span>
+                  </td>
+                  <td className="px-2 py-2">
                     <span className="font-semibold text-amber-700">{d.avance_esperado}%</span>
                   </td>
                   <td className="px-2 py-2">
@@ -401,6 +457,16 @@ export default function AvanceConsolidado() {
                       {d.cumplimiento_esperado}%
                     </span>
                   </td>
+                  <td className="px-2 py-2">
+                    <span className={`text-xs font-semibold tabular-nums ${d.brecha < 0 ? "text-red-600" : "text-gray-700"}`}>
+                      {d.brecha > 0 ? `+${d.brecha}` : d.brecha} pp
+                    </span>
+                  </td>
+                  <td className="px-2 py-2 text-gray-700 tabular-nums">{d.pendientes_revision}</td>
+                  <td className={`px-2 py-2 tabular-nums ${d.entregables_vencidos > 0 ? "text-red-600 font-semibold" : "text-gray-700"}`}>
+                    {d.entregables_vencidos}
+                  </td>
+                  <td className="px-2 py-2 text-gray-600 whitespace-nowrap">{formatDateOnly(d.ultimo_reporte)}</td>
                   <td className="px-2 py-2">
                     <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${est.className}`}>{est.label}</span>
                   </td>
@@ -445,7 +511,7 @@ export default function AvanceConsolidado() {
                       )}
                   %
                 </td>
-                <td colSpan={4} />
+                <td colSpan={9} />
               </tr>
             </tfoot>
           )}

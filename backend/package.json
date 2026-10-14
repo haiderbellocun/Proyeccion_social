@@ -13,7 +13,12 @@
     "test:notificaciones": "node scripts/test-notificaciones.js",
     "test:avatar": "node scripts/test-avatar.js",
     "test:correos": "node scripts/test-correos.js",
-    "emails:process": "node scripts/process-notification-emails.js"
+    "emails:process": "node scripts/process-notification-emails.js",
+    "test": "node --test \"test/*.test.js\"",
+    "test:integration": "node --test \"test/integration/*.test.js\"",
+    "dev:setup": "node scripts/dev-setup.js",
+    "dev:local": "node --env-file=.env.dev src/index.js",
+    "ejemplo:excel": "node scripts/generar-excel-ejemplo.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

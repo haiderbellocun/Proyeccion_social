@@ -26,3 +26,18 @@ export function formatDateOnly(value: unknown): string {
     year: "numeric",
   });
 }
+
+/** Instante (timestamptz) en hora institucional America/Bogota. */
+export function formatDateTimeBogota(value: unknown): string {
+  if (value == null || value === "") return "—";
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("es-CO", {
+    timeZone: "America/Bogota",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}

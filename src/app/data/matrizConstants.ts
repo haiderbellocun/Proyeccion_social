@@ -161,12 +161,82 @@ export const statusConfig: Record<
   },
 };
 
-export function isDeliverableCompleted(d: {
-  completado?: boolean;
-  actualDate?: string | null;
-  fecha_real_entrega?: string | null;
-}): boolean {
-  return d.completado === true || !!d.actualDate || !!d.fecha_real_entrega;
+// ─── ESTADOS E INDICADORES (los calcula el backend; el frontend solo los muestra) ───
+
+export type EstadoEntregable = "no_iniciado" | "borrador" | "enviado" | "observado" | "aprobado";
+
+export const estadoEntregableConfig: Record<EstadoEntregable, { label: string; badge: string; dot: string }> = {
+  no_iniciado: { label: "No iniciado", badge: "bg-gray-100 text-gray-600", dot: "bg-gray-400" },
+  borrador: { label: "Borrador", badge: "bg-slate-100 text-slate-700", dot: "bg-slate-400" },
+  enviado: { label: "En revisión", badge: "bg-blue-100 text-blue-700", dot: "bg-blue-500" },
+  observado: { label: "Observado", badge: "bg-amber-100 text-amber-800", dot: "bg-amber-500" },
+  aprobado: { label: "Aprobado", badge: "bg-green-100 text-green-700", dot: "bg-green-500" },
+};
+
+export type Semaforo = "verde" | "amarillo" | "rojo" | "sin_exigibles" | "sin_datos";
+
+export const semaforoConfig: Record<Semaforo, { label: string; badge: string; dot: string }> = {
+  verde: { label: "En regla", badge: "bg-green-100 text-green-700", dot: "bg-green-500" },
+  amarillo: { label: "En riesgo", badge: "bg-yellow-100 text-yellow-800", dot: "bg-yellow-500" },
+  rojo: { label: "Crítico", badge: "bg-red-100 text-red-700", dot: "bg-red-500" },
+  sin_exigibles: { label: "Sin vencimientos", badge: "bg-gray-100 text-gray-600", dot: "bg-gray-400" },
+  sin_datos: { label: "Sin matriz", badge: "bg-gray-100 text-gray-500", dot: "bg-gray-300" },
+};
+
+/** Misma definición en todas las pantallas (ver backend/src/services/matrizService.js). */
+export interface IndicadoresSeguimiento {
+  total: number;
+  reportados: number;
+  aprobados: number;
+  enviados_pendientes_revision: number;
+  observados: number;
+  borradores: number;
+  no_iniciados: number;
+  vencidos: number;
+  exigibles: number;
+  exigibles_aprobados: number;
+  exigibles_reportados: number;
+  esperado: number;
+  horas_programadas: number;
+  horas_reportadas: number;
+  horas_aprobadas: number;
+  pct_reportado: number;
+  pct_aprobado: number;
+  pct_esperado: number;
+  /** aprobados − esperados (entregables). Negativa = atraso. */
+  brecha_entregables: number;
+  /** Puntos porcentuales: % aprobado − % esperado. */
+  brecha_pct: number;
+  cumplimiento_exigible: number | null;
+  cumplimiento_reportado_exigible: number | null;
+  semaforo: Semaforo;
+}
+
+export interface SemanaActual {
+  semestre: string | null;
+  hoy: string;
+  numero: number | null;
+  total_semanas: number | null;
+  estado: "sin_calendario" | "sin_iniciar" | "en_curso" | "finalizado";
+  fecha_inicio_semana?: string;
+  fecha_fin_semana?: string;
+  fecha_inicio_semestre?: string;
+  fecha_fin_semestre?: string;
+  advertencia?: string;
+}
+
+export function etiquetaSemana(s: SemanaActual | null | undefined): string {
+  if (!s) return "—";
+  if (s.estado === "en_curso" && s.numero != null) return `Semana ${s.numero} de ${s.total_semanas}`;
+  if (s.estado === "finalizado") return "Semestre finalizado";
+  if (s.estado === "sin_iniciar") return "Semestre por iniciar";
+  return "Semestre sin calendario configurado";
+}
+
+/** Reportado = enviado para revisión o aprobado (no borradores ni observados). */
+export function isDeliverableCompleted(d: { estado?: EstadoEntregable | null; completado?: boolean }): boolean {
+  if (d.estado) return d.estado === "enviado" || d.estado === "aprobado";
+  return d.completado === true;
 }
 
 export type SimpleDeliveryStatus = "completado" | "pendiente" | "atrasado";

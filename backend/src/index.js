@@ -8,6 +8,9 @@ import authRouter from "./routes/auth.js";
 import docenteRouter from "./routes/docente.js";
 import adminRouter from "./routes/admin.js";
 import catalogoRouter from "./routes/catalogo.js";
+import importacionesRouter from "./routes/importaciones.js";
+import devAuthRouter from "./routes/devAuth.js";
+import { devLoginStatus } from "./config/devLogin.js";
 import { requireAuth, requireRole } from "./middleware/auth.js";
 import {
   emailConfiguration,
@@ -43,6 +46,9 @@ app.use((_req, res, next) => {
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   next();
 });
+// Importación de Excel: el archivo viaja en base64 (hasta ~12 MB). Se autentica ANTES de leer el cuerpo
+// grande y solo para administradores; el resto de la API mantiene el límite de 1 MB.
+app.use("/admin/importaciones", requireAuth, requireRole("admin"), express.json({ limit: "18mb" }), importacionesRouter);
 app.use(express.json({ limit: "1mb" }));
 app.use((req, res, next) => {
   if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
@@ -90,6 +96,11 @@ app.get("/health", async (_req, res) => {
 });
 
 app.use("/auth", authRouter);
+// Acceso de desarrollo: solo si TODAS las condiciones locales se cumplen (ver config/devLogin.js).
+if (devLoginStatus().enabled) {
+  app.use("/auth/dev", devAuthRouter);
+  console.warn("⚠ ACCESO DE DESARROLLO ACTIVO (base proysocial_dev, solo localhost). No usar en producción.");
+}
 app.use("/docente", requireAuth, requireRole("docente", "admin"), docenteRouter);
 app.use("/admin", requireAuth, requireRole("admin"), adminRouter);
 app.use("/admin", requireAuth, requireRole("admin"), catalogoRouter);

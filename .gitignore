@@ -4,3 +4,5 @@ dist/
 build/
 *.log
 gha-creds-*.json
+.env.dev
+backend/ejemplos/

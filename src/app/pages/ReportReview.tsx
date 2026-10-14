@@ -15,6 +15,7 @@ import { Badge } from "../components/Badge";
 import { AppSelect } from "../components/AppSelect";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
+import { formatDateOnly, formatDateTimeBogota } from "../lib/date";
 
 const API_BASE_URL = API_BASE;
 
@@ -33,7 +34,27 @@ type ReportItem = {
   progress: number;
   evidences: { name: string; type: "LINK" | "TEXT" }[];
   status: "pending" | "review" | "approved";
+  numEnvios: number;
+  esReenvio: boolean;
+  ultimoEnvio: string | null;
+  evidenciaExenta: boolean;
+  justificacionExencion: string;
 };
+
+// url_evidencia: enlace simple (histórico) o JSON con varios enlaces.
+function parseEvidencias(raw: unknown): string[] {
+  const text = String(raw ?? "").trim();
+  if (!text) return [];
+  if (text.startsWith("[")) {
+    try {
+      const arr = JSON.parse(text);
+      if (Array.isArray(arr)) return arr.map((u) => String(u).trim()).filter(Boolean);
+    } catch {
+      /* se trata como texto */
+    }
+  }
+  return text.split(/\s+/).filter(Boolean);
+}
 
 type AdminMetricas = {
   resumen?: {
@@ -130,9 +151,7 @@ export default function ReportReview() {
             email: r.docente_correo || "",
             project: r.proyecto_titulo || "Iniciativa",
             week: `Semana ${r.semana_numero || "—"}`,
-            date: r.fecha_real_entrega
-              ? new Date(String(r.fecha_real_entrega) + "T12:00:00").toLocaleDateString("es-CO")
-              : "—",
+            date: formatDateOnly(r.fecha_real_entrega),
             activity:
               r.actividad_reportada ||
               r.actividad ||
@@ -143,10 +162,15 @@ export default function ReportReview() {
               r.actividad ||
               "Sin descripción",
             progress: Number(r.porcentaje_avance ?? 100),
-            evidences: r.url_evidencia
-              ? [{ name: r.url_evidencia, type: "LINK" as const }]
+            evidences: parseEvidencias(r.url_evidencia).length
+              ? parseEvidencias(r.url_evidencia).map((u) => ({ name: u, type: "LINK" as const }))
               : [{ name: "Sin URL de evidencia", type: "TEXT" as const }],
             status,
+            numEnvios: Number(r.num_envios ?? 0),
+            esReenvio: r.es_reenvio === true,
+            ultimoEnvio: r.fecha_cargue_evidencia ?? null,
+            evidenciaExenta: r.evidencia_exenta === true,
+            justificacionExencion: String(r.justificacion_exencion ?? ""),
           };
         });
         // Con backend corregido solo deberían llegar 'enviado'. Si llegara algo 'observado', se oculta.
@@ -325,6 +349,8 @@ export default function ReportReview() {
     );
   }
 
+  if (!report) return null;
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -475,7 +501,14 @@ export default function ReportReview() {
                     <p className="text-gray-500 text-sm">{report.program}</p>
                     <p className="text-gray-400 text-xs mt-0.5">{report.email}</p>
                   </div>
-                  <Badge variant={report.status} />
+                  <div className="flex flex-col items-end gap-1.5">
+                    <Badge variant={report.status} />
+                    {report.esReenvio && (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-indigo-100 text-indigo-700" style={{ fontWeight: 600 }}>
+                        Reenvío · {report.numEnvios} envíos
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4">
                   <div>
@@ -520,6 +553,15 @@ export default function ReportReview() {
           {/* Evidences */}
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
             <h3 className="text-gray-800 mb-3">Evidencias</h3>
+            {report.evidenciaExenta && (
+              <p className="mb-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                <span style={{ fontWeight: 600 }}>Sin evidencia — justificación del docente: </span>
+                {report.justificacionExencion || "sin texto"}
+              </p>
+            )}
+            {report.ultimoEnvio && (
+              <p className="mb-3 text-xs text-gray-500">Último envío: {formatDateTimeBogota(report.ultimoEnvio)}</p>
+            )}
             <div className="space-y-2">
               {report.evidences.map((ev, i) => (
                 <div

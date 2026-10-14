@@ -10,6 +10,8 @@ import {
   Calendar,
   TableProperties,
   AlertCircle,
+  MessageSquareWarning,
+  Send,
 } from "lucide-react";
 import {
   AreaChart,
@@ -18,13 +20,21 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer,
 } from "recharts";
-import { Badge, type BadgeVariant } from "../components/Badge";
-import { StatusBadge } from "../components/StatusBadge";
+import {
+  estadoEntregableConfig,
+  etiquetaSemana,
+  semaforoConfig,
+  type EstadoEntregable,
+  type IndicadoresSeguimiento,
+  type SemanaActual,
+} from "../data/matrizConstants";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
+import { formatDateOnly } from "../lib/date";
 
 const API_BASE_URL = API_BASE;
 const MONTH_COLOR_CLASSES = [
@@ -44,12 +54,16 @@ type DashboardStats = {
   compliancePct: number;
   due: number;
   gap: number;
+  aprobados?: number;
+  approvedPct?: number;
 };
 type StatsByMonth = {
   month: string;
   total: number;
   done: number;
+  aprobados?: number;
   pct: number;
+  pct_aprobado?: number;
   expectedPct: number;
   active: boolean;
 };
@@ -58,16 +72,22 @@ type StatsByWeek = {
   total: number;
   done: number;
   pct: number;
+  pct_aprobado?: number;
   expectedPct: number;
 };
 type UpcomingItem = {
   id: number;
+  entregable_id?: number | null;
   iniciativa: string;
   entregable: string;
   fechaInicio: string | null;
   fechaFin: string | null;
   semana: number;
+  estado?: EstadoEntregable;
+  vencido?: boolean;
+  comentario_revision?: string | null;
 };
+type Conteos = { pendientes: number; observados: number; vencidos: number; en_revision: number };
 type ActivityRow = {
   id: number;
   entregableId: number | null;
@@ -77,8 +97,10 @@ type ActivityRow = {
   initiativeType: string;
   startDate: string | null;
   deadline: string | null;
-  status: BadgeVariant;
+  status: string;
   statusLabel: string;
+  estado?: EstadoEntregable;
+  vencido?: boolean;
 };
 
 const EMPTY_STATS: DashboardStats = {
@@ -91,25 +113,24 @@ const EMPTY_STATS: DashboardStats = {
   gap: 0,
 };
 
-const formatDate = (value: string | null) =>
-  value
-    ? new Date(`${value}T12:00:00`).toLocaleDateString("es-CO", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      })
-    : "—";
+const formatDate = (value: string | null) => formatDateOnly(value);
 
-function computeStatusFromDate(fechaFin: string | null): "no_iniciado" | "semana_en_curso" | "vencido" | "entrega_a_tiempo" {
-  if (!fechaFin) return "no_iniciado";
-  const fin = new Date(fechaFin);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  fin.setHours(0, 0, 0, 0);
-  const diffDays = Math.ceil((fin.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-  if (diffDays < 0) return "vencido";
-  if (diffDays <= 7) return "semana_en_curso";
-  return "no_iniciado";
+/** Estado del backend + condición «Vencido» (que no sustituye al estado de revisión). */
+function EstadoChip({ estado, vencido }: { estado?: EstadoEntregable; vencido?: boolean }) {
+  const cfg = estadoEntregableConfig[estado ?? "no_iniciado"];
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs ${cfg.badge}`} style={{ fontWeight: 500 }}>
+        <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
+        {cfg.label}
+      </span>
+      {vencido && (
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-700" style={{ fontWeight: 500 }}>
+          Vencido
+        </span>
+      )}
+    </span>
+  );
 }
 
 export default function TeacherDashboard() {
@@ -122,6 +143,11 @@ export default function TeacherDashboard() {
   const [byWeek, setByWeek] = useState<StatsByWeek[]>([]);
   const [upcoming, setUpcoming] = useState<UpcomingItem[]>([]);
   const [activities, setActivities] = useState<ActivityRow[]>([]);
+  const [indicadores, setIndicadores] = useState<IndicadoresSeguimiento | null>(null);
+  const [semana, setSemana] = useState<SemanaActual | null>(null);
+  const [conteos, setConteos] = useState<Conteos>({ pendientes: 0, observados: 0, vencidos: 0, en_revision: 0 });
+  const [proximo, setProximo] = useState<UpcomingItem | null>(null);
+  const [observados, setObservados] = useState<UpcomingItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -135,6 +161,10 @@ export default function TeacherDashboard() {
       setByWeek([]);
       setUpcoming([]);
       setActivities([]);
+      setIndicadores(null);
+      setSemana(null);
+      setProximo(null);
+      setObservados([]);
       setLoading(false);
       return;
     }
@@ -161,6 +191,11 @@ export default function TeacherDashboard() {
           setByWeek(Array.isArray(data.byWeek) ? data.byWeek : []);
           setUpcoming(Array.isArray(data.upcoming) ? data.upcoming : []);
           setActivities(Array.isArray(data.activities) ? data.activities : []);
+          setIndicadores(data.indicadores ?? null);
+          setSemana(data.semana_actual ?? null);
+          setConteos(data.conteos ?? { pendientes: 0, observados: 0, vencidos: 0, en_revision: 0 });
+          setProximo(data.proximo_entregable ?? null);
+          setObservados(Array.isArray(data.observados) ? data.observados : []);
         } else {
           setStats(EMPTY_STATS);
           setByMonth([]);
@@ -195,47 +230,59 @@ export default function TeacherDashboard() {
       ? "#f59e0b"
       : "#ef4444";
 
+  const ind = indicadores;
+  const semaforo = ind ? semaforoConfig[ind.semaforo] : null;
+
+  // Serie semanal real del backend: acumulado reportado, aprobado y esperado.
   const weeklyData = byWeek.map((row) => ({
     semana: `S${row.semana}`,
     avance: row.pct,
+    aprobado: row.pct_aprobado ?? 0,
     esperado: row.expectedPct,
   }));
 
   const statCards = [
     {
-      label: "Avance real",
+      label: "Avance reportado",
       value: `${safeStats.pct}%`,
-      sub: `${safeStats.completed} de ${safeStats.total} entregables`,
-      icon: TrendingUp,
+      sub: `${safeStats.completed} de ${safeStats.total} enviados a revisión o aprobados`,
+      icon: Send,
       iconBg: "bg-[#1d4ed8]",
+    },
+    {
+      label: "Avance aprobado",
+      value: ind ? `${ind.pct_aprobado}%` : "—",
+      sub: ind ? `${ind.aprobados} de ${ind.total} aprobados por el administrador` : "Sin matriz asignada",
+      icon: CheckCircle2,
+      iconBg: "bg-emerald-500",
     },
     {
       label: "Avance esperado",
       value: `${safeStats.expectedPct}%`,
-      sub: `${safeStats.due} entregables exigibles a hoy`,
+      sub: `${safeStats.due} entregables exigibles a hoy · brecha ${ind ? (ind.brecha_entregables > 0 ? "+" : "") + ind.brecha_entregables : 0} (aprobados − esperados)`,
       icon: Clock,
       iconBg: "bg-amber-500",
     },
     {
-      label: "Cumplimiento esperado",
-      value: `${Math.round(safeStats.compliancePct)}%`,
+      label: "Semana actual",
+      value: semana?.numero != null ? `S${semana.numero}` : "—",
       sub:
-        safeStats.gap >= 0
-          ? `${safeStats.gap} puntos por encima de lo esperado`
-          : `${Math.abs(safeStats.gap)} puntos por debajo de lo esperado`,
-      icon: CheckCircle2,
-      iconBg: safeStats.gap >= 0 ? "bg-emerald-500" : "bg-red-500",
-    },
-    {
-      label: "Proyectos activos",
-      value: projectsCount != null ? String(projectsCount) : "—",
-      sub: "Proyectos asignados este ciclo",
-      icon: FolderOpen,
+        semana?.estado === "en_curso"
+          ? `${etiquetaSemana(semana)} · ${formatDate(semana.fecha_inicio_semana ?? null)} – ${formatDate(semana.fecha_fin_semana ?? null)}`
+          : etiquetaSemana(semana),
+      icon: Calendar,
       iconBg: "bg-purple-500",
     },
   ];
 
-  const hasVencidos = activities.some((a) => a.statusLabel === "Retrasado");
+  const contadores = [
+    { label: "Pendientes", value: conteos.pendientes, tone: "text-gray-800", icon: Clock },
+    { label: "Observados", value: conteos.observados, tone: "text-amber-700", icon: MessageSquareWarning },
+    { label: "Vencidos", value: conteos.vencidos, tone: "text-red-700", icon: AlertCircle },
+    { label: "En revisión", value: conteos.en_revision, tone: "text-blue-700", icon: Send },
+  ];
+
+  const hasVencidos = conteos.vencidos > 0;
 
   return (
     <div className="p-6 space-y-6">
@@ -244,7 +291,13 @@ export default function TeacherDashboard() {
           <h1 className="text-gray-900">Mi Dashboard</h1>
           <p className="text-gray-500 text-sm flex items-center gap-1.5 mt-0.5">
             <Calendar className="w-3.5 h-3.5" />
-            {loading ? "Cargando..." : "Avance según tus proyectos asignados"}
+            {loading ? "Cargando..." : `${etiquetaSemana(semana)} · avance según tu matriz de seguimiento`}
+            {semaforo && !loading && (
+              <span className={`ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${semaforo.badge}`} style={{ fontWeight: 600 }}>
+                <span className={`w-1.5 h-1.5 rounded-full ${semaforo.dot}`} />
+                {semaforo.label}
+              </span>
+            )}
           </p>
         </div>
         <div className="flex gap-2">
@@ -287,12 +340,68 @@ export default function TeacherDashboard() {
         ))}
       </div>
 
+      {/* Estado de la gestión */}
+      <div className="grid grid-cols-2 xl:grid-cols-5 gap-4">
+        {contadores.map((c) => (
+          <div key={c.label} className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm flex items-center gap-3">
+            <c.icon className={`w-5 h-5 ${c.tone}`} />
+            <div>
+              <p className={`text-xl ${c.tone}`} style={{ fontWeight: 700 }}>{c.value}</p>
+              <p className="text-xs text-gray-500">{c.label}</p>
+            </div>
+          </div>
+        ))}
+        <div className="col-span-2 xl:col-span-1 bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+          <p className="text-xs text-gray-500">Próxima entrega</p>
+          {proximo ? (
+            <>
+              <p className="text-sm text-gray-800 line-clamp-2 mt-0.5" style={{ fontWeight: 600 }}>
+                {proximo.entregable}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                S{proximo.semana} · {formatDate(proximo.fechaFin)}
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-gray-400 mt-0.5">Sin entregas próximas</p>
+          )}
+        </div>
+      </div>
+
+      {/* Evidencias pendientes de corrección */}
+      {observados.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <MessageSquareWarning className="w-4 h-4 text-amber-700" />
+            <h3 className="text-amber-900">Evidencias pendientes de corrección</h3>
+          </div>
+          <div className="space-y-2">
+            {observados.slice(0, 5).map((o) => (
+              <div
+                key={`${o.entregable_id ?? "p"}-${o.id}`}
+                className="bg-white rounded-lg border border-amber-100 p-3 cursor-pointer hover:bg-amber-50/40"
+                onClick={() => navigate(`/docente/matriz?plantilla=${o.id}`)}
+              >
+                <p className="text-sm text-gray-800" style={{ fontWeight: 600 }}>{o.entregable}</p>
+                {o.comentario_revision && (
+                  <p className="text-xs text-amber-800 mt-1">Observación: {o.comentario_revision}</p>
+                )}
+                <p className="text-xs text-gray-400 mt-1">
+                  Semana {o.semana} · límite {formatDate(o.fechaFin)}
+                  {o.vencido ? " · vencido" : ""}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Avance por mes */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-gray-800">Avance por mes</h3>
-            <p className="text-gray-500 text-xs mt-0.5">Entregables completados según la matriz de seguimiento</p>
+            <p className="text-gray-500 text-xs mt-0.5">Entregables reportados y aprobados según la matriz de seguimiento</p>
           </div>
           <button
             onClick={() => navigate("/docente/matriz")}
@@ -331,7 +440,7 @@ export default function TeacherDashboard() {
                     {m.pct}%
                   </p>
                   <p className="text-gray-400 text-xs mt-0.5">
-                    {m.done}/{m.total} entregables
+                    {m.done}/{m.total} reportados · {m.aprobados ?? 0} aprobados
                   </p>
                   <p className="text-gray-500 text-[11px] mt-1">
                     Esperado a hoy: {Math.round(m.expectedPct)}%
@@ -362,7 +471,8 @@ export default function TeacherDashboard() {
               Avance real frente al esperado
             </p>
             <div className="flex items-center gap-3 text-xs font-semibold">
-              <span className="text-[#1d4ed8]">Real {safeStats.pct}%</span>
+              <span className="text-[#1d4ed8]">Reportado {safeStats.pct}%</span>
+              <span className="text-emerald-600">Aprobado {ind?.pct_aprobado ?? 0}%</span>
               <span className="text-amber-600">Esperado {safeStats.expectedPct}%</span>
             </div>
           </div>
@@ -386,7 +496,7 @@ export default function TeacherDashboard() {
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="text-gray-800">Progreso Semanal</h3>
-              <p className="text-gray-500 text-xs mt-0.5">Avance acumulado por semana</p>
+              <p className="text-gray-500 text-xs mt-0.5">Acumulado por semana: reportado, aprobado y esperado</p>
             </div>
             <span className={`text-xs px-2.5 py-1 rounded-full ${hasVencidos ? "text-red-600 bg-red-50" : "text-emerald-600 bg-emerald-50"}`} style={{ fontWeight: 500 }}>
               {hasVencidos ? "Con vencimientos" : "Sin vencimientos"}
@@ -403,7 +513,7 @@ export default function TeacherDashboard() {
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="semana" tick={{ fontSize: 12, fill: "#9ca3af" }} />
               <YAxis tick={{ fontSize: 12, fill: "#9ca3af" }} unit="%" />
-              <Tooltip formatter={(v) => [`${v}%`, "Avance"]} contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 12 }} />
+              <Tooltip formatter={(v, name) => [`${v}%`, String(name)]} contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 12 }} />
               <Area
                 type="monotone"
                 dataKey="esperado"
@@ -416,11 +526,20 @@ export default function TeacherDashboard() {
               <Area
                 type="monotone"
                 dataKey="avance"
-                name="Avance real"
+                name="Avance reportado"
                 stroke="#1d4ed8"
                 strokeWidth={2}
                 fill="url(#tdColorAvance)"
               />
+              <Area
+                type="monotone"
+                dataKey="aprobado"
+                name="Avance aprobado"
+                stroke="#10b981"
+                strokeWidth={2}
+                fill="transparent"
+              />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
             </AreaChart>
           </ResponsiveContainer> : (
             <div className="h-[200px] flex items-center justify-center text-sm text-gray-400">
@@ -441,10 +560,9 @@ export default function TeacherDashboard() {
               <p className="text-xs text-gray-400">No hay entregas próximas cargadas.</p>
             )}
             {upcoming.slice(0, 5).map((d) => {
-              const status = computeStatusFromDate(d.fechaFin);
               return (
                 <div
-                  key={d.id}
+                  key={`${d.entregable_id ?? "p"}-${d.id}`}
                   className="p-3 rounded-lg border border-gray-100 hover:bg-gray-50 transition-colors cursor-pointer"
                   onClick={() => navigate("/docente/matriz")}
                 >
@@ -462,7 +580,7 @@ export default function TeacherDashboard() {
                       <Calendar className="w-3 h-3" />
                       {formatDate(d.fechaInicio)} – {formatDate(d.fechaFin)}
                     </span>
-                    <StatusBadge status={status} pulse />
+                    <EstadoChip estado={d.estado} vencido={d.vencido} />
                   </div>
                 </div>
               );
@@ -474,7 +592,7 @@ export default function TeacherDashboard() {
               <div>
                 <p className="text-xs text-red-700" style={{ fontWeight: 600 }}>Entregas vencidas</p>
                 <p className="text-xs text-red-600 mt-0.5">
-                  {activities.filter((a) => a.statusLabel === "Retrasado").length} entregable(s) sin presentar
+                  {conteos.vencidos} entregable(s) con fecha límite vencida sin presentar o corregir
                 </p>
               </div>
             </div>
@@ -518,8 +636,8 @@ export default function TeacherDashboard() {
                   </td>
                 </tr>
               )}
-              {activities.map((row) => (
-                <tr key={row.id} className="hover:bg-gray-50 transition-colors">
+              {activities.map((row, i) => (
+                <tr key={`${i}-${row.entregableId ?? "p"}-${row.id}`} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4 text-gray-800" style={{ fontWeight: 500 }}>
                     <div className="max-w-[150px] capitalize">{row.category.replaceAll("_", " ")}</div>
                   </td>
@@ -537,15 +655,15 @@ export default function TeacherDashboard() {
                     <div className="text-xs text-gray-400">hasta {formatDate(row.deadline)}</div>
                   </td>
                   <td className="px-6 py-4">
-                      <Badge variant={row.status} label={row.statusLabel} />
+                      <EstadoChip estado={row.estado} vencido={row.vencido} />
                   </td>
                   <td className="px-6 py-4">
                     <button
-                      onClick={() => navigate("/docente/matriz")}
+                      onClick={() => navigate(`/docente/matriz?plantilla=${row.id}`)}
                       className="text-[#1d4ed8] hover:underline text-xs"
                       style={{ fontWeight: 500 }}
                     >
-                      Ver entregable
+                      {row.estado === "observado" ? "Corregir" : row.estado === "aprobado" || row.estado === "enviado" ? "Ver entregable" : "Reportar"}
                     </button>
                   </td>
                 </tr>

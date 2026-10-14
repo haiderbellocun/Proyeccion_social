@@ -2,10 +2,14 @@ import express from "express";
 import { pool } from "../db.js";
 import {
   buildMatrixStats,
-  loadAssignedInitiatives,
-  mapMatrixRows,
-  resolveInitiativeForTemplate,
+  hoyBogota,
+  itemParaApi,
+  loadMatrixForDocentes,
+  responderError,
+  calcularMetricas,
+  toDateOnlyISO,
 } from "../services/matrizService.js";
+import { aplicarAccionDocente, registrarDesdeMatriz } from "../services/entregableWorkflowService.js";
 import { markNotificationsAsRead } from "../services/notificationService.js";
 
 const router = express.Router();
@@ -150,78 +154,67 @@ router.get("/:id/dashboard-stats", async (req, res) => {
   }
 
   try {
-    const items = await loadDocenteMatrixItems(docenteId);
-    const matrixStats = buildMatrixStats(items);
-    const total = matrixStats.resumen.total_entregables;
-    const completed = matrixStats.resumen.completados;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const vista = await loadDocenteMatrix(docenteId);
+    if (!vista) return res.status(404).json({ error: "Docente no encontrado" });
+    const { items, hoy, calendario } = vista;
+    const matrixStats = buildMatrixStats(items, { hoy, calendario });
+    const m = matrixStats.resumen;
 
     const byMonth = matrixStats.por_mes.map((row) => {
       const monthItems = items.filter((item) => item.mes === row.mes);
-      const active = monthItems.some((item) => {
-        if (!item.fecha_inicio_calculada || !item.fecha_fin_calculada) return false;
-        return (
-          new Date(`${item.fecha_inicio_calculada}T00:00:00`) <= today &&
-          new Date(`${item.fecha_fin_calculada}T23:59:59`) >= today
-        );
-      });
+      // Fechas YYYY-MM-DD comparadas como texto con el «hoy» institucional (Bogotá).
+      const active = monthItems.some(
+        (item) =>
+          item.fecha_inicio_calculada &&
+          item.fecha_fin_calculada &&
+          item.fecha_inicio_calculada <= hoy &&
+          item.fecha_fin_calculada >= hoy
+      );
       return {
         month: row.mes,
         total: row.total,
-        done: row.completados,
-        pct: row.porcentaje_mensual,
-        expectedPct: row.porcentaje_esperado,
+        done: row.reportados,
+        aprobados: row.aprobados,
+        pct: row.pct_reportado,
+        pct_aprobado: row.pct_aprobado,
+        expectedPct: row.pct_esperado,
         active,
       };
     });
     const byWeek = matrixStats.por_semana.map((row) => ({
       semana: row.semana_numero,
       total: row.total,
-      done: row.completados,
-      pct: row.porcentaje_acumulado,
-      expectedPct: row.porcentaje_esperado_acumulado,
+      done: row.reportados,
+      pct: row.acumulado_reportado_pct,
+      pct_aprobado: row.acumulado_aprobado_pct,
+      expectedPct: row.acumulado_esperado_pct,
     }));
 
-    const upcoming = items
-      .filter((item) => {
-        if (item.completado || !item.fecha_fin_calculada) return false;
-        const deadline = new Date(`${item.fecha_fin_calculada}T23:59:59`);
-        deadline.setHours(0, 0, 0, 0);
-        return deadline >= today;
-      })
-      .sort((a, b) =>
-        String(a.fecha_fin_calculada).localeCompare(String(b.fecha_fin_calculada))
-      )
-      .slice(0, 8)
-      .map((item) => ({
-        id: item.id,
-        iniciativa: item.iniciativa_titulo,
-        entregable: item.entregable,
-        fechaInicio: item.fecha_inicio_calculada,
-        fechaFin: item.fecha_fin_calculada,
-        semana: item.semana_numero,
-      }));
+    const porFecha = (a, b) =>
+      String(a.fecha_fin_calculada || "9999-12-31").localeCompare(String(b.fecha_fin_calculada || "9999-12-31"));
+    const accionables = items.filter((i) => i.clasificacion.requiere_accion_docente).sort(porFecha);
+    const vencidos = accionables.filter((i) => i.clasificacion.vencido);
+    const observados = items.filter((i) => i.clasificacion.estado === "observado").sort(porFecha);
+    const pendientes = accionables.filter((i) => !i.clasificacion.vencido && i.clasificacion.estado !== "observado");
+    const proximos = accionables.filter((i) => i.fecha_fin_calculada && i.fecha_fin_calculada >= hoy);
 
+    const resumenItem = (item) => ({
+      id: item.id,
+      entregable_id: item.entregable_id,
+      iniciativa: item.iniciativa_titulo,
+      entregable: item.entregable,
+      fechaInicio: item.fecha_inicio_calculada,
+      fechaFin: item.fecha_fin_calculada,
+      semana: item.semana_numero,
+      estado: item.clasificacion.estado,
+      vencido: item.clasificacion.vencido,
+      comentario_revision: item.comentario_revision,
+    });
+
+    const STATUS = { aprobado: ["approved", "Aprobado"], enviado: ["review", "En revisión"], observado: ["delayed", "Con observaciones"] };
     const activities = items.map((item) => {
-      const fin = item.fecha_fin_calculada
-        ? new Date(`${item.fecha_fin_calculada}T23:59:59`)
-        : null;
-      let status = "pending";
-      let statusLabel = "Pendiente";
-      if (item.completado && item.estado_revision === "aprobado") {
-        status = "approved";
-        statusLabel = "Aprobado";
-      } else if (item.completado && item.estado_revision === "observado") {
-        status = "delayed";
-        statusLabel = "Con observaciones";
-      } else if (item.completado) {
-        status = "review";
-        statusLabel = "En revisión";
-      } else if (fin && fin < today) {
-        status = "delayed";
-        statusLabel = "Retrasado";
-      }
+      const k = item.clasificacion;
+      const [status, statusLabel] = STATUS[k.estado] ?? (k.vencido ? ["delayed", "Retrasado"] : ["pending", "Pendiente"]);
       return {
         id: item.id,
         entregableId: item.entregable_id,
@@ -233,27 +226,42 @@ router.get("/:id/dashboard-stats", async (req, res) => {
         deadline: item.fecha_fin_calculada,
         status,
         statusLabel,
+        estado: k.estado,
+        vencido: k.vencido,
       };
     });
 
     res.json({
       stats: {
-        total,
-        completed,
-        pct: matrixStats.resumen.porcentaje_real,
-        expectedPct: matrixStats.resumen.porcentaje_esperado,
-        compliancePct: matrixStats.resumen.cumplimiento_esperado,
-        due: matrixStats.resumen.exigibles_a_fecha,
-        gap: matrixStats.resumen.brecha,
+        total: m.total,
+        completed: m.reportados,
+        pct: m.porcentaje_real,
+        expectedPct: m.porcentaje_esperado,
+        compliancePct: m.cumplimiento_esperado,
+        due: m.exigibles_a_fecha,
+        gap: m.brecha,
+        aprobados: m.aprobados,
+        approvedPct: m.pct_aprobado,
+      },
+      indicadores: m,
+      semana_actual: matrixStats.semana_actual,
+      conteos: {
+        pendientes: pendientes.length,
+        observados: observados.length,
+        vencidos: vencidos.length,
+        en_revision: m.enviados_pendientes_revision,
       },
       byMonth,
       byWeek,
-      upcoming,
+      upcoming: proximos.slice(0, 8).map(resumenItem),
+      proximo_entregable: proximos[0] ? resumenItem(proximos[0]) : null,
+      pendientes: pendientes.slice(0, 20).map(resumenItem),
+      observados: observados.slice(0, 20).map(resumenItem),
+      vencidos: vencidos.slice(0, 20).map(resumenItem),
       activities,
     });
   } catch (error) {
-    console.error("Error en /docente/:id/dashboard-stats", error);
-    res.status(500).json({ error: "Error interno" });
+    responderError(res, error, "Error en /docente/:id/dashboard-stats");
   }
 });
 
@@ -315,7 +323,7 @@ router.get("/:id/cronograma", async (req, res) => {
       [docenteId]
     );
 
-    const matrixItems = await loadDocenteMatrixItems(docenteId);
+    const matrixItems = ((await loadDocenteMatrix(docenteId))?.items ?? []).map(itemParaApi);
     const map = new Map();
     for (const row of result.rows) {
       if (!map.has(row.proyecto_id)) {
@@ -347,6 +355,10 @@ router.get("/:id/cronograma", async (req, res) => {
           enlace_referencia: item.enlace_referencia,
           fecha_inicio: item.fecha_inicio_calculada,
           fecha_fin: item.fecha_fin_calculada,
+          estado: item.estado,
+          vencido: item.vencido,
+          estado_revision: item.estado_revision,
+          comentario_revision: item.comentario_revision,
         }));
       const plannedTemplateIds = new Set(
         plannedDetails.map((item) => Number(item.plantillaId))
@@ -414,13 +426,14 @@ router.get("/:id/notificaciones", async (req, res) => {
           ) AS fecha_fin
         ) fechas
         WHERE fechas.fecha_fin IS NOT NULL
-          AND fechas.fecha_fin < CURRENT_DATE
+          AND fechas.fecha_fin < (NOW() AT TIME ZONE 'America/Bogota')::date
           AND NOT EXISTS (
             SELECT 1
             FROM proyecto_entregables pe
             WHERE pe.plantilla_id = tpl.id
               AND pe.docente_id = $1
               AND COALESCE(pe.completado, false) = true
+              AND pe.estado_revision IN ('enviado', 'aprobado')
           )
 
         UNION ALL
@@ -453,7 +466,7 @@ router.get("/:id/notificaciones", async (req, res) => {
         JOIN proyectos p ON p.id = ps.proyecto_id
         WHERE COALESCE(pe.docente_id, p.docente_responsable_id) = $1
           AND pe.estado_revision = 'aprobado'
-          AND pe.revisado_en >= (CURRENT_DATE - INTERVAL '7 days')
+          AND pe.revisado_en >= (((NOW() AT TIME ZONE 'America/Bogota')::date - 7)::timestamp AT TIME ZONE 'America/Bogota')
 
         UNION ALL
 
@@ -571,42 +584,8 @@ router.get("/:id/perfil", async (req, res) => {
     }
     const row = user.rows[0];
 
-    let totalPlantillas = 0;
-    if (row.grupo_matriz_id != null) {
-      const statsPlantilla = await pool.query(
-        `
-        SELECT COUNT(*)::int AS n
-        FROM plantilla_entregables
-        WHERE grupo_id = $1
-        `,
-        [row.grupo_matriz_id]
-      );
-      totalPlantillas = statsPlantilla.rows[0]?.n ?? 0;
-    }
-
-    const completadosQ = await pool.query(
-      `
-      SELECT COUNT(*)::int AS n
-      FROM proyecto_entregables e
-      JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-      JOIN proyectos p ON p.id = s.proyecto_id
-      WHERE COALESCE(e.completado, false) = true
-        AND (
-          e.docente_id = $1
-          OR (
-            e.docente_id IS NULL
-            AND (
-              p.docente_responsable_id = $1
-              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $1)
-            )
-          )
-        )
-      `,
-      [docenteId]
-    );
-    const completados = completadosQ.rows[0]?.n ?? 0;
-    const porcentajeAvance =
-      totalPlantillas > 0 ? Math.round((completados / totalPlantillas) * 100) : 0;
+    const vista = await loadDocenteMatrix(docenteId);
+    const m = calcularMetricas(vista?.items ?? [], vista?.hoy);
 
     res.json({
       id: row.id,
@@ -638,9 +617,15 @@ router.get("/:id/perfil", async (req, res) => {
             }
           : null,
       stats: {
-        total_plantillas: totalPlantillas,
-        completados,
-        porcentaje_avance: porcentajeAvance,
+        total_plantillas: m.total,
+        // completados = reportados (alias histórico); porcentaje_avance = % reportado.
+        completados: m.reportados,
+        porcentaje_avance: m.pct_reportado,
+        reportados: m.reportados,
+        aprobados: m.aprobados,
+        pct_aprobado: m.pct_aprobado,
+        pct_esperado: m.pct_esperado,
+        vencidos: m.vencidos,
       },
     });
   } catch (error) {
@@ -690,195 +675,26 @@ router.put("/:id/info-contacto", async (req, res) => {
   }
 });
 
-const MATRIZ_PLANTILLA_JOIN = `
-  FROM plantilla_entregables tpl
-  INNER JOIN grupos_matriz gm ON gm.id = tpl.grupo_id
-  INNER JOIN semestres sem ON sem.codigo = gm.semestre
-  INNER JOIN usuarios u
-    ON u.id = $1
-   AND u.rol = 'docente'
-   AND u.grupo_matriz_id = tpl.grupo_id
-  LEFT JOIN docente_entregable_excepciones dex
-    ON dex.docente_id = u.id
-   AND dex.plantilla_id = tpl.id
-  LEFT JOIN proyectos p_override ON p_override.id = dex.proyecto_id
-  LEFT JOIN LATERAL (
-    SELECT
-      e.id,
-      e.completado,
-      e.fecha_real_entrega,
-      e.fecha_cargue_evidencia,
-      e.url_evidencia,
-      e.estado_revision,
-      e.comentario_revision,
-      e.porcentaje_avance,
-      e.actividad_reportada,
-      e.horas,
-      p.id AS proyecto_id,
-      p.titulo AS proyecto_titulo,
-      p.tipo AS proyecto_tipo
-    FROM proyecto_entregables e
-    INNER JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-    INNER JOIN proyectos p ON p.id = s.proyecto_id
-    WHERE e.plantilla_id = tpl.id
-      AND e.docente_id = u.id
-      AND (
-        p.docente_responsable_id = u.id
-        OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = u.id)
-      )
-    ORDER BY e.id DESC
-    LIMIT 1
-  ) pe ON true
-`;
-
-const MATRIZ_ORDER = `
-  ORDER BY
-    COALESCE(
-      dex.fecha_inicio_override,
-      (sem.fecha_inicio + COALESCE(tpl.dias_inicio_desde_feb, 0) * INTERVAL '1 day')::date
-    ) NULLS LAST,
-    COALESCE(
-      dex.fecha_fin_override,
-      (sem.fecha_inicio + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date
-    ) NULLS LAST,
-    tpl.numero
-`;
-
-const mapCategorySlug = (categoria, fase) => {
-  const text = `${categoria || ""} ${fase || ""}`.toLowerCase();
-  if (text.includes("capacit")) return "capacitacion";
-  if (text.includes("conveni")) {
-    if (text.includes("nuevo")) return "convenio_nuevo";
-    if (text.includes("dinam")) return "convenio_dinamizado";
-    return "convenio_dinamizado";
-  }
-  if (text.includes("presup")) return "presupuesto";
-  if (text.includes("proyect")) return "proyecto";
-
-  const m = text.match(/actividad\s*(\d+)/i);
-  if (m) {
-    const n = Number(m[1]);
-    if (n >= 1 && n <= 4) return `actividad${n}`;
-  }
-  if (text.includes("actividad")) return "actividad1";
-  return "proyecto";
-};
-
-const toDateOnlyISO = (d) => {
-  if (d == null) return null;
-  const dt = d instanceof Date ? d : new Date(d);
-  if (isNaN(dt.getTime())) return null;
-  return dt.toISOString().slice(0, 10);
-};
-
-const round1 = (x) => Math.round(Number(x) * 10) / 10;
-
-async function loadDocenteMatrixItems(docenteId, db = pool) {
-  const [tplRes, initiatives] = await Promise.all([
-    db.query(
-      `
-      SELECT
-        tpl.id,
-        tpl.numero,
-        tpl.categoria AS categoria_raw,
-        tpl.fase AS fase_raw,
-        tpl.mes,
-        tpl.semana_numero,
-        sem.fecha_inicio AS semestre_fecha_inicio,
-        tpl.entregable,
-        tpl.descripcion_evidencia,
-        COALESCE(dex.entregable_override, tpl.entregable) AS entregable_effective,
-        COALESCE(
-          dex.descripcion_evidencia_override,
-          tpl.descripcion_evidencia
-        ) AS descripcion_evidencia_effective,
-        COALESCE(
-          dex.enlace_referencia_override,
-          tpl.enlace_referencia
-        ) AS enlace_referencia_effective,
-        COALESCE(pe.horas, tpl.horas) AS horas_effective,
-        COALESCE(
-          dex.fecha_inicio_override,
-          (sem.fecha_inicio + COALESCE(tpl.dias_inicio_desde_feb, 0) * INTERVAL '1 day')::date
-        ) AS fecha_inicio_calculada,
-        COALESCE(
-          dex.fecha_fin_override,
-          (sem.fecha_inicio + COALESCE(tpl.dias_fin_desde_feb, 0) * INTERVAL '1 day')::date
-        ) AS fecha_fin_calculada,
-        dex.id AS exception_id,
-        dex.motivo AS exception_reason,
-        dex.proyecto_id AS override_project_id,
-        p_override.titulo AS override_project_title,
-        p_override.tipo AS override_project_type,
-        pe.proyecto_id AS report_project_id,
-        pe.proyecto_titulo AS report_project_title,
-        pe.proyecto_tipo AS report_project_type,
-        pe.id AS entregable_id,
-        COALESCE(pe.completado, false) AS completado,
-        pe.fecha_real_entrega,
-        pe.fecha_cargue_evidencia,
-        pe.url_evidencia,
-        pe.estado_revision,
-        pe.comentario_revision,
-        pe.porcentaje_avance,
-        pe.actividad_reportada
-      ${MATRIZ_PLANTILLA_JOIN}
-      ${MATRIZ_ORDER}
-      `,
-      [docenteId]
-    ),
-    loadAssignedInitiatives(docenteId, db),
-  ]);
-
-  return mapMatrixRows(tplRes.rows, initiatives, mapCategorySlug);
+// Matriz del docente: calendario real del semestre (tabla semestres) y «hoy» en America/Bogota.
+async function loadDocenteMatrix(docenteId, db = pool) {
+  const hoy = hoyBogota();
+  const [entry] = await loadMatrixForDocentes(db, { docenteId, hoy });
+  return entry ? { ...entry, hoy } : null;
 }
 
-// Estadísticas agregadas (misma lógica de emparejamiento que GET .../matriz)
+// Estadísticas agregadas (mismas reglas que GET .../matriz)
 router.get("/:docenteId/matriz-stats", async (req, res) => {
   const docenteId = Number(req.params.docenteId);
   if (!docenteId) {
     return res.status(400).json({ error: "id de docente inválido" });
   }
 
-  const emptyPayload = () => ({
-    resumen: {
-      total_entregables: 0,
-      completados: 0,
-      porcentaje_semestral: 0,
-      porcentaje_real: 0,
-      porcentaje_esperado: 0,
-      cumplimiento_esperado: 100,
-      exigibles_a_fecha: 0,
-      completados_exigibles: 0,
-      brecha: 0,
-    },
-    por_mes: [],
-    por_semana: [],
-  });
-
   try {
-    const userRes = await pool.query(
-      `
-      SELECT grupo_matriz_id
-      FROM usuarios
-      WHERE id = $1 AND rol = 'docente'
-      `,
-      [docenteId]
-    );
-
-    if (userRes.rowCount === 0) {
-      return res.status(404).json({ error: "docente no encontrado" });
-    }
-
-    if (!userRes.rows[0].grupo_matriz_id) {
-      return res.json(emptyPayload());
-    }
-
-    const items = await loadDocenteMatrixItems(docenteId);
-    res.json(buildMatrixStats(items));
+    const vista = await loadDocenteMatrix(docenteId);
+    if (!vista) return res.status(404).json({ error: "docente no encontrado" });
+    res.json(buildMatrixStats(vista.items, { hoy: vista.hoy, calendario: vista.calendario }));
   } catch (error) {
-    console.error("Error en GET /docente/:docenteId/matriz-stats", error);
-    res.status(500).json({ error: "Error interno" });
+    responderError(res, error, "Error en GET /docente/:docenteId/matriz-stats");
   }
 });
 
@@ -890,223 +706,68 @@ router.get("/:docenteId/matriz", async (req, res) => {
   }
 
   try {
-    const userRes = await pool.query(
-      `
-      SELECT grupo_matriz_id
-      FROM usuarios
-      WHERE id = $1 AND rol = 'docente'
-      `,
-      [docenteId]
-    );
-
-    if (userRes.rowCount === 0) {
-      return res.status(404).json({ error: "docente no encontrado" });
-    }
-
-    if (!userRes.rows[0].grupo_matriz_id) {
-      return res.json({ items: [] });
-    }
-
-    const items = await loadDocenteMatrixItems(docenteId);
-    res.json({ items });
+    const vista = await loadDocenteMatrix(docenteId);
+    if (!vista) return res.status(404).json({ error: "docente no encontrado" });
+    const stats = buildMatrixStats(vista.items, { hoy: vista.hoy, calendario: vista.calendario });
+    res.json({
+      items: vista.items.map(itemParaApi),
+      resumen: stats.resumen,
+      semana_actual: stats.semana_actual,
+      hoy: vista.hoy,
+    });
   } catch (error) {
-    console.error("Error en GET /docente/:docenteId/matriz", error);
-    res.status(500).json({ error: "Error interno" });
+    responderError(res, error, "Error en GET /docente/:docenteId/matriz");
   }
 });
 
-// Marcar/desmarcar completado desde la matriz (crea proyecto_entregable si no existe)
-router.post(
-  "/:docenteId/matriz/:plantillaId/completar",
-  async (req, res) => {
-    const docenteId = Number(req.params.docenteId);
-    const plantillaId = Number(req.params.plantillaId);
-    const { completado, url_evidencia } = req.body || {};
+// Enviar / retirar un entregable desde la matriz (crea el reporte vinculado a la plantilla si no existe).
+// Las validaciones (evidencia, estados, iniciativa, duplicados) las aplica entregableWorkflowService.
+router.post("/:docenteId/matriz/:plantillaId/completar", async (req, res) => {
+  const docenteId = Number(req.params.docenteId);
+  const plantillaId = Number(req.params.plantillaId);
+  const body = req.body || {};
 
-    if (!docenteId || !plantillaId) {
-      return res.status(400).json({ error: "ids inválidos" });
-    }
-    if (typeof completado !== "boolean") {
-      return res.status(400).json({ error: "completado debe ser boolean" });
-    }
-
-    const client = await pool.connect();
-    try {
-
-      const tplR = await client.query(
-        `
-        SELECT
-          tpl.*,
-          tpl.categoria AS categoria_raw,
-          tpl.fase AS fase_raw,
-          COALESCE(dex.entregable_override, tpl.entregable) AS entregable_effective,
-          dex.proyecto_id AS override_project_id,
-          p_override.titulo AS override_project_title,
-          p_override.tipo AS override_project_type
-        FROM plantilla_entregables tpl
-        INNER JOIN usuarios u
-          ON u.id = $2 AND u.rol = 'docente' AND u.grupo_matriz_id = tpl.grupo_id
-        LEFT JOIN docente_entregable_excepciones dex
-          ON dex.docente_id = u.id AND dex.plantilla_id = tpl.id
-        LEFT JOIN proyectos p_override ON p_override.id = dex.proyecto_id
-        WHERE tpl.id = $1
-        `,
-        [plantillaId, docenteId]
-      );
-      if (tplR.rowCount === 0) {
-        return res.status(404).json({ error: "Plantilla no encontrada" });
-      }
-      const tpl = tplR.rows[0];
-      const entregableTexto = String(tpl.entregable_effective || tpl.entregable || "").trim();
-      const semanaNum = tpl.semana_numero != null ? Number(tpl.semana_numero) : null;
-      if (semanaNum == null || Number.isNaN(semanaNum)) {
-        return res.status(400).json({ error: "Plantilla sin semana_numero" });
-      }
-
-      const existing = await client.query(
-        `
-        SELECT pe.id FROM proyecto_entregables pe
-        INNER JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id
-        INNER JOIN proyectos p ON p.id = ps.proyecto_id
-        WHERE pe.plantilla_id = $1
-          AND pe.docente_id = $2
-          AND (
-            p.docente_responsable_id = $2
-            OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
-          )
-        ORDER BY pe.id DESC
-        LIMIT 1
-        `,
-        [plantillaId, docenteId]
-      );
-
-      let entregableId;
-
-      if (existing.rowCount > 0) {
-        entregableId = existing.rows[0].id;
-        const urlVal =
-          url_evidencia !== undefined && url_evidencia !== null
-            ? String(url_evidencia)
-            : null;
-
-        await client.query(
-          `
-          UPDATE proyecto_entregables
-          SET completado = $1,
-              fecha_completado = CASE
-                WHEN $1 THEN CURRENT_DATE
-                ELSE NULL
-              END,
-              fecha_real_entrega = CASE
-                WHEN $1 THEN CURRENT_DATE
-                ELSE NULL
-              END,
-              fecha_cargue_evidencia = CASE
-                WHEN $1 THEN CURRENT_TIMESTAMP
-                ELSE NULL
-              END,
-              url_evidencia = COALESCE($2, url_evidencia),
-              estado_revision = CASE
-                WHEN $1 THEN 'enviado'
-                WHEN estado_revision IN ('aprobado', 'observado') THEN estado_revision
-                ELSE 'borrador'
-              END
-          WHERE id = $3
-          `,
-          [completado, urlVal, entregableId]
-        );
-      } else {
-        const initiative = await resolveInitiativeForTemplate(docenteId, tpl, client);
-        if (!initiative.id) {
-          return res.status(422).json({
-            error:
-              "No tienes una iniciativa asignada. El administrador debe asignarla antes de reportar.",
-            semana_numero: semanaNum,
-          });
-        }
-        const semana = await client.query(
-          `
-          SELECT ps.id FROM proyecto_semanas ps
-          WHERE ps.numero = $1
-            AND ps.proyecto_id = $2
-          ORDER BY ps.id ASC
-          LIMIT 1
-          `,
-          [semanaNum, initiative.id]
-        );
-
-        if (semana.rowCount === 0) {
-          return res.status(422).json({
-            error: "No tienes una iniciativa asignada para esta semana",
-            semana_numero: semanaNum,
-          });
-        }
-
-        const ins = await client.query(
-          `
-          INSERT INTO proyecto_entregables (
-            proyecto_semana_id,
-            plantilla_id,
-            docente_id,
-            descripcion,
-            completado,
-            fecha_completado,
-            fecha_real_entrega,
-            fecha_cargue_evidencia,
-            url_evidencia,
-            estado_revision,
-            horas
-          )
-          VALUES (
-            $1,
-            $2,
-            $3,
-            $4,
-            $5,
-            CASE WHEN $5 THEN CURRENT_DATE ELSE NULL END,
-            CASE WHEN $5 THEN CURRENT_DATE ELSE NULL END,
-            CASE WHEN $5 THEN CURRENT_TIMESTAMP ELSE NULL END,
-            $6,
-            CASE WHEN $5 THEN 'enviado' ELSE 'borrador' END,
-            $7
-          )
-          RETURNING id, fecha_cargue_evidencia
-          `,
-          [
-            semana.rows[0].id,
-            plantillaId,
-            docenteId,
-            entregableTexto,
-            completado,
-            url_evidencia != null ? String(url_evidencia) : null,
-            tpl.horas != null ? Number(tpl.horas) : null,
-          ]
-        );
-        entregableId = ins.rows[0].id;
-      }
-
-      const saved = await client.query(
-        `SELECT fecha_real_entrega, fecha_cargue_evidencia
-         FROM proyecto_entregables WHERE id = $1`,
-        [entregableId]
-      );
-      res.json({
-        ok: true,
-        entregable_id: entregableId,
-        fecha_real_entrega: toDateOnlyISO(saved.rows[0]?.fecha_real_entrega),
-        fecha_cargue_evidencia: saved.rows[0]?.fecha_cargue_evidencia || null,
-      });
-    } catch (error) {
-      console.error(
-        "Error en POST /docente/:docenteId/matriz/:plantillaId/completar",
-        error
-      );
-      res.status(500).json({ error: "Error interno" });
-    } finally {
-      client.release();
-    }
+  if (!docenteId || !plantillaId) {
+    return res.status(400).json({ error: "ids inválidos" });
   }
-);
+  if (typeof body.completado !== "boolean") {
+    return res.status(400).json({ error: "completado debe ser boolean" });
+  }
+
+  const datos = {};
+  if (body.url_evidencia !== undefined && body.url_evidencia !== null) datos.url_evidencia = body.url_evidencia;
+  if (body.urls_evidencia !== undefined) datos.url_evidencia = body.urls_evidencia;
+  if (body.justificacion_exencion !== undefined) datos.exencion = body.justificacion_exencion;
+  // La fecha de entrega nunca se acepta desde el navegador: la registra el servidor.
+
+  try {
+    const proyectoId = body.proyecto_id != null ? Number(body.proyecto_id) : null;
+    if (proyectoId != null && (!Number.isInteger(proyectoId) || proyectoId <= 0)) {
+      return res.status(400).json({ error: "proyecto_id inválido" });
+    }
+    const out = await registrarDesdeMatriz(pool, {
+      docenteId,
+      actorId: Number(req.user?.id) || docenteId,
+      plantillaId,
+      completado: body.completado,
+      proyectoId,
+      datos,
+    });
+    const saved = out.entregable_id
+      ? await pool.query(
+          `SELECT fecha_real_entrega, fecha_cargue_evidencia FROM proyecto_entregables WHERE id = $1`,
+          [out.entregable_id]
+        )
+      : { rows: [] };
+    res.json({
+      ...out,
+      fecha_real_entrega: toDateOnlyISO(saved.rows[0]?.fecha_real_entrega),
+      fecha_cargue_evidencia: saved.rows[0]?.fecha_cargue_evidencia || null,
+    });
+  } catch (error) {
+    responderError(res, error, "Error en POST /docente/:docenteId/matriz/:plantillaId/completar");
+  }
+});
 
 // Historial de reportes para docente (estado_revision + comentario admin)
 router.get("/:id/reportes", async (req, res) => {
@@ -1269,99 +930,50 @@ router.get("/:docenteId/iniciativas/:proyectoId", async (req, res) => {
   }
 });
 
-// PATCH borrador: guarda texto y evidencias sin marcar como enviado
+// Docente dueño del entregable: el docente autenticado; un administrador actúa sobre el dueño registrado.
+async function docenteDelEntregable(req, entregableId) {
+  if (req.user?.rol !== "admin") return Number(req.user.id);
+  const bodyId = Number(req.body?.docente_id);
+  if (Number.isInteger(bodyId) && bodyId > 0) return bodyId;
+  const r = await pool.query(
+    `SELECT COALESCE(e.docente_id, p.docente_responsable_id) AS docente_id
+     FROM proyecto_entregables e
+     JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
+     JOIN proyectos p ON p.id = s.proyecto_id
+     WHERE e.id = $1`,
+    [entregableId]
+  );
+  return r.rows[0]?.docente_id != null ? Number(r.rows[0].docente_id) : null;
+}
+
+// PATCH borrador: guarda texto y evidencias sin enviar a revisión (un observado conserva su estado).
 router.patch("/entregables/:entregableId/borrador", async (req, res) => {
   const entregableId = Number(req.params.entregableId);
   if (!entregableId) {
     return res.status(400).json({ error: "id de entregable inválido" });
   }
-  const {
-    actividad_reportada,
-    descripcion_reporte,
-    porcentaje_avance,
-    urls_evidencia,
-    docente_id,
-  } = req.body || {};
-  const docenteIdNum = docente_id != null ? Number(docente_id) : null;
-  if (!docenteIdNum || Number.isNaN(docenteIdNum)) {
-    return res.status(400).json({ error: "docente_id es obligatorio" });
-  }
+  const b = req.body || {};
+  const datos = {
+    actividad_reportada: b.actividad_reportada != null ? String(b.actividad_reportada) : null,
+    descripcion_reporte: b.descripcion_reporte != null ? String(b.descripcion_reporte) : null,
+    porcentaje_avance: b.porcentaje_avance,
+  };
+  if (Object.prototype.hasOwnProperty.call(b, "urls_evidencia")) datos.url_evidencia = b.urls_evidencia;
+  if (b.justificacion_exencion !== undefined) datos.exencion = b.justificacion_exencion;
 
-  let urlStored = null;
-  if (Array.isArray(urls_evidencia)) {
-    const filtered = urls_evidencia.map((u) => String(u || "").trim()).filter(Boolean);
-    urlStored = filtered.length ? JSON.stringify(filtered) : null;
-  } else if (urls_evidencia != null && urls_evidencia !== "") {
-    urlStored = String(urls_evidencia);
-  }
-
-  const pct =
-    porcentaje_avance != null && !Number.isNaN(Number(porcentaje_avance))
-      ? Number(porcentaje_avance)
-      : null;
-
-  const client = await pool.connect();
   try {
-    const perm = await client.query(
-      `
-      SELECT 1
-      FROM proyecto_entregables e
-      JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-      JOIN proyectos p ON p.id = s.proyecto_id
-      WHERE e.id = $1
-        AND (
-          e.docente_id = $2
-          OR (
-            e.docente_id IS NULL
-            AND (
-              p.docente_responsable_id = $2
-              OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
-            )
-          )
-        )
-      `,
-      [entregableId, docenteIdNum]
-    );
-    if (perm.rowCount === 0) {
-      return res
-        .status(403)
-        .json({ error: "No tienes permiso para editar este entregable" });
-    }
-
-    const hasUrls = Object.prototype.hasOwnProperty.call(req.body || {}, "urls_evidencia");
-    const upd = await client.query(
-      `
-      UPDATE proyecto_entregables
-      SET actividad_reportada = $1,
-          descripcion_reporte = $2,
-          porcentaje_avance   = COALESCE($3, porcentaje_avance),
-          url_evidencia       = CASE WHEN $5 THEN $4 ELSE url_evidencia END,
-          estado_revision     = 'borrador',
-          completado          = false,
-          fecha_completado    = NULL,
-          fecha_real_entrega  = NULL,
-          fecha_cargue_evidencia = NULL
-      WHERE id = $6
-      RETURNING id
-      `,
-      [
-        actividad_reportada != null ? String(actividad_reportada) : null,
-        descripcion_reporte != null ? String(descripcion_reporte) : null,
-        pct,
-        urlStored,
-        hasUrls,
-        entregableId,
-      ]
-    );
-    if (upd.rowCount === 0) {
-      return res.status(404).json({ error: "Entregable no encontrado" });
-    }
-    res.json({ id: upd.rows[0].id });
+    const docenteId = await docenteDelEntregable(req, entregableId);
+    if (!docenteId) return res.status(400).json({ error: "docente_id es obligatorio" });
+    const out = await aplicarAccionDocente(pool, {
+      docenteId,
+      actorId: Number(req.user.id),
+      entregableId,
+      accion: "guardar_borrador",
+      datos,
+    });
+    res.json(out);
   } catch (error) {
-    console.error("Error en PATCH /docente/entregables/:id/borrador", error);
-    res.status(500).json({ error: "Error interno" });
-  } finally {
-    client.release();
+    responderError(res, error, "Error en PATCH /docente/entregables/:id/borrador");
   }
 });
 
@@ -1374,7 +986,7 @@ router.patch("/entregables/:entregableId/fecha-entrega", (_req, res) => {
   });
 });
 
-// Reenviar reporte observado para revisión (docente)
+// Reenviar reporte observado (ya corregido) para revisión; repetir la petición no duplica el envío.
 router.post("/:docenteId/entregables/:entregableId/reenviar", async (req, res) => {
   const entregableId = Number(req.params.entregableId);
   const docenteId = Number(req.params.docenteId);
@@ -1387,165 +999,57 @@ router.post("/:docenteId/entregables/:entregableId/reenviar", async (req, res) =
   }
 
   try {
-    const check = await pool.query(
-      `
-      SELECT
-        e.id,
-        COALESCE(e.estado_revision, 'enviado') AS estado_revision,
-        p.docente_responsable_id,
-        pd.docente_id AS colaborador_id
-      FROM proyecto_entregables e
-      INNER JOIN proyecto_semanas ps ON ps.id = e.proyecto_semana_id
-      INNER JOIN proyectos p ON p.id = ps.proyecto_id
-      LEFT JOIN proyecto_docentes pd
-        ON pd.proyecto_id = p.id AND pd.docente_id = $2
-      WHERE e.id = $1
-        AND (e.docente_id = $2 OR e.docente_id IS NULL)
-      `,
-      [entregableId, docenteId]
-    );
-
-    if (check.rowCount === 0) {
-      return res.status(404).json({ error: "Reporte no encontrado" });
-    }
-
-    const row = check.rows[0];
-    const docenteResp = Number(row.docente_responsable_id);
-    const colaboradorId = row.colaborador_id != null ? Number(row.colaborador_id) : null;
-
-    if (docenteResp !== docenteId && colaboradorId !== docenteId) {
-      return res
-        .status(403)
-        .json({ error: "No tienes permiso para reenviar este reporte" });
-    }
-
-    if (row.estado_revision !== "observado") {
-      return res.status(400).json({
-        error: `Solo puedes reenviar reportes con estado 'observado'. Estado actual: ${row.estado_revision}`,
-      });
-    }
-
-    await pool.query(
-      `
-      UPDATE proyecto_entregables
-      SET estado_revision = 'enviado',
-          comentario_revision = NULL,
-          revisado_en = NULL,
-          completado = true,
-          fecha_completado = CURRENT_DATE,
-          fecha_real_entrega = CURRENT_DATE,
-          fecha_cargue_evidencia = CURRENT_TIMESTAMP,
-          docente_id = COALESCE(docente_id, $2)
-      WHERE id = $1
-      `,
-      [entregableId, docenteId]
-    );
-
-    res.json({ ok: true, mensaje: "Reporte reenviado para revisión" });
+    const out = await aplicarAccionDocente(pool, {
+      docenteId,
+      actorId: Number(req.user.id),
+      entregableId,
+      accion: "enviar",
+      datos: {},
+      soloDesde: "observado",
+    });
+    res.json({ ok: true, estado: out.estado, mensaje: "Reporte reenviado para revisión" });
   } catch (error) {
-    console.error(
-      "Error en POST /docente/:docenteId/entregables/:entregableId/reenviar",
-      error
-    );
-    res.status(500).json({ error: "Error interno" });
+    responderError(res, error, "Error en POST /docente/:docenteId/entregables/:entregableId/reenviar");
   }
 });
 
-// PUT /docente/entregables/:entregableId
+// PUT /docente/entregables/:entregableId — enviar (completado=true) o retirar (completado=false) un reporte.
 router.put("/entregables/:entregableId", async (req, res) => {
   const entregableId = Number(req.params.entregableId);
   if (!entregableId) {
     return res.status(400).json({ error: "id de entregable inválido" });
   }
-  const {
-    completado,
-    url_evidencia,
-    docente_id,
-    actividad_reportada,
-    descripcion_reporte,
-    porcentaje_avance,
-  } = req.body || {};
-  const docenteIdNum = docente_id != null ? Number(docente_id) : null;
-  if (docenteIdNum != null && Number.isNaN(docenteIdNum)) {
-    return res.status(400).json({ error: "docente_id inválido" });
-  }
-  const client = await pool.connect();
-  try {
-    if (docenteIdNum != null) {
-      const perm = await client.query(
-        `
-        SELECT 1
-        FROM proyecto_entregables e
-        JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-        JOIN proyectos p ON p.id = s.proyecto_id
-        WHERE e.id = $1
-          AND (
-            e.docente_id = $2
-            OR (
-              e.docente_id IS NULL
-              AND (
-                p.docente_responsable_id = $2
-                OR p.id IN (SELECT proyecto_id FROM proyecto_docentes WHERE docente_id = $2)
-              )
-            )
-          )
-        `,
-        [entregableId, docenteIdNum]
-      );
-      if (perm.rowCount === 0) {
-        return res
-          .status(403)
-          .json({ error: "No tienes permiso para reportar este entregable" });
-      }
-    }
+  const b = req.body || {};
+  const datos = {};
+  if (b.url_evidencia !== undefined) datos.url_evidencia = b.url_evidencia;
+  if (b.urls_evidencia !== undefined) datos.url_evidencia = b.urls_evidencia;
+  if (b.actividad_reportada !== undefined) datos.actividad_reportada = b.actividad_reportada;
+  if (b.descripcion_reporte !== undefined) datos.descripcion_reporte = b.descripcion_reporte;
+  if (b.porcentaje_avance !== undefined) datos.porcentaje_avance = b.porcentaje_avance;
+  if (b.justificacion_exencion !== undefined) datos.exencion = b.justificacion_exencion;
 
-    const updated = await client.query(
-      `UPDATE proyecto_entregables
-       SET completado         = $1,
-           fecha_completado   = CASE WHEN $1 = true THEN CURRENT_DATE ELSE NULL END,
-           fecha_real_entrega = CASE WHEN $1 = true THEN CURRENT_DATE ELSE NULL END,
-           fecha_cargue_evidencia = CASE
-                                      WHEN $1 = true THEN CURRENT_TIMESTAMP
-                                      ELSE NULL
-                                    END,
-           url_evidencia      = $2,
-           actividad_reportada = $3,
-           descripcion_reporte = $4,
-           porcentaje_avance  = $5,
-           estado_revision    = CASE
-                                WHEN $1 = true THEN
-                                  CASE
-                                    WHEN COALESCE(estado_revision, 'enviado') = 'observado' THEN 'observado'
-                                    ELSE 'enviado'
-                                  END
-                                ELSE COALESCE(estado_revision, 'enviado')
-                              END
-       WHERE id = $6
-       RETURNING fecha_real_entrega, fecha_cargue_evidencia`,
-      [
-        completado === true,
-        url_evidencia || null,
-        actividad_reportada || null,
-        descripcion_reporte || null,
-        porcentaje_avance != null && !Number.isNaN(Number(porcentaje_avance))
-          ? Number(porcentaje_avance)
-          : null,
-        entregableId,
-      ]
+  try {
+    const docenteId = await docenteDelEntregable(req, entregableId);
+    if (!docenteId) return res.status(404).json({ error: "Entregable no encontrado" });
+    const out = await aplicarAccionDocente(pool, {
+      docenteId,
+      actorId: Number(req.user.id),
+      entregableId,
+      accion: b.completado === true ? "enviar" : "retirar",
+      datos,
+    });
+    const saved = await pool.query(
+      `SELECT fecha_real_entrega, fecha_cargue_evidencia FROM proyecto_entregables WHERE id = $1`,
+      [entregableId]
     );
-    if (updated.rowCount === 0) {
-      return res.status(404).json({ error: "Entregable no encontrado" });
-    }
     res.json({
       ok: true,
-      fecha_real_entrega: toDateOnlyISO(updated.rows[0].fecha_real_entrega),
-      fecha_cargue_evidencia: updated.rows[0].fecha_cargue_evidencia,
+      ...out,
+      fecha_real_entrega: toDateOnlyISO(saved.rows[0]?.fecha_real_entrega),
+      fecha_cargue_evidencia: saved.rows[0]?.fecha_cargue_evidencia || null,
     });
   } catch (error) {
-    console.error("Error en PUT /docente/entregables/:entregableId", error);
-    res.status(500).json({ error: "Error interno" });
-  } finally {
-    client.release();
+    responderError(res, error, "Error en PUT /docente/entregables/:entregableId");
   }
 });
 

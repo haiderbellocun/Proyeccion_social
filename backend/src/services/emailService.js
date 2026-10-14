@@ -210,13 +210,14 @@ export async function enqueueDailyDigests(db = pool, now = new Date()) {
         AND COALESCE(
           dex.fecha_fin_override,
           (sem.fecha_inicio + tpl.dias_fin_desde_feb::integer * INTERVAL '1 day')::date
-        ) < CURRENT_DATE
+        ) < (NOW() AT TIME ZONE 'America/Bogota')::date
         AND NOT EXISTS (
           SELECT 1
           FROM proyecto_entregables pe
           WHERE pe.plantilla_id = tpl.id
             AND pe.docente_id = u.id
             AND COALESCE(pe.completado, false) = true
+            AND pe.estado_revision IN ('enviado', 'aprobado')
         )
       GROUP BY u.id
     )

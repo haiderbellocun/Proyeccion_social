@@ -9,19 +9,6 @@ import { formatDateOnly } from "../lib/date";
 
 const API_BASE_URL = API_BASE;
 
-function getViernesActual(): string {
-  const hoy = new Date();
-  const diaSemana = hoy.getDay();
-  const diasHastaViernes = (5 - diaSemana + 7) % 7;
-  const viernes = new Date(hoy);
-  viernes.setDate(hoy.getDate() + diasHastaViernes);
-  return viernes.toLocaleDateString("es-CO", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-  });
-}
-
 type ReportWeek = {
   id: number;
   numero: number;
@@ -88,6 +75,8 @@ export default function ReportProgress() {
 
   const [actividadRealizada, setActividadRealizada] = useState("");
   const [descripcionReporte, setDescripcionReporte] = useState("");
+  // Excepción: solo cuando el entregable no tiene evidencia que cargar (queda registrada y la revisa el administrador).
+  const [justificacionSinEvidencia, setJustificacionSinEvidencia] = useState("");
 
   const getDocenteIdFromStorage = (): number | null => {
     return currentUser?.id ?? null;
@@ -202,7 +191,10 @@ export default function ReportProgress() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ completado: false }),
+        body: JSON.stringify({
+          completado: false,
+          ...(typeof selectedProjectId === "number" ? { proyecto_id: selectedProjectId } : {}),
+        }),
       }
     );
     const data = await response.json().catch(() => ({}));
@@ -263,7 +255,9 @@ export default function ReportProgress() {
             descripcion_reporte: descripcionPayload,
             porcentaje_avance: Math.round(progress),
             urls_evidencia: links,
-            docente_id: docenteId,
+            ...(links.length === 0 && justificacionSinEvidencia.trim()
+              ? { justificacion_exencion: justificacionSinEvidencia.trim() }
+              : {}),
           }),
         })
       );
@@ -302,7 +296,7 @@ export default function ReportProgress() {
       const actividadPayload = actividadRealizada.trim() || null;
       const descripcionPayload = descripcionReporte.trim() || null;
       setSending(true);
-      const evidenceUrl = links[0] || null;
+      // La fecha de entrega y el primer envío los fija el servidor (hora de Bogotá).
 
       const entregablesToSend = await resolveEntregablesDetalle();
 
@@ -317,8 +311,10 @@ export default function ReportProgress() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             completado: true,
-            url_evidencia: evidenceUrl,
-            docente_id: docenteId,
+            urls_evidencia: links,
+            ...(links.length === 0 && justificacionSinEvidencia.trim()
+              ? { justificacion_exencion: justificacionSinEvidencia.trim() }
+              : {}),
             actividad_reportada: actividadPayload,
             descripcion_reporte: descripcionPayload,
             porcentaje_avance: Math.round(progress),
@@ -572,6 +568,20 @@ export default function ReportProgress() {
                   Agregar
                 </button>
               </div>
+              {links.length === 0 && (
+                <div className="mt-3">
+                  <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 500 }}>
+                    ¿No aplica evidencia? Justifícalo (mínimo 10 caracteres); el administrador lo revisará
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={justificacionSinEvidencia}
+                    onChange={(e) => setJustificacionSinEvidencia(e.target.value)}
+                    placeholder="Solo si el entregable no tiene evidencia que cargar"
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50 resize-none"
+                  />
+                </div>
+              )}
               {links.length > 0 && (
                 <div className="mt-2 space-y-1">
                   {links.map((l, i) => (
@@ -656,8 +666,11 @@ export default function ReportProgress() {
           <div className="bg-blue-50 rounded-xl border border-blue-100 p-4">
             <p className="text-[#1e3a8a] text-sm" style={{ fontWeight: 600 }}>Recordatorio</p>
             <p className="text-blue-700 text-xs mt-1">
-              El reporte semanal debe enviarse antes del <strong>{getViernesActual()}</strong> a las
-              23:59 hrs.
+              {selectedWeek ? (
+                <>La fecha límite de la semana {selectedWeek.numero} es el <strong>{formatDateOnly(selectedWeek.fechaFin)}</strong>.</>
+              ) : (
+                "Selecciona una semana para ver su fecha límite."
+              )}
             </p>
           </div>
         </div>

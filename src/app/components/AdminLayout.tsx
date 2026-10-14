@@ -13,6 +13,7 @@ import {
   Menu,
   X,
   Shield,
+  FileSpreadsheet,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useCurrentSemester, useCurrentUser } from "../hooks/useCurrentUser";
@@ -38,6 +39,7 @@ const navItems = [
   { to: "/admin/reportes", label: "Reportes y Métricas", icon: BarChart3 },
   { to: "/admin/avance", label: "Avance Consolidado", icon: BarChart2 },
   { to: "/admin/indicadores", label: "Indicadores", icon: Target },
+  { to: "/admin/importar-matriz", label: "Importar matriz Excel", icon: FileSpreadsheet },
   { to: "/admin/sistema", label: "Administración", icon: Settings },
 ];
 
