@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { Edit2, Plus, Trash2, X } from "lucide-react";
+import { Building2, GraduationCap, Pencil, Plus, Trash2 } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../components/ui/dialog";
+import { EmptyState, InlineAlert, PageLoading, Panel } from "../../components/ds/primitives";
 import { AppSelect } from "../../components/AppSelect";
 import { useConfirmationDialog } from "../../components/ConfirmationDialog";
 import { API_BASE, apiFetch as fetch } from "../../config/api";
@@ -39,6 +41,7 @@ export default function ProgramManagement() {
   const [programas, setProgramas] = useState<Programa[]>([]);
   const [escuelas, setEscuelas] = useState<Escuela[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [editing, setEditing] = useState<Programa | null>(null);
   const [form, setForm] = useState<ProgramaForm>(emptyPrograma);
   const [showModal, setShowModal] = useState(false);
@@ -54,6 +57,7 @@ export default function ProgramManagement() {
   const loadAll = async () => {
     try {
       setLoading(true);
+      setLoadError(false);
       const [progRes, escRes] = await Promise.all([
         fetch(`${API_BASE}/admin/programas`),
         fetch(`${API_BASE}/admin/escuelas`),
@@ -66,6 +70,7 @@ export default function ProgramManagement() {
     } catch {
       setProgramas([]);
       setEscuelas([]);
+      setLoadError(true);
       notify.error("No se pudo cargar el catálogo de escuelas y programas.");
     } finally {
       setLoading(false);
@@ -233,299 +238,260 @@ export default function ProgramManagement() {
     }
   };
 
-  return (
-    <div className="space-y-6">
-      <div className="space-y-4">
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <h2 className="text-gray-900 text-base" style={{ fontWeight: 700 }}>
-              Escuelas
-            </h2>
-            <p className="text-gray-500 text-xs mt-0.5">
-              Entidad institucional; los programas pertenecen a una escuela
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={openNewEscuela}
-            className="flex items-center gap-2 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white px-4 py-2 rounded-lg text-sm shadow-sm"
-            style={{ fontWeight: 600 }}
-          >
-            <Plus className="w-4 h-4" /> Nueva escuela
-          </button>
-        </div>
+  const iconBtn = "ds-btn ds-btn-ghost ds-btn-sm !px-1.5";
+  const modalClass = "gap-0 rounded-xl border-line bg-surface p-0 sm:max-w-md";
 
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-          {loading && <p className="p-4 text-sm text-gray-400">Cargando…</p>}
-          {!loading && escuelas.length === 0 && (
-            <div className="p-8 text-center">
-              <p className="text-sm text-gray-600">Aún no hay escuelas registradas.</p>
-              <p className="text-xs text-gray-400 mt-1">Crea primero las escuelas reales de la institución.</p>
-            </div>
-          )}
-          {!loading && escuelas.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                    <th className="text-left px-4 py-3">Código</th>
-                    <th className="text-left px-4 py-3">Escuela</th>
-                    <th className="text-left px-4 py-3">Programas</th>
-                    <th className="text-right px-4 py-3">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-50">
-                  {escuelas.map((escuela) => (
-                    <tr key={escuela.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 text-gray-600">{escuela.codigo || "—"}</td>
-                      <td className="px-4 py-3 text-gray-800" style={{ fontWeight: 600 }}>
-                        {escuela.nombre}
-                      </td>
-                      <td className="px-4 py-3 text-gray-600">{escuela.num_programas ?? 0}</td>
-                      <td className="px-4 py-3 text-right space-x-2">
-                        <button
-                          type="button"
-                          onClick={() => openEditEscuela(escuela)}
-                          className="text-[#1d4ed8] hover:text-[#1e3a8a] inline-flex"
-                          aria-label={`Editar ${escuela.nombre}`}
-                        >
-                          <Edit2 className="w-4 h-4" />
+  const retryAlert = loadError && (
+    <InlineAlert
+      action={
+        <button type="button" className="ds-btn ds-btn-secondary ds-btn-sm" onClick={() => void loadAll()}>
+          Reintentar
+        </button>
+      }
+    >
+      No se pudo cargar el catálogo de escuelas y programas.
+    </InlineAlert>
+  );
+
+  return (
+    <div className="space-y-5">
+      {retryAlert}
+
+      <Panel
+        title="Escuelas"
+        description="Entidad institucional; los programas pertenecen a una escuela."
+        action={
+          <button type="button" onClick={openNewEscuela} className="ds-btn ds-btn-primary ds-btn-sm">
+            <Plus className="h-4 w-4" aria-hidden /> Nueva escuela
+          </button>
+        }
+        bodyClassName=""
+      >
+        {loading && <PageLoading label="Cargando escuelas…" />}
+        {!loading && !loadError && escuelas.length === 0 && (
+          <EmptyState
+            icon={Building2}
+            title="Aún no hay escuelas registradas"
+            action={
+              <button type="button" onClick={openNewEscuela} className="ds-btn ds-btn-primary ds-btn-sm">
+                <Plus className="h-4 w-4" aria-hidden /> Crear escuela
+              </button>
+            }
+          >
+            Crea primero las escuelas reales de la institución.
+          </EmptyState>
+        )}
+        {!loading && escuelas.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="ds-table">
+              <thead>
+                <tr>
+                  <th>Código</th>
+                  <th>Escuela</th>
+                  <th className="text-right">Programas</th>
+                  <th className="text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {escuelas.map((escuela) => (
+                  <tr key={escuela.id}>
+                    <td className="text-text-muted">{escuela.codigo || "—"}</td>
+                    <td style={{ fontWeight: 600 }}>{escuela.nombre}</td>
+                    <td className="text-right">{escuela.num_programas ?? 0}</td>
+                    <td>
+                      <div className="flex items-center justify-end gap-1">
+                        <button type="button" onClick={() => openEditEscuela(escuela)} className={iconBtn} aria-label={`Editar ${escuela.nombre}`}>
+                          <Pencil className="h-4 w-4" aria-hidden />
                         </button>
                         <button
                           type="button"
                           onClick={() => void deleteEscuela(escuela)}
                           disabled={deletingEscuelaId === escuela.id}
-                          className="text-gray-400 hover:text-red-600 inline-flex disabled:opacity-40"
+                          className={`${iconBtn} hover:!text-red-700`}
                           aria-label={`Eliminar ${escuela.nombre}`}
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Trash2 className="h-4 w-4" aria-hidden />
                         </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="space-y-4">
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <h2 className="text-gray-900 text-base" style={{ fontWeight: 700 }}>
-              Programas
-            </h2>
-            <p className="text-gray-500 text-xs mt-0.5">
-              Cada programa debe estar vinculado a una escuela existente
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={openNew}
-            disabled={escuelas.length === 0}
-            className="flex items-center gap-2 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white px-4 py-2 rounded-lg text-sm shadow-sm disabled:opacity-50"
-            style={{ fontWeight: 600 }}
-          >
-            <Plus className="w-4 h-4" /> Nuevo programa
-          </button>
-        </div>
-
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-          {loading && <p className="p-4 text-sm text-gray-400">Cargando programas…</p>}
-          {!loading && programas.length === 0 && (
-            <div className="p-8 text-center">
-              <p className="text-sm text-gray-600">Aún no hay programas registrados.</p>
-              <p className="text-xs text-gray-400 mt-1">
-                {escuelas.length === 0
-                  ? "Primero crea al menos una escuela."
-                  : "Agrega únicamente los programas institucionales reales."}
-              </p>
-            </div>
-          )}
-          {!loading && programas.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                    <th className="text-left px-4 py-3">Código</th>
-                    <th className="text-left px-4 py-3">Programa</th>
-                    <th className="text-left px-4 py-3">Escuela</th>
-                    <th className="text-right px-4 py-3">Acciones</th>
+                      </div>
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-50">
-                  {programas.map((programa) => (
-                    <tr key={programa.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 text-gray-600">{programa.codigo || "—"}</td>
-                      <td className="px-4 py-3 text-gray-800" style={{ fontWeight: 600 }}>
-                        {programa.nombre}
-                      </td>
-                      <td className="px-4 py-3 text-gray-600">{programa.escuela}</td>
-                      <td className="px-4 py-3 text-right space-x-2">
-                        <button
-                          type="button"
-                          onClick={() => openEdit(programa)}
-                          className="text-[#1d4ed8] hover:text-[#1e3a8a] inline-flex"
-                          aria-label={`Editar ${programa.nombre}`}
-                        >
-                          <Edit2 className="w-4 h-4" />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      <Panel
+        title="Programas"
+        description="Cada programa debe estar vinculado a una escuela existente."
+        action={
+          <button type="button" onClick={openNew} disabled={escuelas.length === 0} className="ds-btn ds-btn-primary ds-btn-sm">
+            <Plus className="h-4 w-4" aria-hidden /> Nuevo programa
+          </button>
+        }
+        bodyClassName=""
+      >
+        {loading && <PageLoading label="Cargando programas…" />}
+        {!loading && !loadError && programas.length === 0 && (
+          <EmptyState
+            icon={GraduationCap}
+            title="Aún no hay programas registrados"
+            action={
+              escuelas.length > 0 ? (
+                <button type="button" onClick={openNew} className="ds-btn ds-btn-primary ds-btn-sm">
+                  <Plus className="h-4 w-4" aria-hidden /> Crear programa
+                </button>
+              ) : undefined
+            }
+          >
+            {escuelas.length === 0
+              ? "Primero crea al menos una escuela."
+              : "Agrega únicamente los programas institucionales reales."}
+          </EmptyState>
+        )}
+        {!loading && programas.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="ds-table">
+              <thead>
+                <tr>
+                  <th>Código</th>
+                  <th>Programa</th>
+                  <th className="hidden sm:table-cell">Escuela</th>
+                  <th className="text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {programas.map((programa) => (
+                  <tr key={programa.id}>
+                    <td className="text-text-muted">{programa.codigo || "—"}</td>
+                    <td>
+                      <span style={{ fontWeight: 600 }}>{programa.nombre}</span>
+                      <span className="block text-xs text-text-subtle sm:hidden">{programa.escuela}</span>
+                    </td>
+                    <td className="hidden text-text-muted sm:table-cell">{programa.escuela}</td>
+                    <td>
+                      <div className="flex items-center justify-end gap-1">
+                        <button type="button" onClick={() => openEdit(programa)} className={iconBtn} aria-label={`Editar ${programa.nombre}`}>
+                          <Pencil className="h-4 w-4" aria-hidden />
                         </button>
                         <button
                           type="button"
                           onClick={() => void deletePrograma(programa)}
                           disabled={deletingId === programa.id}
-                          className="text-gray-400 hover:text-red-600 inline-flex disabled:opacity-40"
+                          className={`${iconBtn} hover:!text-red-700`}
                           aria-label={`Eliminar ${programa.nombre}`}
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Trash2 className="h-4 w-4" aria-hidden />
                         </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </div>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
 
-      {showEscuelaModal && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <h3 className="text-gray-800">{editingEscuela ? "Editar escuela" : "Nueva escuela"}</h3>
-              <button
-                type="button"
-                onClick={() => setShowEscuelaModal(false)}
-                className="text-gray-400 hover:text-gray-600"
-                aria-label="Cerrar"
-              >
-                <X className="w-5 h-5" />
-              </button>
+      <Dialog open={showEscuelaModal} onOpenChange={(open) => !savingEscuela && setShowEscuelaModal(open)}>
+        <DialogContent className={modalClass}>
+          <DialogHeader className="border-b border-line px-5 py-4">
+            <DialogTitle className="text-base">{editingEscuela ? "Editar escuela" : "Nueva escuela"}</DialogTitle>
+            <DialogDescription className="text-xs text-text-subtle">Los programas se vinculan a una escuela.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 p-5">
+            <div>
+              <label htmlFor="esc-codigo" className="ds-label">Código</label>
+              <input
+                id="esc-codigo"
+                type="text"
+                maxLength={50}
+                value={escuelaForm.codigo}
+                onChange={(event) => setEscuelaForm((current) => ({ ...current, codigo: event.target.value }))}
+                className="ds-input"
+                placeholder="Opcional"
+              />
             </div>
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">Código</label>
-                <input
-                  type="text"
-                  maxLength={50}
-                  value={escuelaForm.codigo}
-                  onChange={(event) =>
-                    setEscuelaForm((current) => ({ ...current, codigo: event.target.value }))
-                  }
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-                  placeholder="Opcional"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">Nombre *</label>
-                <input
-                  type="text"
-                  maxLength={200}
-                  value={escuelaForm.nombre}
-                  onChange={(event) =>
-                    setEscuelaForm((current) => ({ ...current, nombre: event.target.value }))
-                  }
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-                  placeholder="Nombre institucional de la escuela"
-                />
-              </div>
-            </div>
-            <div className="flex gap-3 px-6 pb-6">
-              <button
-                type="button"
-                onClick={() => setShowEscuelaModal(false)}
-                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={() => void saveEscuela()}
-                disabled={savingEscuela}
-                className="flex-1 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white py-2.5 rounded-lg text-sm shadow-sm disabled:opacity-60"
-                style={{ fontWeight: 600 }}
-              >
-                {savingEscuela ? "Guardando…" : "Guardar"}
-              </button>
+            <div>
+              <label htmlFor="esc-nombre" className="ds-label">Nombre *</label>
+              <input
+                id="esc-nombre"
+                type="text"
+                maxLength={200}
+                value={escuelaForm.nombre}
+                onChange={(event) => setEscuelaForm((current) => ({ ...current, nombre: event.target.value }))}
+                className="ds-input"
+                placeholder="Nombre institucional de la escuela"
+              />
             </div>
           </div>
-        </div>
-      )}
+          <DialogFooter className="border-t border-line px-5 py-3">
+            <button type="button" onClick={() => setShowEscuelaModal(false)} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" onClick={() => void saveEscuela()} disabled={savingEscuela} className="ds-btn ds-btn-primary">
+              {savingEscuela ? "Guardando…" : "Guardar"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {showModal && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <h3 className="text-gray-800">{editing ? "Editar programa" : "Nuevo programa"}</h3>
-              <button
-                type="button"
-                onClick={() => setShowModal(false)}
-                className="text-gray-400 hover:text-gray-600"
-                aria-label="Cerrar"
-              >
-                <X className="w-5 h-5" />
-              </button>
+      <Dialog open={showModal} onOpenChange={(open) => !saving && setShowModal(open)}>
+        <DialogContent className={modalClass}>
+          <DialogHeader className="border-b border-line px-5 py-4">
+            <DialogTitle className="text-base">{editing ? "Editar programa" : "Nuevo programa"}</DialogTitle>
+            <DialogDescription className="text-xs text-text-subtle">Indica código, nombre y escuela del programa.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 p-5">
+            <div>
+              <label htmlFor="prog-codigo" className="ds-label">Código *</label>
+              <input
+                id="prog-codigo"
+                type="text"
+                maxLength={50}
+                value={form.codigo}
+                onChange={(event) => setForm((current) => ({ ...current, codigo: event.target.value }))}
+                className="ds-input"
+                placeholder="Ej. ING-SIS"
+              />
             </div>
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">Código *</label>
-                <input
-                  type="text"
-                  maxLength={50}
-                  value={form.codigo}
-                  onChange={(event) => setForm((current) => ({ ...current, codigo: event.target.value }))}
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-                  placeholder="Ej. ING-SIS"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">Nombre *</label>
-                <input
-                  type="text"
-                  maxLength={200}
-                  value={form.nombre}
-                  onChange={(event) => setForm((current) => ({ ...current, nombre: event.target.value }))}
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]"
-                  placeholder="Nombre institucional del programa"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">Escuela *</label>
-                <AppSelect
-                  value={form.escuela_id}
-                  onValueChange={(value) => setForm((current) => ({ ...current, escuela_id: value }))}
-                  placeholder="Seleccionar escuela…"
-                  options={escuelas.map((escuela) => ({
-                    value: String(escuela.id),
-                    label: escuela.nombre,
-                  }))}
-                  className="w-full"
-                />
-              </div>
+            <div>
+              <label htmlFor="prog-nombre" className="ds-label">Nombre *</label>
+              <input
+                id="prog-nombre"
+                type="text"
+                maxLength={200}
+                value={form.nombre}
+                onChange={(event) => setForm((current) => ({ ...current, nombre: event.target.value }))}
+                className="ds-input"
+                placeholder="Nombre institucional del programa"
+              />
             </div>
-            <div className="flex gap-3 px-6 pb-6">
-              <button
-                type="button"
-                onClick={() => setShowModal(false)}
-                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={() => void savePrograma()}
-                disabled={saving}
-                className="flex-1 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white py-2.5 rounded-lg text-sm shadow-sm disabled:opacity-60"
-                style={{ fontWeight: 600 }}
-              >
-                {saving ? "Guardando…" : "Guardar"}
-              </button>
+            <div role="group" aria-labelledby="prog-escuela-label">
+              <span id="prog-escuela-label" className="ds-label">Escuela *</span>
+              <AppSelect
+                value={form.escuela_id}
+                onValueChange={(value) => setForm((current) => ({ ...current, escuela_id: value }))}
+                placeholder="Seleccionar escuela…"
+                options={escuelas.map((escuela) => ({
+                  value: String(escuela.id),
+                  label: escuela.nombre,
+                }))}
+                className="w-full"
+              />
             </div>
           </div>
-        </div>
-      )}
+          <DialogFooter className="border-t border-line px-5 py-3">
+            <button type="button" onClick={() => setShowModal(false)} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" onClick={() => void savePrograma()} disabled={saving} className="ds-btn ds-btn-primary">
+              {saving ? "Guardando…" : "Guardar"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { BarChart2, RefreshCw, TableProperties } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, ClipboardCheck, FileCheck2, RefreshCw, Search, TableProperties, Target, Users } from "lucide-react";
 import { AppSelect } from "../components/AppSelect";
+import { EmptyState, InlineAlert, Kpi, Page, PageHeader, Panel, ProgressBar, StatusPill, type Tone } from "../components/ds/primitives";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { notify } from "../lib/notify";
@@ -69,34 +70,28 @@ function monthProgress(docente: DocenteAvance, mes: string): AvanceMes {
   return docente.avance_por_mes.find((row) => row.mes === mes) || emptyMonth(mes);
 }
 
-function cellColor(pct: number) {
-  if (pct >= 70) return "text-green-700";
-  if (pct >= 40) return "text-amber-700";
-  return "text-red-700";
+const TONE_SEMAFORO: Record<Semaforo, Tone> = { verde: "success", amarillo: "warning", rojo: "danger", sin_exigibles: "neutral", sin_datos: "neutral" };
+
+function toneAvance(pct: number): Tone {
+  if (pct >= 70) return "success";
+  if (pct >= 40) return "warning";
+  return "danger";
 }
 
-function barColor(pct: number) {
-  if (pct >= 70) return "bg-green-500";
-  if (pct >= 40) return "bg-amber-500";
-  return "bg-red-500";
-}
-
-function estadoRow(d: DocenteAvance): { label: string; className: string } {
-  if (d.grupo_id == null) return { label: "Sin grupo", className: "bg-gray-100 text-gray-700" };
+function estadoRow(d: DocenteAvance): { label: string; tone: Tone } {
+  if (d.grupo_id == null) return { label: "Sin grupo", tone: "neutral" };
   const sem = semaforoConfig[d.semaforo] ?? semaforoConfig.sin_datos;
-  return { label: sem.label, className: sem.badge };
+  return { label: sem.label, tone: TONE_SEMAFORO[d.semaforo] ?? "neutral" };
 }
 
 function MesCell({ c, t, p }: { c: number; t: number; p: number }) {
   const pct = t > 0 ? p : 0;
   return (
-    <div className="flex flex-col gap-1 min-w-[72px]">
-      <span className={`text-xs font-semibold tabular-nums ${cellColor(pct)}`}>
+    <div className="flex min-w-[64px] flex-col gap-1">
+      <span className="text-xs tabular-nums text-text" style={{ fontWeight: 600 }}>
         {c}/{t}
       </span>
-      <div className="w-12 h-1 bg-gray-200 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${barColor(pct)}`} style={{ width: `${pct}%` }} />
-      </div>
+      <ProgressBar value={pct} tone={t > 0 ? toneAvance(pct) : "neutral"} className="w-12" label={`Avance del mes ${pct}%`} />
     </div>
   );
 }
@@ -113,12 +108,14 @@ export default function AvanceConsolidado() {
   const [grupos, setGrupos] = useState<{ id: number; nombre: string; semestre: string }[]>([]);
   const [semestresList, setSemestresList] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("global");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   const fetchData = useCallback(async () => {
     if (!isAdmin) return;
     setLoading(true);
+    setError(null);
     try {
       const q = new URLSearchParams();
       if (semestre.trim()) q.set("semestre", semestre.trim());
@@ -130,6 +127,7 @@ export default function AvanceConsolidado() {
     } catch (e) {
       console.error(e);
       notify.error("No se pudo cargar el avance consolidado. Intente de nuevo más tarde.");
+      setError("No se pudo cargar el avance consolidado.");
       setData(null);
     } finally {
       setLoading(false);
@@ -238,7 +236,7 @@ export default function AvanceConsolidado() {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(k);
-      setSortDir(k === "nombre" ? "asc" : "asc");
+      setSortDir("asc");
     }
   };
 
@@ -254,272 +252,214 @@ export default function AvanceConsolidado() {
 
   if (!isAdmin) {
     return (
-      <div className="p-6">
-        <p className="text-red-600">Solo administradores.</p>
-      </div>
+      <Page>
+        <InlineAlert>Solo los administradores pueden ver el avance consolidado.</InlineAlert>
+      </Page>
     );
   }
 
   const tot = data?.totales;
 
+  const sortHeader = (k: SortKey, texto: string, title?: string) => {
+    const activo = sortKey === k;
+    const Icon = !activo ? ArrowUpDown : sortDir === "asc" ? ArrowUp : ArrowDown;
+    return (
+      <button type="button" onClick={() => toggleSort(k)} title={title} className={`inline-flex items-center gap-1 ${activo ? "text-text" : ""}`} aria-label={`Ordenar por ${texto}`}>
+        {texto} <Icon className={`h-3 w-3 ${activo ? "" : "opacity-60"}`} aria-hidden />
+      </button>
+    );
+  };
+  const ariaSort = (k: SortKey) => (sortKey === k ? (sortDir === "asc" ? "ascending" : "descending") : "none");
+
+  const filtrados = sorted.filter((d) => d.grupo_id != null);
+  const promedioGlobalFiltrado =
+    filtrados.length === 0 ? null : Math.round(filtrados.reduce((s, d) => s + d.avance_global, 0) / filtrados.length);
+
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex flex-wrap items-center gap-3 justify-between">
-        <div className="flex items-center gap-2">
-          <BarChart2 className="w-6 h-6 text-blue-800" />
-          <div>
-            <h1 className="text-gray-900 font-semibold text-lg">Avance Consolidado por Docente</h1>
-            <p className="text-xs text-gray-500">Reportado = enviado o aprobado · Aprobado = revisado por administrador · Esperado = con fecha límite hasta hoy</p>
+    <Page wide>
+      <PageHeader
+        title="Avance consolidado por docente"
+        description="Reportado = enviado o aprobado · Aprobado = revisado por el administrador · Esperado = con fecha límite hasta hoy."
+        actions={
+          <button type="button" onClick={() => void fetchData()} disabled={loading} className="ds-btn ds-btn-secondary">
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden />
+            Actualizar
+          </button>
+        }
+      />
+
+      {error && (
+        <InlineAlert action={<button type="button" className="ds-btn ds-btn-secondary ds-btn-sm" onClick={() => void fetchData()}>Reintentar</button>}>
+          {error}
+        </InlineAlert>
+      )}
+
+      <section aria-label="Indicadores del consolidado" className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <Kpi label="Docentes" icon={Users} tone="neutral" value={tot?.docentes ?? "—"} />
+        <Kpi label="Promedio reportado" icon={FileCheck2} tone="brand" value={tot ? `${tot.promedio_global}%` : "—"} progress={tot?.promedio_global ?? 0} marker={tot?.promedio_esperado ?? null} />
+        <Kpi label="Promedio aprobado" icon={ClipboardCheck} tone="success" value={tot?.promedio_aprobado != null ? `${tot.promedio_aprobado}%` : "—"} progress={tot?.promedio_aprobado ?? 0} />
+        <Kpi label="Esperado a la fecha" icon={Target} tone="neutral" value={tot?.promedio_esperado != null ? `${tot.promedio_esperado}%` : "—"} progress={tot?.promedio_esperado ?? 0} />
+        <Kpi label="Con retraso" icon={AlertTriangle} tone={(tot?.con_retraso ?? 0) > 0 ? "warning" : "success"} value={tot?.con_retraso ?? "—"} hint={`${tot?.pendientes_revision ?? "—"} por revisar`} />
+        <Kpi label="Riesgo crítico" icon={AlertTriangle} tone={riesgoCount > 0 ? "danger" : "success"} value={riesgoCount} hint="Semáforo rojo" />
+      </section>
+
+      {meses.length > 0 && (
+        <section aria-label="Promedio de avance por mes" className="flex flex-wrap gap-x-6 gap-y-2 rounded-xl border border-line bg-surface px-4 py-3 text-sm">
+          <span className="text-xs font-medium text-text-subtle">Avance promedio por mes</span>
+          {meses.map((mes) => (
+            <span key={mes} className="flex items-baseline gap-1.5 text-text-muted">
+              {mes}
+              <span className="tabular-nums text-text" style={{ fontWeight: 650 }}>
+                {tot?.por_mes.find((row) => row.mes === mes)?.porcentaje ?? "—"}%
+              </span>
+            </span>
+          ))}
+        </section>
+      )}
+
+      <Panel
+        title="Avance por docente"
+        description={`${sorted.length} de ${data?.docentes.length ?? 0} docentes`}
+        bodyClassName=""
+      >
+        <div className="flex flex-wrap items-end gap-3 border-b border-line px-4 py-3">
+          <label className="block">
+            <span className="ds-label">Semestre</span>
+            <AppSelect
+              value={semestre}
+              onValueChange={(value) => setSemestre(value)}
+              emptyValue="__todos__"
+              options={[
+                { value: "__todos__", label: "Todos" },
+                ...semestresList.map((s) => ({ value: s, label: s })),
+              ]}
+              className="min-w-[120px]"
+            />
+          </label>
+          <label className="block">
+            <span className="ds-label">Grupo</span>
+            <AppSelect
+              value={grupoId}
+              onValueChange={(value) => setGrupoId(value)}
+              emptyValue="__todos__"
+              options={[
+                { value: "__todos__", label: "Todos" },
+                ...grupos.map((g) => ({ value: String(g.id), label: g.nombre })),
+              ]}
+              className="min-w-[180px]"
+            />
+          </label>
+          <div className="relative ml-auto w-full sm:w-72">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden />
+            <input
+              value={buscar}
+              onChange={(e) => setBuscar(e.target.value)}
+              placeholder="Buscar docente, programa o regional"
+              aria-label="Buscar docente"
+              className="ds-input !pl-9"
+            />
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => void fetchData()}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-900 text-white text-sm hover:bg-blue-800 disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-          Actualizar
-        </button>
-      </div>
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 flex flex-wrap gap-3 items-end">
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Semestre</label>
-          <AppSelect
-            value={semestre}
-            onValueChange={(value) => setSemestre(value)}
-            emptyValue="__todos__"
-            options={[
-              { value: "__todos__", label: "Todos" },
-              ...semestresList.map((s) => ({ value: s, label: s })),
-            ]}
-            className="min-w-[120px]"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Grupo</label>
-          <AppSelect
-            value={grupoId}
-            onValueChange={(value) => setGrupoId(value)}
-            emptyValue="__todos__"
-            options={[
-              { value: "__todos__", label: "Todos" },
-              ...grupos.map((g) => ({ value: String(g.id), label: g.nombre })),
-            ]}
-            className="min-w-[180px]"
-          />
-        </div>
-        <div className="flex-1 min-w-[200px]">
-          <label className="block text-xs text-gray-500 mb-1">Buscar docente</label>
-          <input
-            value={buscar}
-            onChange={(e) => setBuscar(e.target.value)}
-            placeholder="Nombre, programa, regional…"
-            className="w-full px-3 py-2 border rounded-lg text-sm"
-          />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="bg-white border rounded-xl p-4 shadow-sm">
-          <p className="text-xs text-gray-500">Total docentes</p>
-          <p className="text-2xl font-bold text-gray-900">{tot?.docentes ?? "—"}</p>
-        </div>
-        <div className="bg-white border rounded-xl p-4 shadow-sm">
-          <p className="text-xs text-gray-500">Promedio reportado</p>
-          <p className="text-2xl font-bold text-blue-800">{tot?.promedio_global ?? "—"}%</p>
-        </div>
-        <div className="bg-white border rounded-xl p-4 shadow-sm">
-          <p className="text-xs text-gray-500">Promedio aprobado</p>
-          <p className="text-2xl font-bold text-green-700">{tot?.promedio_aprobado ?? "—"}%</p>
-        </div>
-        <div className="bg-white border rounded-xl p-4 shadow-sm">
-          <p className="text-xs text-gray-500">Promedio esperado a la fecha</p>
-          <p className="text-2xl font-bold text-amber-700">{tot?.promedio_esperado ?? "—"}%</p>
-        </div>
-        <div className="bg-white border rounded-xl p-4 shadow-sm">
-          <p className="text-xs text-gray-500">Con retraso · por revisar</p>
-          <p className="text-2xl font-bold text-gray-800">
-            {tot?.con_retraso ?? "—"} · {tot?.pendientes_revision ?? "—"}
-          </p>
-        </div>
-        {meses.map((mes) => (
-          <div key={mes} className="bg-white border rounded-xl p-4 shadow-sm">
-            <p className="text-xs text-gray-500">% Avance {mes} (prom.)</p>
-            <p className="text-2xl font-bold text-gray-800">
-              {tot?.por_mes.find((row) => row.mes === mes)?.porcentaje ?? "—"}%
-            </p>
-          </div>
-        ))}
-        <div className="bg-white border rounded-xl p-4 shadow-sm col-span-2 md:col-span-1">
-          <p className="text-xs text-gray-500">Docentes en riesgo crítico (semáforo)</p>
-          <p className="text-2xl font-bold text-red-600">{riesgoCount}</p>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-x-auto">
-        <table className="w-full text-sm min-w-[1100px]">
-          <thead>
-            <tr className="bg-gray-50 text-gray-600 text-xs uppercase border-b">
-              <th className="text-left px-3 py-2 font-semibold">
-                <button type="button" onClick={() => toggleSort("nombre")} className="hover:underline">
-                  Docente {sortKey === "nombre" ? (sortDir === "asc" ? "↑" : "↓") : ""}
-                </button>
-              </th>
-              <th className="text-left px-2 py-2">Programa</th>
-              <th className="text-left px-2 py-2">Regional</th>
-              <th className="text-left px-2 py-2">Grupo</th>
-              {meses.map((mes) => (
-                <th key={mes} className="text-left px-2 py-2">
-                  <button type="button" onClick={() => toggleSort(mes)} className="hover:underline font-semibold">
-                    {mes.slice(0, 3)} {sortKey === mes ? (sortDir === "asc" ? "↑" : "↓") : ""}
-                  </button>
-                </th>
-              ))}
-              <th className="text-left px-2 py-2">
-                <button type="button" onClick={() => toggleSort("global")} className="hover:underline font-semibold">
-                  Reportado {sortKey === "global" ? (sortDir === "asc" ? "↑" : "↓") : ""}
-                </button>
-              </th>
-              <th className="text-left px-2 py-2">
-                <button type="button" onClick={() => toggleSort("aprobado")} className="hover:underline font-semibold">
-                  Aprobado {sortKey === "aprobado" ? (sortDir === "asc" ? "↑" : "↓") : ""}
-                </button>
-              </th>
-              <th className="text-left px-2 py-2">
-                <button type="button" onClick={() => toggleSort("esperado")} className="hover:underline font-semibold">
-                  Esperado {sortKey === "esperado" ? (sortDir === "asc" ? "↑" : "↓") : ""}
-                </button>
-              </th>
-              <th className="text-left px-2 py-2">
-                <button type="button" onClick={() => toggleSort("cumplimiento")} className="hover:underline font-semibold">
-                  Cumplimiento {sortKey === "cumplimiento" ? (sortDir === "asc" ? "↑" : "↓") : ""}
-                </button>
-              </th>
-              <th className="text-left px-2 py-2">
-                <button type="button" onClick={() => toggleSort("brecha")} className="hover:underline font-semibold" title="Puntos porcentuales: aprobado − esperado">
-                  Brecha {sortKey === "brecha" ? (sortDir === "asc" ? "↑" : "↓") : ""}
-                </button>
-              </th>
-              <th className="text-left px-2 py-2">Por revisar</th>
-              <th className="text-left px-2 py-2">
-                <button type="button" onClick={() => toggleSort("vencidos")} className="hover:underline font-semibold">
-                  Vencidos {sortKey === "vencidos" ? (sortDir === "asc" ? "↑" : "↓") : ""}
-                </button>
-              </th>
-              <th className="text-left px-2 py-2">Último envío</th>
-              <th className="text-left px-2 py-2">Estado</th>
-              <th className="text-left px-2 py-2">Acciones</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-50">
-            {sorted.map((d) => {
-              const est = estadoRow(d);
-              const g = d.avance_global;
-              const gb =
-                g >= 70 ? "bg-green-100 text-green-800" : g >= 40 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800";
-              return (
-                <tr key={d.id} className="hover:bg-gray-50/80">
-                  <td className="px-3 py-2 font-medium text-gray-900 whitespace-nowrap">{d.nombre}</td>
-                  <td className="px-2 py-2 text-gray-600 max-w-[140px] truncate">{d.programa}</td>
-                  <td className="px-2 py-2 text-gray-600 whitespace-nowrap">{d.regional}</td>
-                  <td className="px-2 py-2 text-gray-600 max-w-[120px] truncate">{d.grupo_nombre}</td>
+        <div className="overflow-x-auto">
+          <table className="ds-table min-w-[1100px]">
+            <thead>
+              <tr>
+                <th aria-sort={ariaSort("nombre")}>{sortHeader("nombre", "Docente")}</th>
+                <th className="hidden lg:table-cell">Grupo</th>
+                {meses.map((mes) => (
+                  <th key={mes} aria-sort={ariaSort(mes)}>{sortHeader(mes, mes.slice(0, 3))}</th>
+                ))}
+                <th aria-sort={ariaSort("global")}>{sortHeader("global", "Reportado")}</th>
+                <th className="text-right" aria-sort={ariaSort("aprobado")}>{sortHeader("aprobado", "Aprobado")}</th>
+                <th className="text-right" aria-sort={ariaSort("esperado")}>{sortHeader("esperado", "Esperado")}</th>
+                <th aria-sort={ariaSort("cumplimiento")}>{sortHeader("cumplimiento", "Cumplimiento")}</th>
+                <th className="text-right" aria-sort={ariaSort("brecha")}>{sortHeader("brecha", "Brecha", "Puntos porcentuales: aprobado − esperado")}</th>
+                <th className="text-right">Por revisar</th>
+                <th className="text-right" aria-sort={ariaSort("vencidos")}>{sortHeader("vencidos", "Vencidos")}</th>
+                <th className="hidden xl:table-cell">Último envío</th>
+                <th>Estado</th>
+                <th className="text-right"><span className="sr-only">Acciones</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.length === 0 && (
+                <tr>
+                  <td colSpan={12 + meses.length}>
+                    <EmptyState icon={Users} title={loading ? "Cargando avance…" : "Ningún docente coincide"}>
+                      {loading ? undefined : "Prueba con otro semestre, otro grupo o una búsqueda distinta."}
+                    </EmptyState>
+                  </td>
+                </tr>
+              )}
+              {sorted.map((d) => {
+                const est = estadoRow(d);
+                const g = d.avance_global;
+                const cumpl = d.cumplimiento_esperado;
+                return (
+                  <tr key={d.id}>
+                    <td>
+                      <div className="min-w-[180px] leading-tight">
+                        <p className="text-text" style={{ fontWeight: 600 }}>{d.nombre}</p>
+                        <p className="text-xs text-text-subtle">{d.programa}{d.regional ? ` · ${d.regional}` : ""}</p>
+                      </div>
+                    </td>
+                    <td className="hidden max-w-[140px] truncate text-text-muted lg:table-cell" title={d.grupo_nombre}>{d.grupo_nombre}</td>
+                    {meses.map((mes) => {
+                      const x = monthProgress(d, mes);
+                      return (
+                        <td key={mes}>
+                          <MesCell c={x.completados} t={x.total} p={x.porcentaje} />
+                        </td>
+                      );
+                    })}
+                    <td><StatusPill tone={toneAvance(g)} dot={false}>{g}%</StatusPill></td>
+                    <td className="text-right tabular-nums text-text-muted">{d.avance_aprobado}%</td>
+                    <td className="text-right tabular-nums text-text-muted">{d.avance_esperado}%</td>
+                    <td><StatusPill tone={cumpl >= 100 ? "success" : cumpl >= 75 ? "warning" : "danger"} dot={false}>{cumpl}%</StatusPill></td>
+                    <td className={`text-right tabular-nums ${d.brecha < 0 ? "text-red-700" : "text-text-muted"}`} style={{ fontWeight: d.brecha < 0 ? 600 : 400 }}>
+                      {d.brecha > 0 ? `+${d.brecha}` : d.brecha} pp
+                    </td>
+                    <td className="text-right tabular-nums text-text-muted">{d.pendientes_revision}</td>
+                    <td className={`text-right tabular-nums ${d.entregables_vencidos > 0 ? "text-red-700" : "text-text-muted"}`} style={{ fontWeight: d.entregables_vencidos > 0 ? 600 : 400 }}>
+                      {d.entregables_vencidos}
+                    </td>
+                    <td className="hidden whitespace-nowrap text-text-muted xl:table-cell">{formatDateOnly(d.ultimo_reporte)}</td>
+                    <td><StatusPill tone={est.tone}>{est.label}</StatusPill></td>
+                    <td>
+                      <div className="flex justify-end">
+                        <button type="button" onClick={() => navigate(`/admin/docentes/${d.id}/matriz`)} className="ds-btn ds-btn-ghost ds-btn-sm" title={`Ver la matriz de ${d.nombre}`}>
+                          <TableProperties className="h-3.5 w-3.5" aria-hidden /> Ver matriz
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            {sorted.length > 0 && tot && (
+              <tfoot>
+                <tr className="bg-surface-2 text-xs text-text" style={{ fontWeight: 650 }}>
+                  <td className="px-3.5 py-2.5" colSpan={2}>Promedios (filtrados)</td>
                   {meses.map((mes) => {
-                    const x = monthProgress(d, mes);
+                    const vals = sorted
+                      .filter((d) => d.grupo_id != null && monthProgress(d, mes).total > 0)
+                      .map((d) => monthProgress(d, mes).porcentaje);
+                    const avg = vals.length === 0 ? 0 : Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
                     return (
-                      <td key={mes} className="px-2 py-2">
-                        <MesCell c={x.completados} t={x.total} p={x.porcentaje} />
+                      <td key={mes} className="px-3.5 py-2.5 tabular-nums">
+                        {avg}%
                       </td>
                     );
                   })}
-                  <td className="px-2 py-2">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${gb}`}>
-                      {g}%
-                    </span>
-                  </td>
-                  <td className="px-2 py-2">
-                    <span className="font-semibold text-green-700">{d.avance_aprobado}%</span>
-                  </td>
-                  <td className="px-2 py-2">
-                    <span className="font-semibold text-amber-700">{d.avance_esperado}%</span>
-                  </td>
-                  <td className="px-2 py-2">
-                    <span
-                      className={`inline-flex rounded-full px-2 py-0.5 text-xs font-bold ${
-                        d.cumplimiento_esperado >= 100
-                          ? "bg-green-100 text-green-800"
-                          : d.cumplimiento_esperado >= 75
-                          ? "bg-amber-100 text-amber-800"
-                          : "bg-red-100 text-red-800"
-                      }`}
-                    >
-                      {d.cumplimiento_esperado}%
-                    </span>
-                  </td>
-                  <td className="px-2 py-2">
-                    <span className={`text-xs font-semibold tabular-nums ${d.brecha < 0 ? "text-red-600" : "text-gray-700"}`}>
-                      {d.brecha > 0 ? `+${d.brecha}` : d.brecha} pp
-                    </span>
-                  </td>
-                  <td className="px-2 py-2 text-gray-700 tabular-nums">{d.pendientes_revision}</td>
-                  <td className={`px-2 py-2 tabular-nums ${d.entregables_vencidos > 0 ? "text-red-600 font-semibold" : "text-gray-700"}`}>
-                    {d.entregables_vencidos}
-                  </td>
-                  <td className="px-2 py-2 text-gray-600 whitespace-nowrap">{formatDateOnly(d.ultimo_reporte)}</td>
-                  <td className="px-2 py-2">
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${est.className}`}>{est.label}</span>
-                  </td>
-                  <td className="px-2 py-2">
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/admin/docentes/${d.id}/matriz`)}
-                      className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline font-medium"
-                    >
-                      <TableProperties className="w-3.5 h-3.5" />
-                      Ver matriz
-                    </button>
-                  </td>
+                  <td className="px-3.5 py-2.5 tabular-nums">{promedioGlobalFiltrado == null ? "—" : `${promedioGlobalFiltrado}%`}</td>
+                  <td colSpan={9} />
                 </tr>
-              );
-            })}
-          </tbody>
-          {sorted.length > 0 && tot && (
-            <tfoot>
-              <tr className="bg-gray-100 font-bold text-gray-800 text-xs">
-                <td className="px-3 py-2" colSpan={4}>
-                  Promedios (filtrados)
-                </td>
-                {meses.map((mes) => {
-                  const vals = sorted
-                    .filter((d) => d.grupo_id != null && monthProgress(d, mes).total > 0)
-                    .map((d) => monthProgress(d, mes).porcentaje);
-                  const avg =
-                    vals.length === 0 ? 0 : Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
-                  return (
-                    <td key={mes} className="px-2 py-2">
-                      {avg}%
-                    </td>
-                  );
-                })}
-                <td className="px-2 py-2">
-                  {sorted.filter((d) => d.grupo_id != null).length === 0
-                    ? "—"
-                    : Math.round(
-                        sorted.filter((d) => d.grupo_id != null).reduce((s, d) => s + d.avance_global, 0) /
-                          sorted.filter((d) => d.grupo_id != null).length
-                      )}
-                  %
-                </td>
-                <td colSpan={9} />
-              </tr>
-            </tfoot>
-          )}
-        </table>
-        {!loading && sorted.length === 0 && (
-          <p className="text-center text-gray-400 text-sm py-8">Sin resultados</p>
-        )}
-      </div>
-    </div>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </Panel>
+    </Page>
   );
 }

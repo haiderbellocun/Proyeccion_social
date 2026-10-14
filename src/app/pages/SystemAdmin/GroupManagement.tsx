@@ -8,6 +8,7 @@ import {
   type SetStateAction,
 } from "react";
 import {
+  CalendarRange,
   ChevronDown,
   ChevronUp,
   Copy,
@@ -16,9 +17,12 @@ import {
   Plus,
   Trash2,
   UserPlus,
-  X,
+  Users,
 } from "lucide-react";
+import type { ReactNode } from "react";
 import { AppSelect } from "../../components/AppSelect";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../components/ui/dialog";
+import { EmptyState, InlineAlert, Kpi, PageLoading, Panel, StatusPill } from "../../components/ds/primitives";
 import { useConfirmationDialog } from "../../components/ConfirmationDialog";
 import { API_BASE, apiFetch as fetch } from "../../config/api";
 import { notify } from "../../lib/notify";
@@ -84,15 +88,39 @@ function tipoIsNuevo(tipo: string | null | undefined): boolean {
 
 function TipoBadge({ tipo }: { tipo: string | null | undefined }) {
   const isNuevo = tipoIsNuevo(tipo);
-  const label = tipo ?? "—";
+  const label = tipo ? tipo.charAt(0).toUpperCase() + tipo.slice(1).toLowerCase() : "—";
+  return <StatusPill tone={isNuevo ? "brand" : "neutral"}>{label}</StatusPill>;
+}
+
+/** Diálogo estándar de la sección: encabezado, cuerpo con scroll y pie con acciones a la derecha. */
+function ModalShell({
+  open,
+  onOpenChange,
+  title,
+  description,
+  size = "md",
+  children,
+  footer,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  description?: ReactNode;
+  size?: "md" | "lg";
+  children: ReactNode;
+  footer: ReactNode;
+}) {
   return (
-    <span
-      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-        isNuevo ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
-      }`}
-    >
-      {label}
-    </span>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className={`max-h-[90vh] gap-0 overflow-hidden rounded-xl border-line bg-surface p-0 ${size === "lg" ? "sm:max-w-xl" : "sm:max-w-md"} flex flex-col`}>
+        <DialogHeader className="shrink-0 border-b border-line px-5 py-4">
+          <DialogTitle className="text-base">{title}</DialogTitle>
+          <DialogDescription className={description ? "text-xs text-text-subtle" : "sr-only"}>{description ?? title}</DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+        <DialogFooter className="shrink-0 border-t border-line px-5 py-3">{footer}</DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -103,6 +131,7 @@ export default function GroupManagement() {
   const [semestreInstitucionalActivo, setSemestreInstitucionalActivo] = useState<string>("");
   const [activatingSemester, setActivatingSemester] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [grupos, setGrupos] = useState<IndicadoresGrupoRow[]>([]);
   const [docentes, setDocentes] = useState<DocenteRow[]>([]);
   const [expandedGrupoId, setExpandedGrupoId] = useState<number | null>(null);
@@ -170,6 +199,7 @@ export default function GroupManagement() {
   const loadAll = useCallback(async () => {
     if (!semestreActivo) return;
     setLoading(true);
+    setLoadError(false);
     try {
       const semQ = encodeURIComponent(semestreActivo);
       const [gRes, dRes] = await Promise.all([
@@ -199,6 +229,7 @@ export default function GroupManagement() {
     } catch (e) {
       console.error(e);
       notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
+      setLoadError(true);
       setGrupos([]);
       setDocentes([]);
     } finally {
@@ -653,734 +684,487 @@ export default function GroupManagement() {
   const renderGrupoFormFields = (
     form: GrupoFormState,
     setForm: Dispatch<SetStateAction<GrupoFormState>>,
-    options: { semestreReadonly: boolean; showSemestreWarning: boolean }
-  ) => (
-    <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
-      {options.showSemestreWarning && (
-        <div className="bg-amber-50 border border-amber-200 text-amber-900 text-xs px-3 py-2 rounded-lg">
-          El semestre no puede modificarse porque hay docentes asignados a este grupo.
-        </div>
-      )}
+    options: { semestreReadonly: boolean; showSemestreWarning: boolean; idPrefix: string }
+  ) => {
+    const p = options.idPrefix;
+    const numField = (key: keyof GrupoFormState, label: string, min: number) => (
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Nombre *</label>
+        <label htmlFor={`${p}-${key}`} className="ds-label">{label}</label>
         <input
-          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50"
-          value={form.nombre}
-          onChange={(e) => setForm((f) => ({ ...f, nombre: e.target.value }))}
+          id={`${p}-${key}`}
+          type="number"
+          min={min}
+          className="ds-input"
+          value={form[key]}
+          onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
         />
       </div>
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Descripción</label>
-        <textarea
-          rows={3}
-          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 resize-none"
-          value={form.descripcion}
-          onChange={(e) => setForm((f) => ({ ...f, descripcion: e.target.value }))}
-        />
-      </div>
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Semestre *</label>
-        <AppSelect
-          className="w-full bg-gray-50"
-          value={form.semestre}
-          disabled={options.semestreReadonly}
-          onValueChange={(v) => setForm((f) => ({ ...f, semestre: v }))}
-          options={[
-            ...(!semestres.includes(form.semestre) && form.semestre
-              ? [{ value: form.semestre, label: form.semestre }]
-              : []),
-            ...semestres.map((semester) => ({ value: semester, label: semester })),
-          ]}
-        />
-        <p className="text-xs text-gray-500 mt-1">Solo se muestran calendarios registrados.</p>
-      </div>
-      <div>
-        <span className="block text-sm font-medium text-gray-700 mb-2">Tipo docente</span>
-        <div className="flex gap-4">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              checked={form.tipo_docente === "ANTIGUO"}
-              onChange={() => setForm((f) => ({ ...f, tipo_docente: "ANTIGUO" }))}
-            />
-            ANTIGUO
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              checked={form.tipo_docente === "NUEVO"}
-              onChange={() => setForm((f) => ({ ...f, tipo_docente: "NUEVO" }))}
-            />
-            NUEVO
-          </label>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Horas totales *</label>
-          <input
-            type="number"
-            min={1}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50"
-            value={form.horas_totales}
-            onChange={(e) => setForm((f) => ({ ...f, horas_totales: e.target.value }))}
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Proyectos</label>
-          <input
-            type="number"
-            min={0}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50"
-            value={form.num_proyectos}
-            onChange={(e) => setForm((f) => ({ ...f, num_proyectos: e.target.value }))}
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Actividades</label>
-          <input
-            type="number"
-            min={0}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50"
-            value={form.num_actividades}
-            onChange={(e) => setForm((f) => ({ ...f, num_actividades: e.target.value }))}
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Conv. Nuevos</label>
-          <input
-            type="number"
-            min={0}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50"
-            value={form.num_convenios_nuevos}
-            onChange={(e) => setForm((f) => ({ ...f, num_convenios_nuevos: e.target.value }))}
-          />
+    );
+    return (
+      <div className="grid grid-cols-2 gap-x-3 gap-y-3.5">
+        {options.showSemestreWarning && (
+          <div className="col-span-2">
+            <InlineAlert tone="warning">El semestre no puede modificarse porque hay docentes asignados a este grupo.</InlineAlert>
+          </div>
+        )}
+        <div className="col-span-2">
+          <label htmlFor={`${p}-nombre`} className="ds-label">Nombre *</label>
+          <input id={`${p}-nombre`} className="ds-input" value={form.nombre} onChange={(e) => setForm((f) => ({ ...f, nombre: e.target.value }))} />
         </div>
         <div className="col-span-2">
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Conv. Dinamizados
-          </label>
-          <input
-            type="number"
-            min={0}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50"
-            value={form.num_convenios_dinamizados}
-            onChange={(e) =>
-              setForm((f) => ({ ...f, num_convenios_dinamizados: e.target.value }))
-            }
+          <label htmlFor={`${p}-desc`} className="ds-label">Descripción</label>
+          <textarea
+            id={`${p}-desc`}
+            rows={2}
+            className="ds-input resize-none"
+            value={form.descripcion}
+            onChange={(e) => setForm((f) => ({ ...f, descripcion: e.target.value }))}
           />
         </div>
+        <div>
+          <label className="ds-label">Semestre *</label>
+          <AppSelect
+            className="w-full"
+            value={form.semestre}
+            disabled={options.semestreReadonly}
+            onValueChange={(v) => setForm((f) => ({ ...f, semestre: v }))}
+            options={[
+              ...(!semestres.includes(form.semestre) && form.semestre ? [{ value: form.semestre, label: form.semestre }] : []),
+              ...semestres.map((semester) => ({ value: semester, label: semester })),
+            ]}
+          />
+        </div>
+        <fieldset>
+          <legend className="ds-label">Tipo docente</legend>
+          <div className="flex h-9 items-center gap-4">
+            {(["ANTIGUO", "NUEVO"] as const).map((t) => (
+              <label key={t} className="flex cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name={`${p}-tipo`}
+                  className="accent-brand"
+                  checked={form.tipo_docente === t}
+                  onChange={() => setForm((f) => ({ ...f, tipo_docente: t }))}
+                />
+                {t === "ANTIGUO" ? "Antiguo" : "Nuevo"}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        {numField("horas_totales", "Horas totales *", 1)}
+        {numField("num_proyectos", "Proyectos", 0)}
+        {numField("num_actividades", "Actividades", 0)}
+        {numField("num_convenios_nuevos", "Convenios nuevos", 0)}
+        <div className="col-span-2">{numField("num_convenios_dinamizados", "Convenios dinamizados", 0)}</div>
+        <p className="col-span-2 text-xs text-text-subtle">Solo se muestran semestres con calendario registrado.</p>
       </div>
-    </div>
-  );
+    );
+  };
 
   if (!semestreActivo) {
-    return (
-      <div className="flex items-center justify-center py-16 text-gray-500 gap-2">
-        {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : null}
-        {loading ? "Inicializando semestre…" : "No hay un semestre configurado."}
-      </div>
+    return loading ? (
+      <PageLoading label="Inicializando semestre…" />
+    ) : (
+      <Panel bodyClassName="">
+        <EmptyState icon={CalendarRange} title="No hay un semestre configurado">
+          Crea un semestre en la pestaña «Semestres» para gestionar grupos y tareas.
+        </EmptyState>
+      </Panel>
     );
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-3 bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-        <label className="flex items-center gap-2 text-sm text-gray-700 shrink-0">
-          <span style={{ fontWeight: 600 }}>Semestre:</span>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-[0.8125rem] text-text-muted" style={{ fontWeight: 550 }}>
+            Semestre
+          </span>
           <AppSelect
+
             value={semestreActivo}
             onValueChange={(v) => setSemestreActivo(v)}
-            className="bg-gray-50 min-w-[100px]"
-            options={
-              semestres.length === 0
-                ? [{ value: semestreActivo, label: semestreActivo }]
-                : semestres.map((s) => ({ value: s, label: s }))
-            }
+            className="min-w-[100px]"
+            options={semestres.length === 0 ? [{ value: semestreActivo, label: semestreActivo }] : semestres.map((s) => ({ value: s, label: s }))}
           />
-        </label>
+        </div>
         {semestreActivo === semestreInstitucionalActivo ? (
-          <span className="inline-flex items-center justify-center rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
-            Semestre activo
-          </span>
+          <StatusPill tone="success">Semestre activo</StatusPill>
         ) : (
-          <button
-            type="button"
-            disabled={activatingSemester}
-            onClick={() => void handleActivarSemestre()}
-            className="inline-flex items-center justify-center rounded-lg border border-emerald-200 px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
-          >
+          <button type="button" disabled={activatingSemester} onClick={() => void handleActivarSemestre()} className="ds-btn ds-btn-secondary ds-btn-sm">
             {activatingSemester ? "Activando…" : "Establecer como activo"}
           </button>
         )}
-        <button
-          type="button"
-          onClick={openCreateGrupo}
-          className="inline-flex items-center justify-center gap-2 bg-[#1e3a8a] text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#1d4ed8] shrink-0"
-        >
-          <Plus className="w-4 h-4" /> Nuevo Grupo
-        </button>
-        <button
-          type="button"
-          onClick={openCloneSemestre}
-          className="inline-flex items-center justify-center gap-2 border border-gray-200 text-gray-800 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 shrink-0"
-        >
-          <Copy className="w-4 h-4" /> Clonar semestre →
-        </button>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <button type="button" onClick={openCloneSemestre} className="ds-btn ds-btn-secondary">
+            <Copy className="h-4 w-4" aria-hidden /> Clonar semestre
+          </button>
+          <button type="button" onClick={openCreateGrupo} className="ds-btn ds-btn-primary">
+            <Plus className="h-4 w-4" aria-hidden /> Nuevo grupo
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {[
-          { label: "Total grupos", value: resumen.totalGrupos },
-          { label: "Grupos ANTIGUO", value: resumen.antiguo },
-          { label: "Grupos NUEVO", value: resumen.nuevo },
-          { label: "Docentes sin grupo", value: resumen.sinGrupo },
-        ].map((c) => (
-          <div
-            key={c.label}
-            className="bg-white rounded-xl border border-gray-100 shadow-sm p-4"
-          >
-            <p className="text-xs text-gray-500">{c.label}</p>
-            <p className="text-2xl text-gray-900 mt-1" style={{ fontWeight: 700 }}>
-              {c.value}
-            </p>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Kpi label="Total de grupos" value={resumen.totalGrupos} icon={Users} tone="brand" />
+        <Kpi label="Grupos antiguo" value={resumen.antiguo} />
+        <Kpi label="Grupos nuevo" value={resumen.nuevo} tone="brand" />
+        <Kpi label="Docentes sin grupo" value={resumen.sinGrupo} tone={resumen.sinGrupo > 0 ? "warning" : "success"} hint={resumen.sinGrupo > 0 ? "Asígnalos desde cada grupo" : undefined} />
+      </div>
+
+      <Panel bodyClassName="" title="Grupos matriz" description={`Semestre ${semestreActivo}`}>
+        {loading && <PageLoading label="Cargando grupos…" />}
+        {!loading && loadError && (
+          <div className="p-4">
+            <InlineAlert
+              action={
+                <button type="button" className="ds-btn ds-btn-secondary ds-btn-sm" onClick={() => void loadAll()}>
+                  Reintentar
+                </button>
+              }
+            >
+              No se pudo cargar la información de grupos.
+            </InlineAlert>
           </div>
-        ))}
-      </div>
-
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[1200px]">
-            <thead>
-              <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                <th className="text-left px-4 py-3">Grupo</th>
-                <th className="text-left px-4 py-3">Semestre</th>
-                <th className="text-left px-4 py-3">Tipo</th>
-                <th className="text-right px-4 py-3">Horas</th>
-                <th className="text-right px-4 py-3">Proyectos</th>
-                <th className="text-right px-4 py-3">Actividades</th>
-                <th className="text-right px-4 py-3">Conv.Nvo</th>
-                <th className="text-right px-4 py-3">Conv.Din</th>
-                <th className="text-left px-4 py-3">Docentes</th>
-                <th className="text-right px-4 py-3">Plantillas</th>
-                <th className="text-left px-4 py-3">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {grupos.map((g) => {
-                const open = expandedGrupoId === g.id;
-                const lista = docentesPorGrupo(g.id);
-                return (
-                  <Fragment key={g.id}>
-                    <tr className="hover:bg-gray-50 align-top">
-                      <td className="px-4 py-3 text-gray-800 font-medium">{g.nombre}</td>
-                      <td className="px-4 py-3">
-                        <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
-                          {g.semestre ?? "—"}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <TipoBadge tipo={g.tipo_docente} />
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums text-gray-700">
-                        {g.horas_totales ?? "—"}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {g.num_proyectos ?? 0}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {g.num_actividades ?? 0}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {g.num_convenios_nuevos ?? 0}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {g.num_convenios_dinamizados ?? 0}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="tabular-nums text-gray-700">
-                            {g.num_docentes ?? 0}
+        )}
+        {!loading && !loadError && grupos.length === 0 && (
+          <EmptyState
+            icon={Users}
+            title={`Sin grupos en ${semestreActivo}`}
+            action={
+              <button type="button" onClick={openCreateGrupo} className="ds-btn ds-btn-primary ds-btn-sm">
+                <Plus className="h-4 w-4" aria-hidden /> Nuevo grupo
+              </button>
+            }
+          >
+            Crea un grupo o clona los de otro semestre.
+          </EmptyState>
+        )}
+        {!loading && !loadError && grupos.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="ds-table">
+              <thead>
+                <tr>
+                  <th>Grupo</th>
+                  <th className="hidden min-[1600px]:table-cell">Semestre</th>
+                  <th>Tipo</th>
+                  <th className="hidden sm:table-cell text-right">Horas</th>
+                  <th className="hidden md:table-cell text-right">Proyectos</th>
+                  <th className="hidden xl:table-cell text-right">Actividades</th>
+                  <th className="hidden min-[1600px]:table-cell text-right">Conv. nuevos</th>
+                  <th className="hidden min-[1600px]:table-cell text-right">Conv. dinam.</th>
+                  <th>Docentes</th>
+                  <th className="hidden md:table-cell text-right">Plantillas</th>
+                  <th className="text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {grupos.map((g) => {
+                  const open = expandedGrupoId === g.id;
+                  const lista = docentesPorGrupo(g.id);
+                  return (
+                    <Fragment key={g.id}>
+                      <tr>
+                        <td className="max-w-[18rem]">
+                          <span className="block truncate text-text" style={{ fontWeight: 600 }} title={g.nombre}>
+                            {g.nombre}
                           </span>
+                        </td>
+                        <td className="hidden min-[1600px]:table-cell">
+                          <StatusPill tone="brand" dot={false}>{g.semestre ?? "—"}</StatusPill>
+                        </td>
+                        <td>
+                          <TipoBadge tipo={g.tipo_docente} />
+                        </td>
+                        <td className="hidden text-right text-text-muted sm:table-cell">{g.horas_totales ?? "—"}</td>
+                        <td className="hidden text-right text-text-muted md:table-cell">{g.num_proyectos ?? 0}</td>
+                        <td className="hidden text-right text-text-muted xl:table-cell">{g.num_actividades ?? 0}</td>
+                        <td className="hidden text-right text-text-muted min-[1600px]:table-cell">{g.num_convenios_nuevos ?? 0}</td>
+                        <td className="hidden text-right text-text-muted min-[1600px]:table-cell">{g.num_convenios_dinamizados ?? 0}</td>
+                        <td>
                           <button
                             type="button"
                             onClick={() => setExpandedGrupoId(open ? null : g.id)}
-                            className="inline-flex items-center gap-1 text-xs text-[#1d4ed8] hover:text-[#1e3a8a] font-medium"
+                            aria-expanded={open}
+                            aria-label={`${open ? "Ocultar" : "Ver"} docentes de ${g.nombre}`}
+                            className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[0.8125rem] text-brand hover:bg-blue-50"
                           >
-                            {open ? (
-                              <>
-                                <ChevronUp className="w-3.5 h-3.5" /> Ocultar
-                              </>
-                            ) : (
-                              <>
-                                <ChevronDown className="w-3.5 h-3.5" /> Ver docentes
-                              </>
-                            )}
+                            <span className="tabular-nums" style={{ fontWeight: 600 }}>{g.num_docentes ?? 0}</span>
+                            {open ? <ChevronUp className="h-3.5 w-3.5" aria-hidden /> : <ChevronDown className="h-3.5 w-3.5" aria-hidden />}
                           </button>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {g.num_plantilla_entregables ?? 0}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => openEditGrupo(g)}
-                            className="p-1.5 rounded-lg text-[#1d4ed8] hover:bg-blue-50"
-                            title="Editar grupo"
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void eliminarGrupo(g)}
-                            className="p-1.5 rounded-lg text-red-600 hover:bg-red-50"
-                            title="Eliminar grupo"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                    {open && (
-                      <tr className="bg-slate-50/80">
-                        <td colSpan={11} className="px-4 py-4">
-                          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                            <p className="text-xs text-gray-600 font-medium">
-                              Docentes en &ldquo;{g.nombre}&rdquo; ({lista.length})
-                            </p>
+                        </td>
+                        <td className="hidden text-right text-text-muted md:table-cell">{g.num_plantilla_entregables ?? 0}</td>
+                        <td className="whitespace-nowrap text-right">
+                          <div className="inline-flex items-center gap-1">
                             <button
                               type="button"
-                              onClick={() => openAssign(g.id)}
-                              className="inline-flex items-center gap-1.5 text-xs bg-[#1e3a8a] text-white px-3 py-1.5 rounded-lg hover:bg-[#1d4ed8]"
-                              style={{ fontWeight: 600 }}
+                              onClick={() => openEditGrupo(g)}
+                              className="ds-btn ds-btn-ghost ds-btn-sm !px-2"
+                              aria-label={`Editar grupo ${g.nombre}`}
+                              title="Editar grupo"
                             >
-                              <UserPlus className="w-3.5 h-3.5" /> Asignar docente
+                              <Pencil className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void eliminarGrupo(g)}
+                              className="ds-btn ds-btn-ghost ds-btn-sm !px-2 hover:!bg-red-50 hover:!text-red-700"
+                              aria-label={`Eliminar grupo ${g.nombre}`}
+                              title="Eliminar grupo"
+                            >
+                              <Trash2 className="h-4 w-4" />
                             </button>
                           </div>
-                          {lista.length === 0 ? (
-                            <p className="text-xs text-gray-400">Sin docentes asignados.</p>
-                          ) : (
-                            <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-                              <table className="w-full text-xs">
-                                <thead>
-                                  <tr className="bg-gray-50 text-gray-500">
-                                    <th className="text-left px-3 py-2">Nombre</th>
-                                    <th className="text-left px-3 py-2">Regional</th>
-                                    <th className="text-left px-3 py-2">Link Drive</th>
-                                    <th className="text-left px-3 py-2">Tipo</th>
-                                    <th className="text-right px-3 py-2"> </th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-100">
-                                  {lista.map((d) => (
-                                    <tr key={d.id}>
-                                      <td className="px-3 py-2 text-gray-800">{d.name}</td>
-                                      <td className="px-3 py-2 text-gray-600">
-                                        {d.regional || "—"}
-                                      </td>
-                                      <td className="px-3 py-2 max-w-[180px] truncate">
-                                        {d.link_drive ? (
-                                          <a
-                                            href={d.link_drive}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="text-[#1d4ed8] hover:underline"
-                                          >
-                                            {d.link_drive}
-                                          </a>
-                                        ) : (
-                                          "—"
-                                        )}
-                                      </td>
-                                      <td className="px-3 py-2">
-                                        <TipoBadge tipo={d.tipo_docente} />
-                                      </td>
-                                      <td className="px-3 py-2 text-right whitespace-nowrap space-x-2">
-                                        <button
-                                          type="button"
-                                          onClick={() => openEdit(d)}
-                                          className="text-[#1d4ed8] hover:underline font-medium"
-                                        >
-                                          Editar
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => void quitarDelGrupo(d.id)}
-                                          className="text-red-600 hover:underline font-medium"
-                                        >
-                                          Quitar del grupo
-                                        </button>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
                         </td>
                       </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                      {open && (
+                        <tr>
+                          <td colSpan={11} className="!bg-surface-2"><div className="w-0 min-w-full">
+                            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-xs text-text-muted" style={{ fontWeight: 600 }}>
+                                Docentes en «{g.nombre}» ({lista.length})
+                              </p>
+                              <button type="button" onClick={() => openAssign(g.id)} className="ds-btn ds-btn-primary ds-btn-sm">
+                                <UserPlus className="h-3.5 w-3.5" aria-hidden /> Asignar docente
+                              </button>
+                            </div>
+                            {lista.length === 0 ? (
+                              <p className="text-xs text-text-subtle">Sin docentes asignados.</p>
+                            ) : (
+                              <div className="overflow-x-auto rounded-lg border border-line bg-surface">
+                                <table className="ds-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Nombre</th>
+                                      <th className="hidden sm:table-cell">Regional</th>
+                                      <th className="hidden md:table-cell">Enlace Drive</th>
+                                      <th>Tipo</th>
+                                      <th className="text-right"><span className="sr-only">Acciones</span></th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {lista.map((d) => (
+                                      <tr key={d.id}>
+                                        <td className="text-text">{d.name}</td>
+                                        <td className="hidden text-text-muted sm:table-cell">{d.regional || "—"}</td>
+                                        <td className="hidden max-w-[220px] truncate md:table-cell">
+                                          {d.link_drive ? (
+                                            <a href={d.link_drive} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">
+                                              {d.link_drive}
+                                            </a>
+                                          ) : (
+                                            "—"
+                                          )}
+                                        </td>
+                                        <td>
+                                          <TipoBadge tipo={d.tipo_docente} />
+                                        </td>
+                                        <td className="whitespace-nowrap text-right">
+                                          <button type="button" onClick={() => openEdit(d)} className="ds-btn ds-btn-ghost ds-btn-sm text-brand">
+                                            Editar
+                                          </button>
+                                          <button type="button" onClick={() => void quitarDelGrupo(d.id)} className="ds-btn ds-btn-ghost ds-btn-sm hover:!bg-red-50 hover:!text-red-700">
+                                            Quitar del grupo
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div></td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
 
-      {assignOpen && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <h3 className="text-gray-800 font-semibold">Asignar docente a grupo</h3>
-              <button
-                type="button"
-                onClick={() => setAssignOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-sm text-gray-700 mb-1.5 font-medium">
-                  Docente
+      <ModalShell
+        open={assignOpen}
+        onOpenChange={setAssignOpen}
+        title="Asignar docente a grupo"
+        size="md"
+        footer={
+          <>
+            <button type="button" onClick={() => setAssignOpen(false)} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" onClick={() => void handleAsignar()} disabled={assignDocenteId === ""} className="ds-btn ds-btn-primary">
+              Asignar
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="ds-label">Docente</label>
+            <AppSelect
+              className="w-full"
+              value={assignDocenteId === "" ? "" : String(assignDocenteId)}
+              onValueChange={(v) => setAssignDocenteId(v === "" ? "" : Number(v))}
+              placeholder="Seleccionar…"
+              options={candidatosAsignar.map((d) => ({ value: String(d.id), label: `${d.name} — ${d.program}` }))}
+            />
+          </div>
+          {selectedCandidato && (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg bg-surface-2 px-3 py-2.5 text-xs">
+              <dt className="text-text-subtle">Nombre</dt>
+              <dd className="text-text">{selectedCandidato.name}</dd>
+              <dt className="text-text-subtle">Programa</dt>
+              <dd className="text-text">{selectedCandidato.program}</dd>
+              <dt className="text-text-subtle">Regional</dt>
+              <dd className="text-text">{selectedCandidato.regional || "—"}</dd>
+            </dl>
+          )}
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={editOpen && !!editDocente}
+        onOpenChange={setEditOpen}
+        title="Editar docente"
+        description={editDocente?.name}
+        size="md"
+        footer={
+          <>
+            <button type="button" onClick={() => setEditOpen(false)} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" disabled={savingEdit} onClick={() => void handleGuardarEdit()} className="ds-btn ds-btn-primary">
+              {savingEdit ? "Guardando…" : "Guardar"}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3.5">
+          <fieldset>
+            <legend className="ds-label">Tipo docente</legend>
+            <div className="flex items-center gap-4">
+              {(["ANTIGUO", "NUEVO"] as const).map((t) => (
+                <label key={t} className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input type="radio" name="tipo_doc" className="accent-brand" checked={editTipo === t} onChange={() => setEditTipo(t)} />
+                  {t === "ANTIGUO" ? "Antiguo" : "Nuevo"}
                 </label>
-                <AppSelect
-                  className="w-full bg-gray-50"
-                  value={assignDocenteId === "" ? "" : String(assignDocenteId)}
-                  onValueChange={(v) => setAssignDocenteId(v === "" ? "" : Number(v))}
-                  placeholder="Seleccionar…"
-                  options={candidatosAsignar.map((d) => ({
-                    value: String(d.id),
-                    label: `${d.name} — ${d.program}`,
-                  }))}
-                />
-              </div>
-              {selectedCandidato && (
-                <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-gray-700 space-y-1">
-                  <p>
-                    <span className="text-gray-500">Nombre:</span>{" "}
-                    {selectedCandidato.name}
-                  </p>
-                  <p>
-                    <span className="text-gray-500">Programa:</span>{" "}
-                    {selectedCandidato.program}
-                  </p>
-                  <p>
-                    <span className="text-gray-500">Regional:</span>{" "}
-                    {selectedCandidato.regional || "—"}
-                  </p>
-                </div>
-              )}
+              ))}
             </div>
-            <div className="flex gap-3 px-6 pb-6">
-              <button
-                type="button"
-                onClick={() => setAssignOpen(false)}
-                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleAsignar()}
-                disabled={assignDocenteId === ""}
-                className="flex-1 bg-[#1e3a8a] hover:bg-[#1d4ed8] disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-semibold"
-              >
-                Asignar
-              </button>
-            </div>
+          </fieldset>
+          <div>
+            <label htmlFor="gm-regional" className="ds-label">Regional</label>
+            <input id="gm-regional" className="ds-input" value={editRegional} onChange={(e) => setEditRegional(e.target.value)} />
+          </div>
+          <div>
+            <label htmlFor="gm-link" className="ds-label">Enlace Drive</label>
+            <input id="gm-link" type="url" className="ds-input" value={editLink} onChange={(e) => setEditLink(e.target.value)} />
           </div>
         </div>
-      )}
+      </ModalShell>
 
-      {editOpen && editDocente && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <h3 className="text-gray-800 font-semibold">Editar docente</h3>
-              <button
-                type="button"
-                onClick={() => setEditOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-4">
-              <p className="text-sm text-gray-600">{editDocente.name}</p>
-              <div>
-                <span className="text-sm text-gray-700 block mb-2 font-medium">
-                  Tipo docente
-                </span>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="radio"
-                      name="tipo_doc"
-                      checked={editTipo === "ANTIGUO"}
-                      onChange={() => setEditTipo("ANTIGUO")}
-                    />
-                    ANTIGUO
-                  </label>
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="radio"
-                      name="tipo_doc"
-                      checked={editTipo === "NUEVO"}
-                      onChange={() => setEditTipo("NUEVO")}
-                    />
-                    NUEVO
-                  </label>
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-1.5 font-medium">
-                  Regional
-                </label>
-                <input
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                  value={editRegional}
-                  onChange={(e) => setEditRegional(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-1.5 font-medium">
-                  Link Drive
-                </label>
-                <input
-                  type="url"
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                  value={editLink}
-                  onChange={(e) => setEditLink(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="flex gap-3 px-6 pb-6">
-              <button
-                type="button"
-                onClick={() => setEditOpen(false)}
-                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={savingEdit}
-                onClick={() => void handleGuardarEdit()}
-                className="flex-1 bg-[#1e3a8a] hover:bg-[#1d4ed8] disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-semibold"
-              >
-                {savingEdit ? "Guardando…" : "Guardar"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ModalShell
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        title="Nuevo grupo matriz"
+        size="lg"
+        footer={
+          <>
+            <button type="button" onClick={() => setCreateOpen(false)} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" disabled={savingGrupo} onClick={() => void handleCrearGrupo()} className="ds-btn ds-btn-primary">
+              {savingGrupo ? "Creando…" : "Crear grupo"}
+            </button>
+          </>
+        }
+      >
+        {renderGrupoFormFields(grupoForm, setGrupoForm, { semestreReadonly: false, showSemestreWarning: false, idPrefix: "gm-new" })}
+      </ModalShell>
 
-      {createOpen && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0">
-              <h3 className="text-gray-800 font-semibold">Nuevo grupo matriz</h3>
-              <button
-                type="button"
-                onClick={() => setCreateOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 overflow-y-auto">
-              {renderGrupoFormFields(grupoForm, setGrupoForm, {
-                semestreReadonly: false,
-                showSemestreWarning: false,
-              })}
-            </div>
-            <div className="flex gap-3 px-6 pb-6 shrink-0">
-              <button
-                type="button"
-                onClick={() => setCreateOpen(false)}
-                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={savingGrupo}
-                onClick={() => void handleCrearGrupo()}
-                className="flex-1 bg-[#1e3a8a] text-white py-2.5 rounded-lg text-sm font-semibold disabled:opacity-50"
-              >
-                {savingGrupo ? "Creando…" : "Crear grupo"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ModalShell
+        open={editGrupoOpen}
+        onOpenChange={setEditGrupoOpen}
+        title="Editar grupo matriz"
+        size="lg"
+        footer={
+          <>
+            <button type="button" onClick={() => setEditGrupoOpen(false)} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" disabled={savingGrupo} onClick={() => void handleGuardarGrupo()} className="ds-btn ds-btn-primary">
+              {savingGrupo ? "Guardando…" : "Guardar cambios"}
+            </button>
+          </>
+        }
+      >
+        {renderGrupoFormFields(grupoEditForm, setGrupoEditForm, {
+          semestreReadonly: grupoEditNumDocentes > 0,
+          showSemestreWarning: grupoEditNumDocentes > 0,
+          idPrefix: "gm-edit",
+        })}
+      </ModalShell>
 
-      {editGrupoOpen && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0">
-              <h3 className="text-gray-800 font-semibold">Editar grupo matriz</h3>
-              <button
-                type="button"
-                onClick={() => setEditGrupoOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 overflow-y-auto">
-              {renderGrupoFormFields(grupoEditForm, setGrupoEditForm, {
-                semestreReadonly: grupoEditNumDocentes > 0,
-                showSemestreWarning: grupoEditNumDocentes > 0,
-              })}
-            </div>
-            <div className="flex gap-3 px-6 pb-6 shrink-0">
-              <button
-                type="button"
-                onClick={() => setEditGrupoOpen(false)}
-                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={savingGrupo}
-                onClick={() => void handleGuardarGrupo()}
-                className="flex-1 bg-[#1e3a8a] text-white py-2.5 rounded-lg text-sm font-semibold disabled:opacity-50"
-              >
-                {savingGrupo ? "Guardando…" : "Guardar cambios"}
-              </button>
-            </div>
+      <ModalShell
+        open={cloneOpen}
+        onOpenChange={setCloneOpen}
+        title="Clonar semestre"
+        description="Copia los grupos (y opcionalmente sus plantillas) a un semestre nuevo."
+        size="md"
+        footer={
+          <>
+            <button type="button" onClick={() => setCloneOpen(false)} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" disabled={cloning} onClick={() => void handleClonarSemestre()} className="ds-btn ds-btn-primary">
+              {cloning ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
+              Clonar semestre
+            </button>
+          </>
+        }
+      >
+        <div className="grid grid-cols-2 gap-x-3 gap-y-3.5">
+          <div>
+            <label className="ds-label">Semestre origen</label>
+            <AppSelect
+              value={cloneOrigen}
+              onValueChange={(v) => setCloneOrigen(v)}
+              className="w-full"
+              options={semestres.length === 0 ? [{ value: semestreActivo, label: semestreActivo }] : semestres.map((s) => ({ value: s, label: s }))}
+            />
           </div>
-        </div>
-      )}
-
-      {cloneOpen && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <h3 className="text-gray-800 font-semibold">Clonar semestre</h3>
-              <button
-                type="button"
-                onClick={() => setCloneOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Semestre origen
-                </label>
-                <AppSelect
-                  value={cloneOrigen}
-                  onValueChange={(v) => setCloneOrigen(v)}
-                  className="w-full bg-gray-50"
-                  options={
-                    semestres.length === 0
-                      ? [{ value: semestreActivo, label: semestreActivo }]
-                      : semestres.map((s) => ({ value: s, label: s }))
-                  }
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Semestre destino (ej: 2026B)
-                </label>
-                <input
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                  value={cloneDestino}
-                  onChange={(e) => setCloneDestino(e.target.value.toUpperCase())}
-                  placeholder="2026B"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Fecha de inicio
-                  </label>
-                  <input
-                    type="date"
-                    value={cloneFechaInicio}
-                    onChange={(e) => setCloneFechaInicio(e.target.value)}
-                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Fecha de finalización
-                  </label>
-                  <input
-                    type="date"
-                    min={cloneFechaInicio || undefined}
-                    value={cloneFechaFin}
-                    onChange={(e) => setCloneFechaFin(e.target.value)}
-                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Número de semanas
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={53}
-                  value={cloneNumeroSemanas}
-                  onChange={(e) => setCloneNumeroSemanas(e.target.value)}
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                />
-              </div>
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={clonePlantillas}
-                  onChange={(e) => setClonePlantillas(e.target.checked)}
-                />
-                Copiar también las plantillas de entregables
-              </label>
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={cloneActivar}
-                  onChange={(e) => setCloneActivar(e.target.checked)}
-                />
-                Establecer el nuevo semestre como activo
-              </label>
-              <p className="text-sm text-gray-600 bg-slate-50 rounded-lg px-3 py-2">
-                Se clonarán <strong>{clonePreviewCount}</strong> grupo
-                {clonePreviewCount === 1 ? "" : "s"} del semestre{" "}
-                <strong>{cloneOrigen || "—"}</strong>
-              </p>
-            </div>
-            <div className="flex gap-3 px-6 pb-6">
-              <button
-                type="button"
-                onClick={() => setCloneOpen(false)}
-                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={cloning}
-                onClick={() => void handleClonarSemestre()}
-                className="flex-1 bg-[#1e3a8a] text-white py-2.5 rounded-lg text-sm font-semibold disabled:opacity-50 inline-flex items-center justify-center gap-2"
-              >
-                {cloning ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                Clonar semestre
-              </button>
-            </div>
+          <div>
+            <label htmlFor="gm-destino" className="ds-label">Semestre destino</label>
+            <input id="gm-destino" className="ds-input" value={cloneDestino} onChange={(e) => setCloneDestino(e.target.value.toUpperCase())} placeholder="Ej.: 2026B" />
           </div>
+          <div>
+            <label htmlFor="gm-fini" className="ds-label">Fecha de inicio</label>
+            <input id="gm-fini" type="date" value={cloneFechaInicio} onChange={(e) => setCloneFechaInicio(e.target.value)} className="ds-input" />
+          </div>
+          <div>
+            <label htmlFor="gm-ffin" className="ds-label">Fecha de finalización</label>
+            <input id="gm-ffin" type="date" min={cloneFechaInicio || undefined} value={cloneFechaFin} onChange={(e) => setCloneFechaFin(e.target.value)} className="ds-input" />
+          </div>
+          <div className="col-span-2">
+            <label htmlFor="gm-nsem" className="ds-label">Número de semanas</label>
+            <input id="gm-nsem" type="number" min={1} max={53} value={cloneNumeroSemanas} onChange={(e) => setCloneNumeroSemanas(e.target.value)} className="ds-input" />
+          </div>
+          <label className="col-span-2 flex cursor-pointer items-center gap-2 text-sm">
+            <input type="checkbox" className="accent-brand" checked={clonePlantillas} onChange={(e) => setClonePlantillas(e.target.checked)} />
+            Copiar también las plantillas de entregables
+          </label>
+          <label className="col-span-2 flex cursor-pointer items-center gap-2 text-sm">
+            <input type="checkbox" className="accent-brand" checked={cloneActivar} onChange={(e) => setCloneActivar(e.target.checked)} />
+            Establecer el nuevo semestre como activo
+          </label>
+          <p className="col-span-2 rounded-lg bg-surface-2 px-3 py-2 text-sm text-text-muted">
+            Se clonarán <strong className="text-text">{clonePreviewCount}</strong> grupo{clonePreviewCount === 1 ? "" : "s"} del semestre{" "}
+            <strong className="text-text">{cloneOrigen || "—"}</strong>.
+          </p>
         </div>
-      )}
+      </ModalShell>
     </div>
   );
 }

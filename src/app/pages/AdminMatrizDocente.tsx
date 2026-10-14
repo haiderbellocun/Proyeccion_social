@@ -1,17 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import React from "react";
 import { useNavigate, useParams } from "react-router";
 import {
   ArrowLeft,
   ExternalLink,
-  Filter,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Info,
   Calendar,
-  Clock,
   Pencil,
   RotateCcw,
+  Search,
 } from "lucide-react";
 import {
   categoryConfig,
@@ -22,7 +22,8 @@ import {
   type IndicadoresSeguimiento,
   type SemanaActual,
 } from "../data/matrizConstants";
-import { CategoryTag } from "../components/CategoryTag";
+import { EmptyState, InlineAlert, Kpi, Page, PageHeader, PageLoading, Panel, ProgressBar, StatusPill, type Tone } from "../components/ds/primitives";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { AppSelect } from "../components/AppSelect";
 import { useConfirmationDialog } from "../components/ConfirmationDialog";
 import { useCurrentUser } from "../hooks/useCurrentUser";
@@ -126,37 +127,49 @@ type EstatusKey =
   | "no_iniciada"
   | "vencido";
 
-const EXCEL_STATUS_OPTIONS: { value: EstatusKey; label: string }[] = [
-  { value: "aprobado", label: "Aprobado" },
-  { value: "en_revision", label: "En revisión" },
-  { value: "observado", label: "Observado" },
-  { value: "borrador", label: "Borrador" },
-  { value: "en_curso", label: "En curso (semana actual)" },
-  { value: "no_iniciada", label: "No iniciado" },
-  { value: "vencido", label: "Vencido (fecha límite pasada)" },
+const EXCEL_STATUS_OPTIONS: { value: EstatusKey; label: string; dot: string }[] = [
+  { value: "aprobado", label: "Aprobado", dot: "bg-emerald-500" },
+  { value: "en_revision", label: "En revisión", dot: "bg-purple-500" },
+  { value: "observado", label: "Observado", dot: "bg-amber-400" },
+  { value: "borrador", label: "Borrador", dot: "bg-blue-500" },
+  { value: "en_curso", label: "En curso (semana actual)", dot: "bg-cyan-500" },
+  { value: "no_iniciada", label: "No iniciado", dot: "bg-gray-400" },
+  { value: "vencido", label: "Vencido (fecha límite pasada)", dot: "bg-red-500" },
 ];
+
+const TONE_ESTATUS: Record<EstatusKey, Tone> = {
+  aprobado: "success",
+  en_revision: "violet",
+  observado: "warning",
+  borrador: "brand",
+  en_curso: "signal",
+  no_iniciada: "neutral",
+  vencido: "danger",
+};
 
 /** El estado lo calcula el backend; "vencido" es una condición adicional, no un estado. */
 function computeEstatus(
   item: EntregableMatrizAdmin,
   semanaActual: number | null
-): { label: string; key: EstatusKey; color: string; bg: string; dot: string } {
+): { label: string; key: EstatusKey } {
   switch (item.estado) {
     case "aprobado":
-      return { label: "Aprobado", key: "aprobado", color: "text-green-700", bg: "bg-green-100", dot: "bg-green-500" };
+      return { label: "Aprobado", key: "aprobado" };
     case "enviado":
-      return { label: "En revisión", key: "en_revision", color: "text-blue-700", bg: "bg-blue-100", dot: "bg-blue-500" };
+      return { label: "En revisión", key: "en_revision" };
     case "observado":
-      return { label: "Observado", key: "observado", color: "text-amber-800", bg: "bg-amber-100", dot: "bg-amber-500" };
+      return { label: "Observado", key: "observado" };
     case "borrador":
-      return { label: "Borrador", key: "borrador", color: "text-slate-700", bg: "bg-slate-100", dot: "bg-slate-400" };
+      return { label: "Borrador", key: "borrador" };
     default:
       if (semanaActual != null && item.semana_numero === semanaActual) {
-        return { label: "En curso", key: "en_curso", color: "text-sky-700", bg: "bg-sky-100", dot: "bg-sky-500" };
+        return { label: "En curso", key: "en_curso" };
       }
-      return { label: "No iniciado", key: "no_iniciada", color: "text-gray-600", bg: "bg-gray-100", dot: "bg-gray-400" };
+      return { label: "No iniciado", key: "no_iniciada" };
   }
 }
+
+const TONE_SEMAFORO: Record<string, Tone> = { verde: "success", amarillo: "warning", rojo: "danger", sin_exigibles: "neutral", sin_datos: "neutral" };
 
 function parseTextWithLinks(text: string): React.ReactNode {
   if (!text) return null;
@@ -169,7 +182,7 @@ function parseTextWithLinks(text: string): React.ReactNode {
           href={part}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-blue-600 underline break-all hover:text-blue-800"
+          className="text-brand underline break-all hover:text-blue-800"
         >
           {part}
         </a>
@@ -223,6 +236,9 @@ export default function AdminMatrizDocente() {
   const [matrizStats, setMatrizStats] = useState<MatrizStatsPayload | null>(null);
   const [perfil, setPerfil] = useState<PerfilDocente | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [recarga, setRecarga] = useState(0);
+  const [busqueda, setBusqueda] = useState("");
 
   const [filterMonth, setFilterMonth] = useState<string>(ALL);
   const [filterCategory, setFilterCategory] = useState<string>(ALL);
@@ -230,7 +246,7 @@ export default function AdminMatrizDocente() {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [collapsedPhase, setCollapsedPhase] = useState<Record<string, boolean>>({});
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
-  const [showLegend, setShowLegend] = useState(true);
+  const [showLegend, setShowLegend] = useState(false);
   const [iniciativas, setIniciativas] = useState<IniciativaAsignada[]>([]);
   const [exceptionItem, setExceptionItem] = useState<EntregableMatrizAdmin | null>(null);
   const [exceptionForm, setExceptionForm] = useState(EMPTY_EXCEPTION_FORM);
@@ -250,6 +266,7 @@ export default function AdminMatrizDocente() {
     const load = async () => {
       try {
         setLoading(true);
+        setLoadError(null);
         const [resPerfil, resMatriz, resStats, resIniciativas] = await Promise.all([
           fetch(`${API_BASE}/admin/docentes/${docenteId}/perfil`),
           fetch(`${API_BASE}/admin/docentes/${docenteId}/matriz`),
@@ -296,6 +313,7 @@ export default function AdminMatrizDocente() {
       } catch (e) {
         console.error(e);
         notify.error("No se pudo cargar la matriz del docente. Intente de nuevo más tarde.");
+        setLoadError("No se pudo cargar la matriz del docente.");
         setEntregables([]);
         setMatrizStats(null);
         setPerfil(null);
@@ -305,7 +323,7 @@ export default function AdminMatrizDocente() {
     };
 
     void load();
-  }, [isAdmin, docenteId]);
+  }, [isAdmin, docenteId, recarga]);
 
   const refreshMatrix = async () => {
     const [matrixResponse, statsResponse] = await Promise.all([
@@ -469,13 +487,17 @@ export default function AdminMatrizDocente() {
       const coincideEstado =
         filterExcelStatus === ALL ||
         (filterExcelStatus === "vencido" ? e.vencido : key === filterExcelStatus);
+      const t = busqueda.trim().toLowerCase();
+      const coincideTexto =
+        !t || `${e.entregable} ${e.iniciativa_titulo} ${e.numero ?? ""} ${e.fase}`.toLowerCase().includes(t);
       return (
         (filterMonth === ALL || e.mes === filterMonth) &&
         (filterCategory === ALL || e.categoria === filterCategory) &&
-        coincideEstado
+        coincideEstado &&
+        coincideTexto
       );
     });
-  }, [entregables, filterMonth, filterCategory, filterExcelStatus, semanaNumero]);
+  }, [entregables, filterMonth, filterCategory, filterExcelStatus, semanaNumero, busqueda]);
 
   const groupedByMonthPhase = useMemo(() => {
     const months = filterMonth === ALL ? availableMonths : [filterMonth];
@@ -517,821 +539,569 @@ export default function AdminMatrizDocente() {
     setCollapsedPhase((prev) => ({ ...prev, [k]: !prev[k] }));
   };
 
-  const badgePctClass =
-    semaforoUi ? semaforoUi.badge : "bg-gray-100 text-gray-700";
+  const hayFiltros = filterMonth !== ALL || filterCategory !== ALL || filterExcelStatus !== ALL || busqueda.trim() !== "";
+  const limpiarFiltros = () => {
+    setFilterMonth(ALL);
+    setFilterCategory(ALL);
+    setFilterExcelStatus(ALL);
+    setBusqueda("");
+  };
+  const COLUMNAS = 8;
+  const tonoSemaforo: Tone = resumen?.semaforo ? TONE_SEMAFORO[resumen.semaforo] ?? "neutral" : "neutral";
 
   if (!isAdmin) {
     return (
-      <div className="p-6">
-        <p className="text-red-600">No autorizado. Solo administradores.</p>
-      </div>
+      <Page>
+        <InlineAlert>No autorizado. Solo los administradores pueden ver esta pantalla.</InlineAlert>
+      </Page>
     );
   }
 
   if (!docenteId || Number.isNaN(docenteId)) {
     return (
-      <div className="p-6">
-        <p className="text-gray-600">Docente no válido.</p>
-      </div>
+      <Page>
+        <EmptyState title="Docente no válido" action={<button type="button" className="ds-btn ds-btn-secondary" onClick={() => navigate("/admin")}>Volver al panel</button>}>
+          El identificador del docente en la dirección no es correcto.
+        </EmptyState>
+      </Page>
     );
   }
 
-  if (loading) {
-    return (
-      <div className="p-6 space-y-4 animate-pulse">
-        <div className="h-8 bg-gray-200 rounded w-1/3" />
-        <div className="h-32 bg-gray-100 rounded-xl" />
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="h-24 bg-gray-100 rounded-xl" />
-          ))}
-        </div>
-        <div className="h-64 bg-gray-100 rounded-xl" />
-      </div>
-    );
-  }
+  if (loading) return <PageLoading label="Cargando matriz del docente…" />;
 
   const nombreDocente = perfil ? `${perfil.nombre} ${perfil.apellido}`.trim() : "Docente";
 
-  return (
-    <div className="p-6 space-y-6">
-      <div className="flex flex-wrap items-start gap-4 justify-between">
-        <div className="space-y-2">
-          <button
-            type="button"
-            onClick={() => navigate(-1)}
-            className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900"
-          >
-            <ArrowLeft className="w-4 h-4" /> Volver
-          </button>
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-gray-900 text-xl font-semibold">
-              Matriz de Seguimiento — {nombreDocente}
-            </h1>
-            <span className={`text-sm font-semibold px-3 py-1 rounded-full ${badgePctClass}`}>
-              {pctAprobado}% aprobado · {pctReportado}% reportado
-            </span>
-            <span className="text-xs text-gray-500">{etiquetaSemana(semana)}</span>
+  /** Detalle expandido: descripción, fechas, evidencias y acciones administrativas. */
+  const renderDetalle = (e: EntregableMatrizAdmin, estatus: { label: string }, evidencias: string[]) => {
+    const progInicio = e.fecha_inicio_calculada;
+    const progFin = e.fecha_fin_calculada;
+    return (
+      <div className="grid gap-4 lg:grid-cols-5" onClick={(ev) => ev.stopPropagation()}>
+        <div className="space-y-3 lg:col-span-3">
+          <div>
+            <p className="ds-label">Descripción de la evidencia</p>
+            <p className="whitespace-pre-line text-sm leading-relaxed text-text-muted">
+              {e.descripcion_evidencia ? parseTextWithLinks(e.descripcion_evidencia) : e.entregable}
+            </p>
+            {e.enlace_referencia && (
+              <a href={e.enlace_referencia} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs text-brand underline-offset-2 hover:underline" style={{ fontWeight: 600 }}>
+                <ExternalLink className="h-3.5 w-3.5" /> Abrir recurso o formulario de referencia
+              </a>
+            )}
           </div>
-        </div>
-      </div>
-
-      {perfil && (
-        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-          <div className="flex flex-wrap gap-6 items-start">
-            <div className="flex flex-col gap-1 min-w-[200px]">
-              <div className="flex items-center gap-2">
-                <div className="w-10 h-10 rounded-full bg-blue-900 text-white flex items-center justify-center text-sm font-bold">
-                  {(perfil.nombre[0] ?? "?").toUpperCase()}
-                  {(perfil.apellido[0] ?? "?").toUpperCase()}
-                </div>
-                <div>
-                  <p className="font-semibold text-gray-900">
-                    {perfil.nombre} {perfil.apellido}
-                  </p>
-                  <p className="text-xs text-gray-500">{perfil.programa?.nombre ?? "—"}</p>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-3 mt-2 text-xs text-gray-600">
-                <span>📍 {perfil.regional ?? "—"}</span>
-                <span>
-                  🕐{" "}
-                  {perfil.grupo_matriz?.horas_totales != null
-                    ? perfil.grupo_matriz.horas_totales
-                    : "—"}{" "}
-                  horas PS
-                </span>
-                {perfil.tipo_docente && (
-                  <span
-                    className={`px-2 py-0.5 rounded-full font-semibold ${
-                      perfil.tipo_docente === "NUEVO"
-                        ? "bg-blue-100 text-blue-700"
-                        : "bg-gray-100 text-gray-600"
-                    }`}
-                  >
-                    {perfil.tipo_docente}
-                  </span>
-                )}
-              </div>
-              {perfil.link_drive && (
-                <a
-                  href={perfil.link_drive}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-blue-600 underline mt-1 flex items-center gap-1"
-                >
-                  <ExternalLink className="w-3 h-3" /> Ver carpeta Drive
-                </a>
-              )}
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-3">
+            <div><dt className="text-text-subtle">Fecha programada</dt><dd className="text-text">{progInicio && progFin ? `${formatDate(progInicio)} – ${formatDate(progFin)}` : "—"}</dd></div>
+            <div><dt className="text-text-subtle">Fecha real</dt><dd className="text-text">{e.fecha_real_entrega ? formatDate(e.fecha_real_entrega) : "—"}</dd></div>
+            <div>
+              <dt className="text-text-subtle">Primer envío</dt>
+              <dd className="text-text">
+                {e.fecha_primer_envio ? formatDate(e.fecha_primer_envio) : "—"}
+                {e.entrega_tardia && <span className="block text-red-700">Posterior a la fecha límite</span>}
+              </dd>
             </div>
-            <div className="hidden md:block w-px bg-gray-200 self-stretch min-h-[4rem]" />
-            {perfil.grupo_matriz && (
-              <div className="flex flex-col gap-1">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  Indicadores — {perfil.grupo_matriz.nombre}
-                </p>
-                <div className="flex flex-wrap gap-2 mt-1">
-                  {[
-                    { label: "Proyectos", value: perfil.grupo_matriz.num_proyectos, color: "bg-indigo-100 text-indigo-700" },
-                    { label: "Actividades", value: perfil.grupo_matriz.num_actividades, color: "bg-purple-100 text-purple-700" },
-                    { label: "Conv. Nuevos", value: perfil.grupo_matriz.num_convenios_nuevos, color: "bg-green-100 text-green-700" },
-                    { label: "Conv. Dinamizados", value: perfil.grupo_matriz.num_convenios_dinamizados, color: "bg-orange-100 text-orange-700" },
-                  ]
-                    .filter((i) => i.value > 0)
-                    .map((i) => (
-                      <span key={i.label} className={`px-2.5 py-1 rounded-full text-xs font-semibold ${i.color}`}>
-                        {i.value} {i.label}
-                      </span>
-                    ))}
-                </div>
-              </div>
+            {e.fecha_cargue_evidencia && <div><dt className="text-text-subtle">Último envío (registro automático)</dt><dd className="text-text">{formatDateTimeBogota(e.fecha_cargue_evidencia)}</dd></div>}
+            {e.num_envios > 1 && <div><dt className="text-text-subtle">Envíos</dt><dd className="text-text">{e.num_envios} (incluye reenvíos tras observaciones)</dd></div>}
+            <div>
+              <dt className="text-text-subtle">Estado</dt>
+              <dd className="text-text">{estatus.label}{e.vencido ? " · vencido" : ""}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div className="space-y-3 rounded-lg border border-line bg-surface p-3.5 lg:col-span-2">
+          {e.evidencia_exenta && e.justificacion_exencion && (
+            <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
+              <span style={{ fontWeight: 600 }}>Sin evidencia, justificación del docente: </span>
+              {e.justificacion_exencion}
+            </p>
+          )}
+          {e.comentario_revision ? (
+            <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
+              <span style={{ fontWeight: 600 }}>Comentario de revisión: </span>
+              {e.comentario_revision}
+            </p>
+          ) : null}
+          {e.tiene_excepcion && e.motivo_excepcion && (
+            <p className="text-xs text-text-muted">
+              <span className="text-text" style={{ fontWeight: 600 }}>Motivo del ajuste individual: </span>
+              {e.motivo_excepcion}
+            </p>
+          )}
+          <div>
+            <p className="ds-label">Evidencias</p>
+            {evidencias.length === 0 ? (
+              <p className="text-xs text-text-subtle">Aún no hay evidencia cargada.</p>
+            ) : (
+              <ul className="space-y-1 text-xs">
+                {evidencias.map((url, i) => (
+                  <li key={url}>
+                    <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1 break-all text-brand underline-offset-2 hover:underline">
+                      <ExternalLink className="h-3 w-3 shrink-0" />
+                      Abrir evidencia{evidencias.length > 1 ? ` ${i + 1}` : ""}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2 border-t border-line pt-3">
+            {e.estado === "aprobado" && e.entregable_id != null && (
+              <button type="button" onClick={() => setReabrir({ item: e, motivo: "", destino: "enviado" })} className="ds-btn ds-btn-secondary ds-btn-sm !text-red-700">
+                <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+                Reabrir
+              </button>
+            )}
+            <button type="button" onClick={() => openExceptionModal(e)} className="ds-btn ds-btn-primary ds-btn-sm">
+              <Pencil className="h-3.5 w-3.5" aria-hidden />
+              {e.tiene_excepcion ? "Editar excepción" : "Crear excepción"}
+            </button>
+            {e.tiene_excepcion && (
+              <button type="button" onClick={() => void removeException(e)} className="ds-btn ds-btn-secondary ds-btn-sm">
+                <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+                Restablecer grupo
+              </button>
             )}
           </div>
         </div>
-      )}
-
-      {resumen && resumen.semaforo && semaforoUi && (
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full ${semaforoUi.badge}`} style={{ fontWeight: 600 }}>
-            <span className={`w-1.5 h-1.5 rounded-full ${semaforoUi.dot}`} />
-            Riesgo: {semaforoUi.label}
-          </span>
-          <span className="px-2.5 py-1 rounded-full bg-blue-100 text-blue-700" style={{ fontWeight: 600 }}>
-            {resumen.enviados_pendientes_revision} en revisión
-          </span>
-          <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800" style={{ fontWeight: 600 }}>
-            {resumen.observados} observados
-          </span>
-          <span className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-700" style={{ fontWeight: 600 }}>
-            {resumen.borradores} borradores
-          </span>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
-        <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Avance reportado</p>
-          <p className="text-3xl font-bold text-gray-900 mt-1">{pctReportado}%</p>
-          <p className="text-xs text-gray-400 mt-1">
-            {reportadosTpl} / {totalTpl} enviados o aprobados
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Avance aprobado</p>
-          <p className="text-3xl font-bold text-emerald-600 mt-1">{pctAprobado}%</p>
-          <p className="text-xs text-gray-400 mt-1">
-            {resumen?.aprobados ?? 0} / {totalTpl} aprobados
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Avance esperado a hoy</p>
-          <p className="text-3xl font-bold text-amber-600 mt-1">{expectedPct}%</p>
-          <p className="text-xs text-gray-400 mt-1">
-            {resumen?.esperado ?? 0} entregables con fecha límite hasta {matrizStats?.hoy ? formatDate(matrizStats.hoy) : "hoy"}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Brecha de cumplimiento</p>
-          <p
-            className={`text-3xl font-bold mt-1 ${(resumen?.brecha_entregables ?? 0) < 0 ? "text-red-600" : "text-emerald-600"}`}
-          >
-            {(resumen?.brecha_entregables ?? 0) > 0 ? "+" : ""}
-            {resumen?.brecha_entregables ?? 0}
-          </p>
-          <p className="text-xs text-gray-400 mt-1">
-            aprobados − esperados · cumplimiento exigible{" "}
-            {resumen?.cumplimiento_exigible != null ? `${Math.round(resumen.cumplimiento_exigible)}%` : "—"}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Vencidos</p>
-          <p className="text-3xl font-bold text-red-600 mt-1">{vencidosCount}</p>
-          <p className="text-xs text-gray-400 mt-1">fecha límite pasada sin enviar o corregir</p>
-          <p className="text-xs text-gray-500 mt-1">
-            Horas: {resumen?.horas_programadas ?? 0} programadas · {resumen?.horas_reportadas ?? 0} reportadas · {resumen?.horas_aprobadas ?? 0} aprobadas
-          </p>
-        </div>
       </div>
+    );
+  };
+
+  return (
+    <Page wide>
+      <div>
+        <button type="button" onClick={() => navigate(-1)} className="ds-btn ds-btn-ghost ds-btn-sm -ml-2 mb-1">
+          <ArrowLeft className="h-4 w-4" aria-hidden /> Volver
+        </button>
+        <PageHeader
+          title={`Matriz de seguimiento · ${nombreDocente}`}
+          description={`${entregables.length} entregables programados · ${etiquetaSemana(semana)}`}
+          meta={
+            <>
+              {semaforoUi && <StatusPill tone={tonoSemaforo}>Riesgo: {semaforoUi.label}</StatusPill>}
+              <StatusPill tone="success" dot={false}>{pctAprobado}% aprobado</StatusPill>
+              <StatusPill tone="brand" dot={false}>{pctReportado}% reportado</StatusPill>
+            </>
+          }
+        />
+      </div>
+
+      {loadError && (
+        <InlineAlert action={<button type="button" className="ds-btn ds-btn-secondary ds-btn-sm" onClick={() => setRecarga((n) => n + 1)}>Reintentar</button>}>
+          {loadError}
+        </InlineAlert>
+      )}
+
+      {perfil && (
+        <div className="ds-panel flex flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-ink text-sm text-white" aria-hidden>
+              {(perfil.nombre[0] ?? "?").toUpperCase()}{(perfil.apellido[0] ?? "").toUpperCase()}
+            </span>
+            <div className="min-w-0 leading-tight">
+              <p className="truncate text-text" style={{ fontWeight: 600 }}>{perfil.nombre} {perfil.apellido}</p>
+              <p className="truncate text-xs text-text-subtle">{perfil.programa?.nombre ?? "—"}{perfil.regional ? ` · ${perfil.regional}` : ""}</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
+            <StatusPill tone="neutral" dot={false}>{perfil.grupo_matriz?.horas_totales != null ? perfil.grupo_matriz.horas_totales : "—"} h de Proyección Social</StatusPill>
+            {perfil.tipo_docente && <StatusPill tone={perfil.tipo_docente === "NUEVO" ? "brand" : "neutral"} dot={false}>{perfil.tipo_docente}</StatusPill>}
+            {perfil.grupo_matriz && (
+              <>
+                <span className="hidden text-text-subtle md:inline">Grupo {perfil.grupo_matriz.nombre}:</span>
+                {[
+                  { l: "proyectos", v: perfil.grupo_matriz.num_proyectos },
+                  { l: "actividades", v: perfil.grupo_matriz.num_actividades },
+                  { l: "conv. nuevos", v: perfil.grupo_matriz.num_convenios_nuevos },
+                  { l: "conv. dinamizados", v: perfil.grupo_matriz.num_convenios_dinamizados },
+                ]
+                  .filter((i) => i.v > 0)
+                  .map((i) => (
+                    <StatusPill key={i.l} tone="violet" dot={false}>{i.v} {i.l}</StatusPill>
+                  ))}
+              </>
+            )}
+          </div>
+          {perfil.link_drive && (
+            <a href={perfil.link_drive} target="_blank" rel="noopener noreferrer" className="ds-btn ds-btn-ghost ds-btn-sm ml-auto !text-brand">
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden /> Carpeta de Drive
+            </a>
+          )}
+        </div>
+      )}
+
+      <section aria-label="Indicadores de la matriz" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <Kpi label="Avance reportado" tone="brand" value={`${pctReportado}%`} progress={pctReportado} marker={expectedPct} hint={`${reportadosTpl} / ${totalTpl} enviados o aprobados`} />
+        <Kpi label="Avance aprobado" tone="success" value={`${pctAprobado}%`} progress={pctAprobado} marker={expectedPct} hint={`${resumen?.aprobados ?? 0} / ${totalTpl} aprobados`} />
+        <Kpi label="Avance esperado a hoy" tone="neutral" value={`${expectedPct}%`} hint={`${resumen?.esperado ?? 0} entregables con fecha límite hasta ${matrizStats?.hoy ? formatDate(matrizStats.hoy) : "hoy"}`} />
+        <Kpi
+          label="Brecha de cumplimiento"
+          tone={(resumen?.brecha_entregables ?? 0) < 0 ? "danger" : "success"}
+          value={`${(resumen?.brecha_entregables ?? 0) > 0 ? "+" : ""}${resumen?.brecha_entregables ?? 0}`}
+          hint={`Aprobados − esperados · cumplimiento exigible ${resumen?.cumplimiento_exigible != null ? `${Math.round(resumen.cumplimiento_exigible)}%` : "—"}`}
+        />
+        <Kpi
+          className="col-span-2 lg:col-span-1"
+          label="Vencidos"
+          tone={vencidosCount > 0 ? "danger" : "success"}
+          value={vencidosCount}
+          hint={`Horas: ${resumen?.horas_programadas ?? 0} programadas · ${resumen?.horas_reportadas ?? 0} reportadas · ${resumen?.horas_aprobadas ?? 0} aprobadas`}
+        />
+      </section>
+
+      {resumen && (
+        <div className="flex flex-wrap items-center gap-2 text-xs" aria-label="Resumen de estados">
+          <StatusPill tone="violet">{resumen.enviados_pendientes_revision} en revisión</StatusPill>
+          <StatusPill tone="warning">{resumen.observados} observados</StatusPill>
+          <StatusPill tone="brand">{resumen.borradores} borradores</StatusPill>
+          <StatusPill tone="danger">{vencidosCount} vencidos</StatusPill>
+        </div>
+      )}
 
       {matrizStats && (
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-x-auto">
-          <div className="px-5 py-3 border-b border-gray-100">
-            <h3 className="text-sm font-semibold text-gray-800">Avance por mes</h3>
-          </div>
-          <table className="w-full text-sm min-w-[640px]">
-            <thead>
-              <tr className="bg-gray-50 text-gray-500 text-xs uppercase">
-                <th className="text-left px-4 py-2">Mes</th>
-                <th className="text-left px-4 py-2">Total</th>
-                <th className="text-left px-4 py-2">Reportados</th>
-                <th className="text-left px-4 py-2">Aprobados</th>
-                <th className="text-left px-4 py-2">Esperados</th>
-                <th className="text-left px-4 py-2">Vencidos</th>
-                <th className="text-left px-4 py-2">% Reportado</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {matrizStats.por_mes.map((row) => {
-                const vac = vencidosPorMes[row.mes] ?? 0;
-                const pct = row.total > 0 ? Math.round(row.porcentaje_mensual) : 0;
-                return (
-                  <tr key={row.mes}>
-                    <td className="px-4 py-2 font-medium text-gray-800">{row.mes}</td>
-                    <td className="px-4 py-2 text-gray-600">{row.total}</td>
-                    <td className="px-4 py-2 text-gray-600">{row.reportados ?? row.completados}</td>
-                    <td className="px-4 py-2 text-gray-600">{row.aprobados ?? 0}</td>
-                    <td className="px-4 py-2 text-gray-600">{row.esperado ?? 0}</td>
-                    <td className="px-4 py-2 text-gray-600">{row.vencidos ?? vac}</td>
-                    <td className="px-4 py-2">
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 max-w-[120px] h-2 bg-gray-100 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-green-500 rounded-full"
-                            style={{ width: `${pct}%` }}
-                          />
+        <Panel title="Avance por mes" bodyClassName="">
+          <div className="overflow-x-auto">
+            <table className="ds-table min-w-[640px]">
+              <thead>
+                <tr>
+                  <th>Mes</th>
+                  <th className="text-right">Total</th>
+                  <th className="text-right">Reportados</th>
+                  <th className="text-right">Aprobados</th>
+                  <th className="text-right">Esperados</th>
+                  <th className="text-right">Vencidos</th>
+                  <th>% reportado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {matrizStats.por_mes.map((row) => {
+                  const vac = vencidosPorMes[row.mes] ?? 0;
+                  const pct = row.total > 0 ? Math.round(row.porcentaje_mensual) : 0;
+                  const venc = row.vencidos ?? vac;
+                  return (
+                    <tr key={row.mes}>
+                      <td className="text-text" style={{ fontWeight: 600 }}>{row.mes}</td>
+                      <td className="text-right tabular-nums text-text-muted">{row.total}</td>
+                      <td className="text-right tabular-nums text-text-muted">{row.reportados ?? row.completados}</td>
+                      <td className="text-right tabular-nums text-text-muted">{row.aprobados ?? 0}</td>
+                      <td className="text-right tabular-nums text-text-muted">{row.esperado ?? 0}</td>
+                      <td className={`text-right tabular-nums ${venc > 0 ? "text-red-700" : "text-text-muted"}`} style={{ fontWeight: venc > 0 ? 600 : 400 }}>{venc}</td>
+                      <td>
+                        <div className="flex items-center gap-2">
+                          <ProgressBar value={pct} tone={row.total === 0 ? "neutral" : pct >= 80 ? "success" : pct >= 40 ? "warning" : "danger"} className="w-28" label={`${row.mes}: ${pct}% reportado`} />
+                          <span className="w-10 text-right text-xs tabular-nums text-text" style={{ fontWeight: 600 }}>{pct}%</span>
                         </div>
-                        <span className="text-gray-700 tabular-nums w-10">{pct}%</span>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
       )}
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
-        <button
-          type="button"
-          onClick={() => setShowLegend(!showLegend)}
-          className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors rounded-xl"
-        >
-          <div className="flex items-center gap-2 text-sm text-gray-700 font-medium">
-            <Info className="w-4 h-4 text-gray-400" />
-            Leyenda de categorías y estados (Vencido se suma al estado cuando pasó la fecha límite)
+      <div className="ds-panel">
+        <div className="flex flex-wrap items-center gap-2.5 border-b border-line px-4 py-3">
+          <div className="relative w-full sm:w-72">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden />
+            <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar entregable, iniciativa o número" aria-label="Buscar en la matriz" className="ds-input !pl-9" />
           </div>
-          {showLegend ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-        </button>
-        {showLegend && (
-          <div className="px-5 pb-4 grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-gray-100 pt-4">
-            <div>
-              <p className="text-xs text-gray-500 uppercase mb-2 font-semibold">Categorías</p>
-              <div className="grid gap-1">
-                {Object.entries(categoryConfig).map(([key, cfg]) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className={`w-3 h-3 rounded-sm ${cfg.dot}`} />
-                    <span className="text-xs text-gray-600">{cfg.label}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 uppercase mb-2 font-semibold">Estados</p>
-              <div className="grid gap-1">
-                {EXCEL_STATUS_OPTIONS.map((opt) => (
-                  <span key={opt.value} className="text-xs text-gray-600">
-                    {opt.label}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="flex flex-wrap gap-3 items-center">
-        <div className="flex items-center gap-2 text-sm text-gray-500">
-          <Filter className="w-4 h-4" /> Filtrar:
-        </div>
-        <AppSelect
-          value={filterMonth}
-          onValueChange={(value) => setFilterMonth(value)}
-          options={[
-            { value: ALL, label: "Todos los meses" },
-            ...availableMonths.map((m) => ({ value: m, label: m })),
-          ]}
-        />
-        <AppSelect
-          value={filterCategory}
-          onValueChange={(value) => setFilterCategory(value)}
-          options={[
-            { value: ALL, label: "Todas las categorías" },
-            ...Object.entries(categoryConfig).map(([key, cfg]) => ({
-              value: key,
-              label: cfg.label,
-            })),
-          ]}
-        />
-        <AppSelect
-          value={filterExcelStatus}
-          onValueChange={(value) => setFilterExcelStatus(value)}
-          options={[
-            { value: ALL, label: "Todos los estados" },
-            ...EXCEL_STATUS_OPTIONS.map((opt) => ({
-              value: opt.value,
-              label: opt.label,
-            })),
-          ]}
-        />
-        {(filterMonth !== ALL || filterCategory !== ALL || filterExcelStatus !== ALL) && (
-          <button
-            type="button"
-            onClick={() => {
-              setFilterMonth(ALL);
-              setFilterCategory(ALL);
-              setFilterExcelStatus(ALL);
-            }}
-            className="text-xs text-blue-700 hover:underline"
-          >
-            Limpiar filtros
+          <div className="w-40"><AppSelect value={filterMonth} onValueChange={setFilterMonth} options={[{ value: ALL, label: "Todos los meses" }, ...availableMonths.map((m) => ({ value: m, label: m }))]} /></div>
+          <div className="w-52"><AppSelect value={filterCategory} onValueChange={setFilterCategory} options={[{ value: ALL, label: "Todas las categorías" }, ...Object.entries(categoryConfig).map(([key, cfg]) => ({ value: key, label: cfg.label }))]} /></div>
+          <div className="w-44"><AppSelect value={filterExcelStatus} onValueChange={setFilterExcelStatus} options={[{ value: ALL, label: "Todos los estados" }, ...EXCEL_STATUS_OPTIONS.map((opt) => ({ value: opt.value, label: opt.label }))]} /></div>
+          {hayFiltros && <button type="button" onClick={limpiarFiltros} className="ds-btn ds-btn-ghost ds-btn-sm !text-brand">Limpiar filtros</button>}
+          <button type="button" onClick={() => setShowLegend(!showLegend)} aria-expanded={showLegend} className="ds-btn ds-btn-ghost ds-btn-sm">
+            <Info className="h-3.5 w-3.5" aria-hidden /> Leyenda
           </button>
+          <span className="ml-auto text-xs tabular-nums text-text-subtle">{filtered.length} entregable{filtered.length !== 1 ? "s" : ""}</span>
+        </div>
+
+        {showLegend && (
+          <div className="grid gap-4 border-b border-line bg-surface-2 px-4 py-3 sm:grid-cols-2">
+            <div>
+              <p className="ds-label">Categorías de entregable</p>
+              <ul className="grid gap-1 sm:grid-cols-2">
+                {Object.entries(categoryConfig).map(([key, cfg]) => (
+                  <li key={key} className="flex items-center gap-2 text-xs text-text-muted"><span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${cfg.dot}`} />{cfg.label}</li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="ds-label">Estados de seguimiento (vencido se suma al estado cuando pasó la fecha límite)</p>
+              <ul className="grid gap-1">
+                {EXCEL_STATUS_OPTIONS.map((opt) => (
+                  <li key={opt.value} className="flex items-center gap-2 text-xs text-text-muted"><span className={`h-2.5 w-2.5 shrink-0 rounded-full ${opt.dot}`} />{opt.label}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
         )}
-        <span className="ml-auto text-xs text-gray-400">{filtered.length} entregables</span>
-      </div>
 
-      <div className="space-y-4">
-        {groupedByMonthPhase.map(({ month, items, phases }) => {
-          const mDone = items.filter((e) => e.completado).length; // reportados
-          const mTotal = items.length;
-          const mPct = mTotal > 0 ? Math.round((mDone / mTotal) * 100) : 0;
-
-          return (
-            <div key={month} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-              <button
-                type="button"
-                onClick={() => toggleCollapse(month)}
-                className="w-full flex flex-wrap items-center gap-3 px-5 py-3.5 hover:bg-gray-50 text-left"
-              >
-                <Calendar className="w-4 h-4 text-blue-700 shrink-0" />
-                <span className="font-semibold text-gray-800 text-sm">{month}</span>
-                <span className="text-xs text-gray-500">
-                  · {mDone}/{mTotal} reportados ({mPct}%)
-                </span>
-                {collapsed[month] ? <ChevronDown className="w-4 h-4 ml-auto" /> : <ChevronUp className="w-4 h-4 ml-auto" />}
-              </button>
-
-              {!collapsed[month] && (
-                <div className="border-t border-gray-100 bg-gray-50/60 px-3 py-3 space-y-2">
-                  {phases.map(({ phase, items: phaseItems }) => {
-                    const pk = phaseKey(month, phase);
-                    const phaseCollapsed = collapsedPhase[pk];
-                    return (
-                      <div key={pk} className="rounded-xl border border-gray-100 bg-white overflow-hidden shadow-sm">
-                        <button
-                          type="button"
-                          onClick={() => togglePhaseCollapse(month, phase)}
-                          className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-gray-50/80 border-b border-gray-50"
-                        >
-                          {phaseCollapsed ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
-                          <span className="text-sm font-semibold text-gray-800 flex-1 truncate">{phase}</span>
-                          <span className="text-[11px] text-gray-400">{phaseItems.length} entregables</span>
-                        </button>
-
-                        {!phaseCollapsed &&
-                          (() => {
-                            const byWeek = new Map<number, EntregableMatrizAdmin[]>();
-                            for (const it of phaseItems) {
-                              const w = it.semana_numero;
-                              if (!byWeek.has(w)) byWeek.set(w, []);
-                              byWeek.get(w)!.push(it);
-                            }
-                            const weekNums = [...byWeek.keys()].sort((a, b) => a - b);
-                            return (
-                              <div className="divide-y divide-gray-100">
-                                {weekNums.map((weekNum) => {
-                                  const semanaItems = byWeek.get(weekNum)!;
-                                  const mesHeader = semanaItems[0]?.mes ?? "";
-                                  const completadosSemana = semanaItems.filter((i) => i.completado).length;
-                                  const totalSemana = semanaItems.length;
-                                  const horasSemana = semanaItems.reduce((acc, i) => acc + (i.horas || 0), 0);
+        {groupedByMonthPhase.length === 0 ? (
+          <EmptyState icon={Search} title="Ningún entregable coincide con los filtros" action={hayFiltros ? <button type="button" onClick={limpiarFiltros} className="ds-btn ds-btn-secondary ds-btn-sm">Limpiar filtros</button> : undefined}>
+            {hayFiltros ? "Prueba con otro mes, categoría o estado." : "Este docente aún no tiene entregables en su matriz."}
+          </EmptyState>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="ds-table">
+              <thead>
+                <tr>
+                  <th className="w-14">N.º</th>
+                  <th>Entregable</th>
+                  <th className="hidden md:table-cell">Periodo de entrega</th>
+                  <th className="hidden text-right lg:table-cell">Horas</th>
+                  <th>Estado</th>
+                  <th className="hidden sm:table-cell">Evidencia</th>
+                  <th className="w-10"><span className="sr-only">Ajustar</span></th>
+                  <th className="w-10"><span className="sr-only">Detalle</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {groupedByMonthPhase.map(({ month, items, phases }) => {
+                  const mDone = items.filter((e) => e.completado).length; // reportados
+                  const mTotal = items.length;
+                  const mPct = mTotal > 0 ? Math.round((mDone / mTotal) * 100) : 0;
+                  return (
+                    <Fragment key={month}>
+                      <tr>
+                        <td colSpan={COLUMNAS} className="!border-b !border-line !bg-gray-100/70 !p-0">
+                          <button type="button" onClick={() => toggleCollapse(month)} aria-expanded={!collapsed[month]} className="flex w-full items-center gap-3 px-3 py-2 text-left">
+                            {collapsed[month] ? <ChevronRight className="h-4 w-4 shrink-0 text-text-subtle" aria-hidden /> : <ChevronDown className="h-4 w-4 shrink-0 text-text-subtle" aria-hidden />}
+                            <Calendar className="h-4 w-4 shrink-0 text-brand" aria-hidden />
+                            <span className="text-sm text-text" style={{ fontWeight: 650 }}>{month}</span>
+                            <span className="text-xs text-text-subtle">Reportados {mDone}/{mTotal}{mTotal ? ` (${mPct}%)` : ""}</span>
+                            <ProgressBar value={mPct} tone={mPct >= 80 ? "success" : mPct >= 40 ? "warning" : "danger"} className="hidden max-w-[10rem] flex-1 sm:block" label={`${month}: ${mPct}% reportado`} />
+                          </button>
+                        </td>
+                      </tr>
+                      {!collapsed[month] &&
+                        phases.map(({ phase, items: phaseItems }) => {
+                          const pk = phaseKey(month, phase);
+                          const cerrada = collapsedPhase[pk];
+                          return (
+                            <Fragment key={pk}>
+                              <tr>
+                                <td colSpan={COLUMNAS} className="!bg-surface-2 !p-0">
+                                  <button type="button" onClick={() => togglePhaseCollapse(month, phase)} aria-expanded={!cerrada} className="flex w-full items-center gap-2 py-1.5 pl-8 pr-3 text-left">
+                                    {cerrada ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-subtle" aria-hidden /> : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-subtle" aria-hidden />}
+                                    <span className="flex-1 truncate text-xs text-text-muted" style={{ fontWeight: 600 }}>{phase}</span>
+                                    <span className="shrink-0 text-[0.6875rem] tabular-nums text-text-subtle">{phaseItems.length} {phaseItems.length === 1 ? "entregable" : "entregables"}</span>
+                                  </button>
+                                </td>
+                              </tr>
+                              {!cerrada &&
+                                phaseItems.map((e) => {
+                                  const estatus = computeEstatus(e, semanaNumero);
+                                  const catCfg = categoryConfig[categoryUi(e.categoria)];
+                                  const abierto = expandedRow === e.id;
+                                  const evidencias = e.evidencias && e.evidencias.length > 0 ? e.evidencias : e.url_evidencia ? [e.url_evidencia] : [];
+                                  const alternar = () => setExpandedRow(abierto ? null : e.id);
                                   return (
-                                    <div key={weekNum}>
-                                      <div className="flex items-center justify-between w-full px-4 py-2.5 bg-slate-50 border-b border-gray-100 gap-2">
-                                        <span className="font-semibold text-sm text-gray-800">
-                                          Semana {weekNum}
-                                          {mesHeader ? ` · ${mesHeader}` : ""}
-                                        </span>
-                                        <div className="flex items-center gap-2 sm:gap-3 text-sm shrink-0">
-                                          <span className="text-gray-500">{horasSemana}h</span>
-                                          <span
-                                            className={`font-medium text-xs sm:text-sm ${
-                                              completadosSemana === totalSemana
-                                                ? "text-green-600"
-                                                : completadosSemana === 0
-                                                ? "text-gray-400"
-                                                : "text-blue-600"
-                                            }`}
-                                          >
-                                            {completadosSemana}/{totalSemana} reportados
+                                    <Fragment key={e.id}>
+                                      <tr
+                                        id={`entregable-${e.id}`}
+                                        tabIndex={0}
+                                        aria-expanded={abierto}
+                                        onClick={alternar}
+                                        onKeyDown={(ev) => {
+                                          if (ev.target !== ev.currentTarget) return;
+                                          if (ev.key === "Enter" || ev.key === " ") {
+                                            ev.preventDefault();
+                                            alternar();
+                                          }
+                                        }}
+                                        className={`cursor-pointer ${abierto ? "[&>td]:bg-surface-2" : ""}`}
+                                      >
+                                        <td className="tabular-nums text-text-subtle">{e.numero != null && e.numero !== 0 ? `#${e.numero}` : `S${e.semana_numero}`}</td>
+                                        <td className="max-w-[520px]">
+                                          <p className="line-clamp-2 text-text" style={{ fontWeight: 600 }}>{e.entregable}</p>
+                                          <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-text-subtle">
+                                            <span className="inline-flex items-center gap-1.5"><span className={`h-2 w-2 shrink-0 rounded-sm ${catCfg.dot}`} aria-hidden />{catCfg.label}</span>
+                                            <span className="truncate">{e.iniciativa_titulo}</span>
+                                            {e.tiene_excepcion && <StatusPill tone="warning" dot={false}>Excepción individual</StatusPill>}
+                                            <span className="md:hidden">S{e.semana_numero} · {e.fecha_fin_calculada ? `límite ${formatDate(e.fecha_fin_calculada)}` : "sin fecha"} · {e.horas} h</span>
+                                          </p>
+                                          {e.estado === "observado" && e.comentario_revision && (
+                                            <p className="mt-1 line-clamp-1 text-xs text-amber-800">Observación: {e.comentario_revision}</p>
+                                          )}
+                                        </td>
+                                        <td className="hidden whitespace-nowrap text-text-muted md:table-cell">
+                                          <span className="tabular-nums">S{e.semana_numero}</span>
+                                          <span className="mx-1.5 text-text-subtle">·</span>
+                                          {e.fecha_inicio_calculada && e.fecha_fin_calculada ? `${formatDate(e.fecha_inicio_calculada)} → ${formatDate(e.fecha_fin_calculada)}` : "—"}
+                                        </td>
+                                        <td className="hidden text-right tabular-nums text-text-muted lg:table-cell">{e.horas} h</td>
+                                        <td>
+                                          <span className="inline-flex flex-wrap items-center gap-1">
+                                            <StatusPill tone={TONE_ESTATUS[estatus.key]}>{estatus.label}</StatusPill>
+                                            {e.vencido && <StatusPill tone="danger" dot={false}>Vencido</StatusPill>}
                                           </span>
-                                          <div className="w-12 sm:w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden hidden sm:block">
-                                            <div
-                                              className="h-full bg-green-500 rounded-full transition-all"
-                                              style={{
-                                                width: `${
-                                                  totalSemana > 0
-                                                    ? (completadosSemana / totalSemana) * 100
-                                                    : 0
-                                                }%`,
-                                              }}
-                                            />
-                                          </div>
-                                        </div>
-                                      </div>
-                                      <ul className="divide-y divide-gray-50">
-                                        {semanaItems.map((e) => {
-                                          const estatus = computeEstatus(e, semanaNumero);
-                                          const catCfg = categoryConfig[categoryUi(e.categoria)];
-                                          const isCurrent = estatus.key === "en_curso";
-                                          const isExpanded = expandedRow === e.id;
-                                          const progInicio = e.fecha_inicio_calculada;
-                                          const progFin = e.fecha_fin_calculada;
-
-                                          return (
-                                            <li key={e.id}>
-                                              <div
-                                                role="button"
-                                                tabIndex={0}
-                                                onClick={() => setExpandedRow(isExpanded ? null : e.id)}
-                                                onKeyDown={(ev) => {
-                                                  if (ev.key === "Enter" || ev.key === " ") {
-                                                    ev.preventDefault();
-                                                    setExpandedRow(isExpanded ? null : e.id);
-                                                  }
-                                                }}
-                                                className={`px-4 py-3 cursor-pointer border-l-4 transition-colors ${catCfg.border} ${
-                                                  isCurrent ? "bg-blue-50/50" : "hover:bg-gray-50/90"
-                                                }`}
-                                              >
-                                                <div className="flex flex-wrap items-start gap-3">
-                                                  <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
-                                                    <span className="text-[11px] text-gray-500 bg-gray-100 px-2 py-0.5 rounded font-semibold">
-                                                      {e.numero != null && e.numero !== 0 ? `#${e.numero}` : `S${e.semana_numero}`}
-                                                    </span>
-                                                    <CategoryTag category={categoryUi(e.categoria)} compact />
-                                                    <span className="text-sm text-gray-900 font-semibold leading-snug">{e.entregable}</span>
-                                                  </div>
-                                                  <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 shrink-0">
-                                                    <span
-                                                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${estatus.bg} ${estatus.color}`}
-                                                    >
-                                                      <span className={`w-1.5 h-1.5 rounded-full ${estatus.dot}`} />
-                                                      {estatus.label}
-                                                    </span>
-                                                    {e.vencido && (
-                                                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
-                                                        <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                                                        Vencido
-                                                      </span>
-                                                    )}
-                                                    <span className="inline-flex items-center gap-1">
-                                                      <Clock className="w-3.5 h-3.5" />
-                                                      {e.horas}h
-                                                    </span>
-                                                    {e.url_evidencia ? (
-                                                      <a
-                                                        href={e.url_evidencia}
-                                                        target="_blank"
-                                                        rel="noreferrer"
-                                                        className="inline-flex text-blue-700 p-1"
-                                                        onClick={(ev) => ev.stopPropagation()}
-                                                      >
-                                                        <ExternalLink className="w-4 h-4" />
-                                                      </a>
-                                                    ) : null}
-                                                  </div>
-                                                </div>
-                                                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                                                  <span className="font-semibold text-gray-500">
-                                                    Iniciativa:
-                                                  </span>
-                                                  <span className="text-gray-800">
-                                                    {e.iniciativa_titulo}
-                                                  </span>
-                                                  {e.tiene_excepcion && (
-                                                    <span className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800">
-                                                      Excepción individual
-                                                    </span>
-                                                  )}
-                                                </div>
-                                                <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
-                                                  <Calendar className="w-3.5 h-3.5 shrink-0" />
-                                                  <span>
-                                                    {progInicio && progFin
-                                                      ? `${formatDate(progInicio)} – ${formatDate(progFin)}`
-                                                      : "—"}
-                                                  </span>
-                                                </div>
-                                              </div>
-                                              {isExpanded && (
-                                                <div className={`px-4 py-3 text-sm border-l-4 ${catCfg.border} ${catCfg.bg}`}>
-                                                  <p className="text-xs text-gray-500 uppercase font-semibold mb-1">
-                                                    Descripción evidencia
-                                                  </p>
-                                                  <p className="text-gray-700 whitespace-pre-line leading-relaxed">
-                                                    {e.descripcion_evidencia
-                                                      ? parseTextWithLinks(e.descripcion_evidencia)
-                                                      : e.entregable}
-                                                  </p>
-                                                  <div className="mt-3 space-y-1 text-xs text-gray-600">
-                                                    <p>
-                                                      <span className="font-semibold">Fecha programada: </span>
-                                                      {progInicio && progFin
-                                                        ? `${formatDate(progInicio)} - ${formatDate(progFin)}`
-                                                        : "—"}
-                                                    </p>
-                                                    <p>
-                                                      <span className="font-semibold">Fecha real: </span>
-                                                      {e.fecha_real_entrega ? formatDate(e.fecha_real_entrega) : "—"}
-                                                    </p>
-                                                    {e.fecha_cargue_evidencia && (
-                                                      <p>
-                                                        <span className="font-semibold">
-                                                          Último envío (registro automático): {" "}
-                                                        </span>
-                                                        {formatDateTimeBogota(e.fecha_cargue_evidencia)}
-                                                      </p>
-                                                    )}
-                                                    {e.fecha_primer_envio && (
-                                                      <p>
-                                                        <span className="font-semibold">Primer envío: </span>
-                                                        {formatDate(e.fecha_primer_envio)}
-                                                        {e.entrega_tardia && (
-                                                          <span className="ml-2 text-red-600">
-                                                            (posterior a la fecha límite)
-                                                          </span>
-                                                        )}
-                                                      </p>
-                                                    )}
-                                                    {e.num_envios > 1 && (
-                                                      <p>
-                                                        <span className="font-semibold">Envíos: </span>
-                                                        {e.num_envios} (incluye reenvíos tras observaciones)
-                                                      </p>
-                                                    )}
-                                                    {e.evidencia_exenta && e.justificacion_exencion && (
-                                                      <p className="text-amber-800 bg-amber-50 rounded p-2 mt-2">
-                                                        <span className="font-semibold">
-                                                          Sin evidencia — justificación del docente:{" "}
-                                                        </span>
-                                                        {e.justificacion_exencion}
-                                                      </p>
-                                                    )}
-                                                    <p>
-                                                      <span className="font-semibold">Estado: </span>
-                                                      {estatus.label}
-                                                      {e.vencido ? " · vencido" : ""}
-                                                    </p>
-                                                    {e.comentario_revision ? (
-                                                      <p className="text-amber-800 bg-amber-50 rounded p-2 mt-2">
-                                                        <span className="font-semibold">Comentario admin: </span>
-                                                        {e.comentario_revision}
-                                                      </p>
-                                                    ) : null}
-                                                    {(e.evidencias && e.evidencias.length > 0
-                                                      ? e.evidencias
-                                                      : e.url_evidencia
-                                                      ? [e.url_evidencia]
-                                                      : []
-                                                    ).map((url, i) => (
-                                                      <p key={url}>
-                                                        <a
-                                                          href={url}
-                                                          target="_blank"
-                                                          rel="noopener noreferrer"
-                                                          className="text-blue-600 underline"
-                                                        >
-                                                          Abrir evidencia{e.evidencias && e.evidencias.length > 1 ? ` ${i + 1}` : ""}
-                                                        </a>
-                                                      </p>
-                                                    ))}
-                                                  </div>
-                                                  <div className="mt-4 flex flex-wrap gap-2 border-t border-gray-200 pt-3">
-                                                    {e.estado === "aprobado" && e.entregable_id != null && (
-                                                      <button
-                                                        type="button"
-                                                        onClick={() =>
-                                                          setReabrir({ item: e, motivo: "", destino: "enviado" })
-                                                        }
-                                                        className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
-                                                      >
-                                                        <RotateCcw className="h-3.5 w-3.5" />
-                                                        Reabrir
-                                                      </button>
-                                                    )}
-                                                    <button
-                                                      type="button"
-                                                      onClick={() => openExceptionModal(e)}
-                                                      className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-800"
-                                                    >
-                                                      <Pencil className="h-3.5 w-3.5" />
-                                                      {e.tiene_excepcion
-                                                        ? "Editar excepción"
-                                                        : "Crear excepción"}
-                                                    </button>
-                                                    {e.tiene_excepcion && (
-                                                      <button
-                                                        type="button"
-                                                        onClick={() => void removeException(e)}
-                                                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-50"
-                                                      >
-                                                        <RotateCcw className="h-3.5 w-3.5" />
-                                                        Restablecer grupo
-                                                      </button>
-                                                    )}
-                                                  </div>
-                                                </div>
-                                              )}
-                                            </li>
-                                          );
-                                        })}
-                                      </ul>
-                                    </div>
+                                        </td>
+                                        <td className="hidden sm:table-cell" onClick={(ev) => ev.stopPropagation()}>
+                                          {evidencias[0] ? (
+                                            <a href={evidencias[0]} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-brand hover:underline" aria-label="Abrir evidencia en una pestaña nueva">
+                                              <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                                              {evidencias.length > 1 ? `${evidencias.length} enlaces` : "Abrir"}
+                                            </a>
+                                          ) : (
+                                            <span className="text-xs text-text-subtle">—</span>
+                                          )}
+                                        </td>
+                                        <td onClick={(ev) => ev.stopPropagation()}>
+                                          <button
+                                            type="button"
+                                            onClick={() => openExceptionModal(e)}
+                                            className="ds-btn ds-btn-ghost ds-btn-sm !px-1.5"
+                                            aria-label={e.tiene_excepcion ? `Editar excepción del entregable ${e.numero ?? e.semana_numero}` : `Crear excepción del entregable ${e.numero ?? e.semana_numero}`}
+                                            title={e.tiene_excepcion ? "Editar excepción" : "Crear excepción"}
+                                          >
+                                            <Pencil className="h-3.5 w-3.5" aria-hidden />
+                                          </button>
+                                        </td>
+                                        <td className="text-text-subtle">{abierto ? <ChevronUp className="h-4 w-4" aria-hidden /> : <ChevronDown className="h-4 w-4" aria-hidden />}</td>
+                                      </tr>
+                                      {abierto && (
+                                        <tr>
+                                          <td colSpan={COLUMNAS} className="!bg-surface-2 !px-4 !py-4">
+                                            {renderDetalle(e, estatus, evidencias)}
+                                          </td>
+                                        </tr>
+                                      )}
+                                    </Fragment>
                                   );
                                 })}
-                              </div>
-                            );
-                          })()}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
+                            </Fragment>
+                          );
+                        })}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      {groupedByMonthPhase.length === 0 && (
-        <p className="text-center text-gray-400 text-sm py-8">No hay entregables con los filtros seleccionados.</p>
-      )}
-
-      {reabrir && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
-          <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl">
-            <div className="border-b border-gray-100 px-6 py-4">
-              <h2 className="text-lg font-semibold text-gray-900">Reabrir entregable aprobado</h2>
-              <p className="mt-1 text-sm text-gray-500">
-                {reabrir.item.entregable}. Es un procedimiento controlado: queda registrado con tu usuario y el motivo.
-              </p>
-            </div>
-            <div className="space-y-3 p-6">
+      <Dialog open={!!reabrir} onOpenChange={(open) => { if (!open && !savingReabrir) setReabrir(null); }}>
+        <DialogContent className="rounded-xl border-line bg-surface sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Reabrir entregable aprobado</DialogTitle>
+            <DialogDescription>
+              {reabrir?.item.entregable}. Es un procedimiento controlado: queda registrado con tu usuario y el motivo.
+            </DialogDescription>
+          </DialogHeader>
+          {reabrir && (
+            <div className="space-y-3">
               <div>
-                <label className="text-xs font-semibold text-gray-600">
-                  Volver a <span className="text-red-600">*</span>
-                </label>
-                <AppSelect
-                  value={reabrir.destino}
-                  onValueChange={(value) =>
-                    setReabrir((r) => (r ? { ...r, destino: value === "observado" ? "observado" : "enviado" } : r))
-                  }
-                  className="mt-1 w-full"
-                  options={[
-                    { value: "enviado", label: "En revisión (pendiente de nueva decisión)" },
-                    { value: "observado", label: "Observado (el docente debe corregir)" },
-                  ]}
-                />
+                <label className="ds-label" htmlFor="reabrir-destino">Volver a <span className="text-red-700">*</span></label>
+                <div id="reabrir-destino">
+                  <AppSelect
+                    value={reabrir.destino}
+                    onValueChange={(value) =>
+                      setReabrir((r) => (r ? { ...r, destino: value === "observado" ? "observado" : "enviado" } : r))
+                    }
+                    className="w-full"
+                    options={[
+                      { value: "enviado", label: "En revisión (pendiente de nueva decisión)" },
+                      { value: "observado", label: "Observado (el docente debe corregir)" },
+                    ]}
+                  />
+                </div>
               </div>
               <div>
-                <label className="text-xs font-semibold text-gray-600">
-                  Motivo (mínimo 10 caracteres) <span className="text-red-600">*</span>
-                </label>
+                <label className="ds-label" htmlFor="reabrir-motivo">Motivo (mínimo 10 caracteres) <span className="text-red-700">*</span></label>
                 <textarea
+                  id="reabrir-motivo"
                   rows={3}
                   value={reabrir.motivo}
                   onChange={(event) => setReabrir((r) => (r ? { ...r, motivo: event.target.value } : r))}
-                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                  className="ds-input"
                   placeholder="Ej.: el acta cargada corresponde a otra semana"
                 />
               </div>
             </div>
-            <div className="flex justify-end gap-2 border-t border-gray-100 px-6 py-4">
-              <button
-                type="button"
-                onClick={() => setReabrir(null)}
-                disabled={savingReabrir}
-                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={() => void confirmarReabrir()}
-                disabled={savingReabrir}
-                className="rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-              >
-                {savingReabrir ? "Reabriendo…" : "Reabrir entregable"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+          )}
+          <DialogFooter>
+            <button type="button" onClick={() => setReabrir(null)} disabled={savingReabrir} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" onClick={() => void confirmarReabrir()} disabled={savingReabrir} className="ds-btn ds-btn-danger">
+              {savingReabrir ? "Reabriendo…" : "Reabrir entregable"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {exceptionItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
-          <div className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
-            <div className="border-b border-gray-100 px-6 py-4">
-              <h2 className="text-lg font-semibold text-gray-900">
-                Ajuste individual del entregable
-              </h2>
-              <p className="mt-1 text-sm text-gray-500">
-                Solo afectará a {nombreDocente}; la plantilla del grupo permanecerá intacta.
-              </p>
+      <Dialog open={!!exceptionItem} onOpenChange={(open) => { if (!open && !savingException) setExceptionItem(null); }}>
+        <DialogContent className="max-h-[92vh] overflow-y-auto rounded-xl border-line bg-surface sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Ajuste individual del entregable</DialogTitle>
+            <DialogDescription>
+              Solo afectará a {nombreDocente}; la plantilla del grupo permanecerá intacta.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="md:col-span-2">
+              <label className="ds-label" htmlFor="exc-entregable">Entregable</label>
+              <textarea
+                id="exc-entregable"
+                rows={3}
+                value={exceptionForm.entregable_override}
+                onChange={(event) => setExceptionForm((form) => ({ ...form, entregable_override: event.target.value }))}
+                className="ds-input"
+              />
             </div>
-            <div className="grid grid-cols-1 gap-4 p-6 md:grid-cols-2">
-              <div className="md:col-span-2">
-                <label className="text-xs font-semibold text-gray-600">Entregable</label>
-                <textarea
-                  rows={3}
-                  value={exceptionForm.entregable_override}
-                  onChange={(event) =>
-                    setExceptionForm((form) => ({
-                      ...form,
-                      entregable_override: event.target.value,
-                    }))
-                  }
-                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <label className="text-xs font-semibold text-gray-600">
-                  Descripción de la evidencia
-                </label>
-                <textarea
-                  rows={4}
-                  value={exceptionForm.descripcion_evidencia_override}
-                  onChange={(event) =>
-                    setExceptionForm((form) => ({
-                      ...form,
-                      descripcion_evidencia_override: event.target.value,
-                    }))
-                  }
-                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <label className="text-xs font-semibold text-gray-600">
-                  Enlace o formulario de referencia
-                </label>
-                <input
-                  type="url"
-                  placeholder="https://"
-                  value={exceptionForm.enlace_referencia_override}
-                  onChange={(event) =>
-                    setExceptionForm((form) => ({
-                      ...form,
-                      enlace_referencia_override: event.target.value,
-                    }))
-                  }
-                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-gray-600">
-                  Fecha exacta de inicio
-                </label>
-                <input
-                  type="date"
-                  value={exceptionForm.fecha_inicio_override}
-                  onChange={(event) =>
-                    setExceptionForm((form) => ({
-                      ...form,
-                      fecha_inicio_override: event.target.value,
-                    }))
-                  }
-                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-gray-600">
-                  Fecha límite exacta
-                </label>
-                <input
-                  type="date"
-                  value={exceptionForm.fecha_fin_override}
-                  onChange={(event) =>
-                    setExceptionForm((form) => ({
-                      ...form,
-                      fecha_fin_override: event.target.value,
-                    }))
-                  }
-                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <label className="text-xs font-semibold text-gray-600">
-                  Iniciativa asociada
-                </label>
+            <div className="md:col-span-2">
+              <label className="ds-label" htmlFor="exc-descripcion">Descripción de la evidencia</label>
+              <textarea
+                id="exc-descripcion"
+                rows={4}
+                value={exceptionForm.descripcion_evidencia_override}
+                onChange={(event) => setExceptionForm((form) => ({ ...form, descripcion_evidencia_override: event.target.value }))}
+                className="ds-input"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="ds-label" htmlFor="exc-enlace">Enlace o formulario de referencia</label>
+              <input
+                id="exc-enlace"
+                type="url"
+                placeholder="https://"
+                value={exceptionForm.enlace_referencia_override}
+                onChange={(event) => setExceptionForm((form) => ({ ...form, enlace_referencia_override: event.target.value }))}
+                className="ds-input"
+              />
+            </div>
+            <div>
+              <label className="ds-label" htmlFor="exc-inicio">Fecha exacta de inicio</label>
+              <input
+                id="exc-inicio"
+                type="date"
+                value={exceptionForm.fecha_inicio_override}
+                onChange={(event) => setExceptionForm((form) => ({ ...form, fecha_inicio_override: event.target.value }))}
+                className="ds-input"
+              />
+            </div>
+            <div>
+              <label className="ds-label" htmlFor="exc-fin">Fecha límite exacta</label>
+              <input
+                id="exc-fin"
+                type="date"
+                value={exceptionForm.fecha_fin_override}
+                onChange={(event) => setExceptionForm((form) => ({ ...form, fecha_fin_override: event.target.value }))}
+                className="ds-input"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="ds-label" htmlFor="exc-iniciativa">Iniciativa asociada</label>
+              <div id="exc-iniciativa">
                 <AppSelect
                   value={exceptionForm.proyecto_id || "__inherit__"}
                   onValueChange={(value) =>
-                    setExceptionForm((form) => ({
-                      ...form,
-                      proyecto_id: value === "__inherit__" ? "" : value,
-                    }))
+                    setExceptionForm((form) => ({ ...form, proyecto_id: value === "__inherit__" ? "" : value }))
                   }
-                  className="mt-1 w-full"
+                  className="w-full"
                   options={[
                     { value: "__inherit__", label: "Inferir desde el entregable" },
                     ...iniciativas.map((initiative) => ({
@@ -1341,45 +1111,29 @@ export default function AdminMatrizDocente() {
                   ]}
                 />
               </div>
-              <div className="md:col-span-2">
-                <label className="text-xs font-semibold text-gray-600">
-                  Motivo del ajuste <span className="text-red-600">*</span>
-                </label>
-                <textarea
-                  rows={2}
-                  value={exceptionForm.motivo}
-                  onChange={(event) =>
-                    setExceptionForm((form) => ({
-                      ...form,
-                      motivo: event.target.value,
-                    }))
-                  }
-                  placeholder="Ej.: ampliación aprobada por convenio gubernamental"
-                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                />
-              </div>
             </div>
-            <div className="flex justify-end gap-2 border-t border-gray-100 px-6 py-4">
-              <button
-                type="button"
-                onClick={() => setExceptionItem(null)}
-                disabled={savingException}
-                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={() => void saveException()}
-                disabled={savingException}
-                className="rounded-lg bg-blue-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-              >
-                {savingException ? "Guardando…" : "Guardar ajuste"}
-              </button>
+            <div className="md:col-span-2">
+              <label className="ds-label" htmlFor="exc-motivo">Motivo del ajuste <span className="text-red-700">*</span></label>
+              <textarea
+                id="exc-motivo"
+                rows={2}
+                value={exceptionForm.motivo}
+                onChange={(event) => setExceptionForm((form) => ({ ...form, motivo: event.target.value }))}
+                placeholder="Ej.: ampliación aprobada por convenio gubernamental"
+                className="ds-input"
+              />
             </div>
           </div>
-        </div>
-      )}
-    </div>
+          <DialogFooter>
+            <button type="button" onClick={() => setExceptionItem(null)} disabled={savingException} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" onClick={() => void saveException()} disabled={savingException} className="ds-btn ds-btn-primary">
+              {savingException ? "Guardando…" : "Guardar"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Page>
   );
 }

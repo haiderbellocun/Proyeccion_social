@@ -1,22 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import {
-  Search,
-  Filter,
-  Eye,
-  ChevronDown,
-  ChevronUp,
-  AlertCircle,
-  Loader2,
-  Send,
-  ExternalLink,
-} from "lucide-react";
-import { Badge } from "../components/Badge";
-import { AppSelect } from "../components/AppSelect";
-import React from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronUp, AlertCircle, Loader2, Send, ExternalLink, Search, FileText } from "lucide-react";
+import { EmptyState, InlineAlert, Page, PageHeader, PageLoading, Panel, ProgressBar, Segmented, StatusPill, type Tone } from "../components/ds/primitives";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
-import { useLocation } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 
 const API_BASE_URL = API_BASE;
 
@@ -38,6 +26,7 @@ type ReportHistoryRow = {
 export default function ReportHistory() {
   const currentUser = useCurrentUser();
   const location = useLocation();
+  const navigate = useNavigate();
   const notificationReportId = useMemo(() => {
     const parsed = Number(new URLSearchParams(location.search).get("reporte"));
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -47,6 +36,8 @@ export default function ReportHistory() {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [reports, setReports] = useState<ReportHistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const [edits, setEdits] = useState<
     Record<
@@ -129,6 +120,7 @@ export default function ReportHistory() {
     const load = async () => {
       try {
         setLoading(true);
+        setError(false);
         const docenteId = currentUser?.id ?? null;
         if (!docenteId) {
           setReports([]);
@@ -141,6 +133,7 @@ export default function ReportHistory() {
         setReports(Array.isArray(data.reportes) ? data.reportes : []);
       } catch (err) {
         console.error(err);
+        setError(true);
         notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
         setReports([]);
       } finally {
@@ -148,7 +141,7 @@ export default function ReportHistory() {
       }
     };
     load();
-  }, [currentUser?.id]);
+  }, [currentUser?.id, reloadKey]);
 
   useEffect(() => {
     if (
@@ -179,332 +172,276 @@ export default function ReportHistory() {
     });
   }, [reports, search, filterStatus]);
 
+  const conteo = {
+    all: reports.length,
+    approved: reports.filter((r) => r.status === "approved").length,
+    pending: reports.filter((r) => r.status === "pending").length,
+    review: reports.filter((r) => r.status === "review").length,
+  };
+  const tonoEstado: Record<ReportStatus, { tone: Tone; label: string }> = {
+    approved: { tone: "success", label: "Aprobado" },
+    pending: { tone: "violet", label: "Pendiente de revisión" },
+    review: { tone: "warning", label: "Requiere corrección" },
+  };
+  const hayFiltros = search !== "" || filterStatus !== "all";
+
+  const editar = (r: ReportHistoryRow, parcial: Partial<{ url_evidencia: string; descripcion_reporte: string; porcentaje_avance: number }>) =>
+    setEdits((prev) => ({
+      ...prev,
+      [r.id]: {
+        url_evidencia: prev[r.id]?.url_evidencia ?? r.url_evidencia,
+        descripcion_reporte: prev[r.id]?.descripcion_reporte ?? r.descripcion_reporte,
+        porcentaje_avance: prev[r.id]?.porcentaje_avance ?? r.progress,
+        ...parcial,
+      },
+    }));
+
   return (
-    <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-gray-900">Historial de Reportes</h1>
-        <p className="text-gray-500 text-sm mt-0.5">
-          Registro de tus reportes semanales y decisiones del administrador
-        </p>
-      </div>
+    <Page>
+      <PageHeader
+        title="Historial de reportes"
+        description="Registro de tus reportes semanales y de las decisiones del administrador."
+      />
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        {[
-          { label: "Total reportes", value: reports.length, color: "text-gray-800" },
-          { label: "Aprobados", value: reports.filter((r) => r.status === "approved").length, color: "text-emerald-600" },
-          { label: "Pendientes", value: reports.filter((r) => r.status === "pending").length, color: "text-amber-600" },
-          { label: "Requieren corrección", value: reports.filter((r) => r.status === "review").length, color: "text-amber-700" },
-        ].map((s) => (
-          <div key={s.label} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 text-center">
-            <p className={`text-2xl ${s.color}`} style={{ fontWeight: 700 }}>
-              {s.value}
-            </p>
-            <p className="text-gray-500 text-xs mt-0.5">{s.label}</p>
-          </div>
-        ))}
-      </div>
+      {error && (
+        <InlineAlert action={<button type="button" onClick={() => setReloadKey((k) => k + 1)} className="ds-btn ds-btn-secondary ds-btn-sm">Reintentar</button>}>
+          No se pudo cargar tu historial de reportes.
+        </InlineAlert>
+      )}
 
-      {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+      <div className="flex flex-wrap items-center gap-3">
+        <Segmented
+          label="Filtrar por estado"
+          value={filterStatus as "all" | ReportStatus}
+          onChange={(v) => setFilterStatus(v)}
+          items={[
+            { id: "all", label: "Todos", count: conteo.all },
+            { id: "approved", label: "Aprobados", count: conteo.approved, tone: "success" },
+            { id: "pending", label: "Pendientes", count: conteo.pending, tone: "violet" },
+            { id: "review", label: "Requieren corrección", count: conteo.review, tone: "warning" },
+          ]}
+        />
+        <div className="relative ml-auto w-full min-w-[14rem] sm:w-72">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-subtle" aria-hidden />
           <input
-            type="text"
-            placeholder="Buscar por iniciativa o entregable..."
+            type="search"
+            aria-label="Buscar por iniciativa o entregable"
+            placeholder="Buscar por iniciativa o entregable…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-white"
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          <Filter className="w-4 h-4 text-gray-400" />
-          <AppSelect
-            value={filterStatus}
-            onValueChange={(value) => setFilterStatus(value)}
-            options={[
-              { value: "all", label: "Todos los estados" },
-              { value: "approved", label: "Aprobado" },
-              { value: "pending", label: "Pendiente" },
-              { value: "review", label: "Requiere corrección" },
-            ]}
-            className="w-full sm:w-56"
+            className="ds-input pl-9"
           />
         </div>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                <th className="text-left px-6 py-3">Semana / Fecha</th>
-                <th className="text-left px-6 py-3">Proyecto</th>
-                <th className="text-left px-6 py-3">Entregable</th>
-                <th className="text-left px-6 py-3">Avance</th>
-                <th className="text-left px-6 py-3">Estado</th>
-                <th className="text-left px-6 py-3">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {loading ? (
-                <tr>
-                  <td colSpan={6} className="px-6 py-10 text-center text-gray-400 text-sm">
-                    Cargando...
-                  </td>
-                </tr>
+      <Panel bodyClassName="">
+        {loading ? (
+          <PageLoading label="Cargando reportes…" />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={FileText}
+            title={hayFiltros ? "Ningún reporte coincide con los filtros" : "Aún no has enviado reportes"}
+            action={
+              hayFiltros ? (
+                <button type="button" onClick={() => { setSearch(""); setFilterStatus("all"); }} className="ds-btn ds-btn-secondary ds-btn-sm">
+                  Limpiar filtros
+                </button>
               ) : (
-                filtered.map((r) => (
-                <React.Fragment key={r.id}>
-                  <tr
-                    id={`reporte-${r.id}`}
-                    className={`hover:bg-gray-50 transition-colors ${
-                      r.status === "review" ? "border-l-4 border-amber-400" : ""
-                    } ${
-                      r.id === notificationReportId
-                        ? "bg-blue-50 ring-2 ring-inset ring-blue-400"
-                        : ""
-                    }`}
-                  >
-                    <td className="px-6 py-4">
-                      <p className="text-gray-700" style={{ fontWeight: 500 }}>{r.week}</p>
-                      <p className="text-gray-400 text-xs">{r.date}</p>
-                    </td>
-                    <td className="px-6 py-4 text-gray-700 max-w-[180px] truncate">{r.project}</td>
-                    <td className="px-6 py-4 text-gray-600 max-w-[180px] truncate">{r.activity}</td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <div className="w-16 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-[#1d4ed8]"
-                            style={{ width: `${r.progress}%` }}
-                          />
-                        </div>
-                        <span className="text-gray-700 text-xs" style={{ fontWeight: 600 }}>
-                          {r.progress}%
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <Badge
-                        variant={r.status}
-                        label={
-                          r.status === "review" ? "Requiere corrección" : undefined
-                        }
-                      />
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setExpanded(expanded === r.id ? null : r.id)}
-                          className="text-[#1d4ed8] hover:text-[#1e3a8a] transition-colors flex items-center gap-1 text-xs"
-                          style={{ fontWeight: 500 }}
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          Ver
-                          {expanded === r.id ? (
-                            <ChevronUp className="w-3 h-3" />
-                          ) : (
-                            <ChevronDown className="w-3 h-3" />
-                          )}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                  {expanded === r.id && (
-                    <tr key={`${r.id}-detail`} className="bg-blue-50/50">
-                      <td colSpan={6} className="px-6 py-4">
-                        <div className="space-y-2">
-                          <p className="text-sm text-gray-700" style={{ fontWeight: 500 }}>
-                            Detalle del reporte
-                          </p>
-                          <p className="text-sm text-gray-600">
-                            <span style={{ fontWeight: 500 }}>Entregable: </span>
-                            {r.activity}
-                          </p>
-                          {r.comment && (
-                            <div className="mt-2 p-3 bg-white rounded-lg border border-gray-200">
-                              <p className="text-xs text-gray-500" style={{ fontWeight: 500 }}>
-                                Comentario del administrador:
+                <button type="button" onClick={() => navigate("/docente/reportar")} className="ds-btn ds-btn-primary ds-btn-sm">
+                  Reportar un entregable
+                </button>
+              )
+            }
+          >
+            {hayFiltros ? "Prueba con otro término o quita el filtro de estado." : "Cuando envíes tu primer reporte aparecerá aquí con su estado de revisión."}
+          </EmptyState>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="ds-table">
+              <thead>
+                <tr>
+                  <th>Semana / fecha</th>
+                  <th className="hidden lg:table-cell">Iniciativa</th>
+                  <th>Entregable</th>
+                  <th className="hidden md:table-cell min-w-[8rem]">Avance</th>
+                  <th className="hidden md:table-cell">Estado</th>
+                  <th className="w-px"><span className="sr-only">Acciones</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r) => {
+                  const est = tonoEstado[r.status];
+                  const abierto = expanded === r.id;
+                  const destacado = r.id === notificationReportId;
+                  return (
+                    <Fragment key={r.id}>
+                      <tr id={`reporte-${r.id}`}>
+                        <td className={`whitespace-nowrap ${destacado ? "bg-blue-50" : ""} ${r.status === "review" ? "shadow-[inset_3px_0_0_var(--color-amber-400)]" : ""}`}>
+                          <p style={{ fontWeight: 550 }}>{r.week}</p>
+                          <p className="text-xs text-text-subtle">{r.date}</p>
+                        </td>
+                        <td className={`hidden max-w-[16rem] truncate lg:table-cell ${destacado ? "bg-blue-50" : ""}`} title={r.project}>{r.project}</td>
+                        <td className={`max-w-[10rem] sm:max-w-[18rem] ${destacado ? "bg-blue-50" : ""}`}>
+                          <span className="line-clamp-2" title={r.activity}>{r.activity}</span>
+                          <span className="block truncate text-xs text-text-subtle lg:hidden">{r.project}</span>
+                          <StatusPill tone={est.tone} className="mt-1 md:hidden">{est.label}</StatusPill>
+                        </td>
+                        <td className={`hidden md:table-cell ${destacado ? "bg-blue-50" : ""}`}>
+                          <div className="flex items-center gap-2">
+                            <ProgressBar value={r.progress} tone="brand" label={`Avance ${r.progress}%`} className="w-16" />
+                            <span className="text-xs tabular-nums text-text-muted" style={{ fontWeight: 600 }}>{r.progress}%</span>
+                          </div>
+                        </td>
+                        <td className={`hidden md:table-cell ${destacado ? "bg-blue-50" : ""}`}><StatusPill tone={est.tone}>{est.label}</StatusPill></td>
+                        <td className={destacado ? "bg-blue-50" : ""}>
+                          <button
+                            type="button"
+                            onClick={() => setExpanded(abierto ? null : r.id)}
+                            aria-expanded={abierto}
+                            aria-controls={`detalle-${r.id}`}
+                            className="ds-btn ds-btn-ghost ds-btn-sm text-brand"
+                          >
+                            Ver
+                            {abierto ? <ChevronUp className="h-3.5 w-3.5" aria-hidden /> : <ChevronDown className="h-3.5 w-3.5" aria-hidden />}
+                          </button>
+                        </td>
+                      </tr>
+                      {abierto && (
+                        <tr id={`detalle-${r.id}`}>
+                          <td colSpan={6} className="!bg-surface-2 !py-4">
+                            <div className="space-y-3 text-sm">
+                              <p>
+                                <span className="text-text-subtle">Entregable: </span>
+                                {r.activity}
                               </p>
-                              <p className="text-sm text-gray-700 mt-1">{r.comment}</p>
-                            </div>
-                          )}
-                          {!r.comment && r.status === "pending" && (
-                            <p className="text-xs text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg inline-block">
-                              Pendiente de revisión por el administrador
-                            </p>
-                          )}
-
-                          {r.status === "review" && (
-                            <div className="mt-3 p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-4">
-                              <div className="flex items-start gap-2">
-                                <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
-                                <div>
-                                  <p className="text-sm font-semibold text-amber-800">
-                                    El administrador solicitó ajustes:
-                                  </p>
-                                  <p className="text-sm text-amber-700 mt-1 whitespace-pre-line">
-                                    {r.comment || "Sin comentario adicional."}
-                                  </p>
+                              {r.descripcion_reporte && (
+                                <p className="whitespace-pre-line text-text-muted">
+                                  <span className="text-text-subtle">Tu descripción: </span>
+                                  {r.descripcion_reporte}
+                                </p>
+                              )}
+                              {r.comment && r.status !== "review" && (
+                                <div className="rounded-lg border border-line bg-surface p-3">
+                                  <p className="text-xs text-text-subtle" style={{ fontWeight: 550 }}>Comentario del administrador</p>
+                                  <p className="mt-1 whitespace-pre-line">{r.comment}</p>
                                 </div>
-                              </div>
+                              )}
+                              {!r.comment && r.status === "pending" && (
+                                <InlineAlert tone="warning">Pendiente de revisión por el administrador.</InlineAlert>
+                              )}
 
-                              <hr className="border-amber-200" />
+                              {r.status === "review" && (
+                                <div className="space-y-4 rounded-xl border border-amber-200 bg-surface p-4">
+                                  <div className="flex items-start gap-2">
+                                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden />
+                                    <div>
+                                      <p className="text-amber-700" style={{ fontWeight: 600 }}>El administrador solicitó ajustes</p>
+                                      <p className="mt-1 whitespace-pre-line text-text-muted">{r.comment || "Sin comentario adicional."}</p>
+                                    </div>
+                                  </div>
 
-                              <p className="text-sm font-semibold text-amber-900">
-                                Realiza tus correcciones y reenvía:
-                              </p>
+                                  <hr className="border-line" />
 
-                              <div className="flex flex-col gap-1">
-                                <label className="text-xs font-medium text-gray-700">
-                                  % de avance
-                                </label>
-                                <div className="flex items-center gap-3">
-                                  <input
-                                    type="range"
-                                    min={0}
-                                    max={100}
-                                    step={5}
-                                    value={edits[r.id]?.porcentaje_avance ?? r.progress}
-                                    onChange={(e) =>
-                                      setEdits((prev) => ({
-                                        ...prev,
-                                        [r.id]: {
-                                          url_evidencia:
-                                            prev[r.id]?.url_evidencia ?? r.url_evidencia,
-                                          descripcion_reporte:
-                                            prev[r.id]?.descripcion_reporte ??
-                                            r.descripcion_reporte,
-                                          porcentaje_avance: Number(e.target.value),
-                                        },
-                                      }))
-                                    }
-                                    className="flex-1 accent-amber-600"
-                                  />
-                                  <span className="text-sm font-semibold text-amber-700 w-12 text-right">
-                                    {edits[r.id]?.porcentaje_avance ?? r.progress}%
-                                  </span>
+                                  <p style={{ fontWeight: 600 }}>Realiza tus correcciones y reenvía</p>
+
+                                  <div>
+                                    <div className="mb-1.5 flex items-center justify-between">
+                                      <label className="ds-label !mb-0" htmlFor={`avance-${r.id}`}>Porcentaje de avance</label>
+                                      <span className="text-sm tabular-nums text-brand" style={{ fontWeight: 650 }}>{edits[r.id]?.porcentaje_avance ?? r.progress}%</span>
+                                    </div>
+                                    <input
+                                      id={`avance-${r.id}`}
+                                      type="range"
+                                      min={0}
+                                      max={100}
+                                      step={5}
+                                      value={edits[r.id]?.porcentaje_avance ?? r.progress}
+                                      onChange={(e) => editar(r, { porcentaje_avance: Number(e.target.value) })}
+                                      className="w-full accent-brand"
+                                    />
+                                  </div>
+
+                                  <div>
+                                    <label className="ds-label" htmlFor={`desc-${r.id}`}>Descripción del reporte</label>
+                                    <textarea
+                                      id={`desc-${r.id}`}
+                                      rows={3}
+                                      value={edits[r.id]?.descripcion_reporte ?? r.descripcion_reporte}
+                                      onChange={(e) => editar(r, { descripcion_reporte: e.target.value })}
+                                      placeholder="Describe qué hiciste y cómo corregiste el ajuste solicitado."
+                                      className="ds-input resize-y"
+                                    />
+                                  </div>
+
+                                  <div>
+                                    <label className="ds-label" htmlFor={`url-${r.id}`}>Enlace de evidencia (Drive, formulario, etc.)</label>
+                                    <input
+                                      id={`url-${r.id}`}
+                                      type="url"
+                                      value={edits[r.id]?.url_evidencia ?? r.url_evidencia}
+                                      onChange={(e) => editar(r, { url_evidencia: e.target.value })}
+                                      placeholder="https://drive.google.com/…"
+                                      className="ds-input"
+                                    />
+                                    {(edits[r.id]?.url_evidencia ?? r.url_evidencia) && (
+                                      <a
+                                        href={edits[r.id]?.url_evidencia ?? r.url_evidencia}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="mt-1.5 inline-flex items-center gap-1 text-xs text-brand underline"
+                                      >
+                                        <ExternalLink className="h-3 w-3" aria-hidden /> Ver evidencia actual
+                                      </a>
+                                    )}
+                                  </div>
+
+                                  <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line pt-3">
+                                    {edits[r.id] && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setEdits((prev) => {
+                                            const next = { ...prev };
+                                            delete next[r.id];
+                                            return next;
+                                          })
+                                        }
+                                        className="ds-btn ds-btn-ghost"
+                                      >
+                                        Descartar cambios
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleGuardarYReenviar(r)}
+                                      disabled={guardandoEdicion === r.id}
+                                      className="ds-btn ds-btn-primary"
+                                    >
+                                      {guardandoEdicion === r.id ? (
+                                        <>
+                                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Guardando y reenviando…
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Send className="h-4 w-4" aria-hidden /> Guardar correcciones y reenviar
+                                        </>
+                                      )}
+                                    </button>
+                                  </div>
                                 </div>
-                              </div>
-
-                              <div className="flex flex-col gap-1">
-                                <label className="text-xs font-medium text-gray-700">
-                                  Descripción del reporte
-                                </label>
-                                <textarea
-                                  rows={3}
-                                  value={
-                                    edits[r.id]?.descripcion_reporte ?? r.descripcion_reporte
-                                  }
-                                  onChange={(e) =>
-                                    setEdits((prev) => ({
-                                      ...prev,
-                                      [r.id]: {
-                                        url_evidencia:
-                                          prev[r.id]?.url_evidencia ?? r.url_evidencia,
-                                        descripcion_reporte: e.target.value,
-                                        porcentaje_avance:
-                                          prev[r.id]?.porcentaje_avance ?? r.progress,
-                                      },
-                                    }))
-                                  }
-                                  placeholder="Describe qué hiciste y cómo corregiste el ajuste solicitado..."
-                                  className="text-sm border border-gray-300 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
-                                />
-                              </div>
-
-                              <div className="flex flex-col gap-1">
-                                <label className="text-xs font-medium text-gray-700">
-                                  Link de evidencia (Drive, formulario, etc.)
-                                </label>
-                                <input
-                                  type="url"
-                                  value={edits[r.id]?.url_evidencia ?? r.url_evidencia}
-                                  onChange={(e) =>
-                                    setEdits((prev) => ({
-                                      ...prev,
-                                      [r.id]: {
-                                        url_evidencia: e.target.value,
-                                        descripcion_reporte:
-                                          prev[r.id]?.descripcion_reporte ??
-                                          r.descripcion_reporte,
-                                        porcentaje_avance:
-                                          prev[r.id]?.porcentaje_avance ?? r.progress,
-                                      },
-                                    }))
-                                  }
-                                  placeholder="https://drive.google.com/..."
-                                  className="text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
-                                />
-                                {(edits[r.id]?.url_evidencia ?? r.url_evidencia) && (
-                                  <a
-                                    href={edits[r.id]?.url_evidencia ?? r.url_evidencia}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-xs text-blue-600 underline flex items-center gap-1 mt-0.5"
-                                  >
-                                    <ExternalLink className="w-3 h-3" /> Ver evidencia
-                                    actual
-                                  </a>
-                                )}
-                              </div>
-
-                              <div className="flex items-center gap-3 pt-1">
-                                <button
-                                  type="button"
-                                  onClick={() => handleGuardarYReenviar(r)}
-                                  disabled={guardandoEdicion === r.id}
-                                  className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  {guardandoEdicion === r.id ? (
-                                    <>
-                                      <Loader2 className="w-4 h-4 animate-spin" />{" "}
-                                      Guardando y reenviando...
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Send className="w-4 h-4" /> Guardar correcciones y
-                                      reenviar
-                                    </>
-                                  )}
-                                </button>
-
-                                {edits[r.id] && (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setEdits((prev) => {
-                                        const next = { ...prev };
-                                        delete next[r.id];
-                                        return next;
-                                      })
-                                    }
-                                    className="text-xs text-gray-500 hover:text-gray-700 underline"
-                                  >
-                                    Descartar cambios
-                                  </button>
-                                )}
-                              </div>
+                              )}
                             </div>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
-              ))
-              )}
-            </tbody>
-          </table>
-        </div>
-        {!loading && filtered.length === 0 && (
-          <div className="py-12 text-center text-gray-400 text-sm">
-            No se encontraron reportes con los filtros aplicados
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
-      </div>
-    </div>
+      </Panel>
+    </Page>
   );
 }

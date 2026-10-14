@@ -39,21 +39,21 @@ const toneStyles: Record<
 > = {
   primary: {
     icon: CheckCircle2,
-    iconBox: "bg-blue-50",
-    iconColor: "text-[#1d4ed8]",
-    action: "bg-[#1e3a8a] hover:bg-[#1d4ed8] focus-visible:ring-[#1d4ed8]",
+    iconBox: "bg-brand-soft",
+    iconColor: "text-brand",
+    action: "ds-btn-primary",
   },
   warning: {
     icon: CircleAlert,
     iconBox: "bg-amber-50",
     iconColor: "text-amber-600",
-    action: "bg-[#1e3a8a] hover:bg-[#1d4ed8] focus-visible:ring-[#1d4ed8]",
+    action: "ds-btn-primary",
   },
   danger: {
     icon: TriangleAlert,
     iconBox: "bg-red-50",
     iconColor: "text-red-600",
-    action: "bg-red-600 hover:bg-red-700 focus-visible:ring-red-600",
+    action: "ds-btn-danger",
   },
 };
 
@@ -106,34 +106,34 @@ export function ConfirmationDialogProvider({ children }: { children: ReactNode }
           if (!open) settle(false);
         }}
       >
-        <AlertDialogContent className="max-w-md gap-0 overflow-hidden rounded-2xl border-0 bg-white p-0 shadow-2xl">
+        <AlertDialogContent className="max-w-md gap-0 overflow-hidden rounded-xl border border-line bg-surface p-0 shadow-xl">
           <div className="p-6">
             <div className="flex items-start gap-4">
               <div
-                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${style.iconBox}`}
+                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${style.iconBox}`}
               >
                 <Icon className={`h-5 w-5 ${style.iconColor}`} />
               </div>
               <AlertDialogHeader className="flex-1 gap-1.5 pt-0.5 text-left">
-                <AlertDialogTitle className="text-base font-bold text-gray-900">
+                <AlertDialogTitle className="text-base text-text" style={{ fontWeight: 650 }}>
                   {visibleRequest?.title || "Confirmar acción"}
                 </AlertDialogTitle>
-                <AlertDialogDescription className="whitespace-pre-line text-sm leading-6 text-gray-500">
+                <AlertDialogDescription className="whitespace-pre-line text-sm leading-6 text-text-muted">
                   {visibleRequest?.description}
                 </AlertDialogDescription>
               </AlertDialogHeader>
             </div>
           </div>
-          <AlertDialogFooter className="flex-row justify-end gap-3 border-t border-gray-100 bg-gray-50 px-6 py-4">
+          <AlertDialogFooter className="flex-row justify-end gap-2 border-t border-line bg-surface-2 px-6 py-3.5">
             <AlertDialogCancel
               onClick={() => settle(false)}
-              className="mt-0 h-10 min-w-24 rounded-lg border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-100"
+              className="ds-btn ds-btn-secondary mt-0 min-w-24"
             >
               {visibleRequest?.cancelLabel || "Cancelar"}
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={() => settle(true)}
-              className={`h-10 min-w-24 rounded-lg px-4 py-2.5 text-sm font-semibold text-white shadow-sm ${style.action}`}
+              className={`ds-btn min-w-24 ${style.action}`}
             >
               {visibleRequest?.confirmLabel || "Confirmar"}
             </AlertDialogAction>

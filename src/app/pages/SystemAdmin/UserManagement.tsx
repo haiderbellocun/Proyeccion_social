@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Edit2, Plus, Search, Trash2, X } from "lucide-react";
-import { Badge } from "../../components/Badge";
+import { Pencil, Plus, Search, Trash2, UserX } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../components/ui/dialog";
+import { EmptyState, InlineAlert, PageLoading, Panel, StatusPill } from "../../components/ds/primitives";
 import type { BadgeVariant } from "../../components/Badge";
 import { AppSelect } from "../../components/AppSelect";
 import { useConfirmationDialog } from "../../components/ConfirmationDialog";
@@ -83,6 +84,8 @@ export default function UserManagement() {
   const [editDriveLink, setEditDriveLink] = useState("");
   const [editGroupId, setEditGroupId] = useState<number | "">("");
   const [savingEdit, setSavingEdit] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     const loadCatalog = async () => {
@@ -119,6 +122,8 @@ export default function UserManagement() {
 
   const loadUsers = async () => {
     try {
+      setLoading(true);
+      setLoadError(false);
       const res = await fetch(
         `${API_BASE_URL}/admin/usuarios?page=${page}&limit=${limit}`
       );
@@ -147,7 +152,10 @@ export default function UserManagement() {
       setTotal(Number(data.pagination?.total ?? mapped.length));
     } catch (err) {
       console.error(err);
+      setLoadError(true);
       notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -355,403 +363,370 @@ export default function UserManagement() {
     return programOptions;
   }, [programOptions]);
 
+  const iconBtn = "ds-btn ds-btn-ghost ds-btn-sm !px-1.5";
+  const modalClass = "gap-0 rounded-xl border-line bg-surface p-0 sm:max-w-lg";
+  const hasFilters = search.trim() !== "" || selectedSchool !== "Todas" || selectedProgram !== "Todos";
+  const clearFilters = () => {
+    setSearch("");
+    setSelectedSchool("Todas");
+    setSelectedProgram("Todos");
+  };
+
+  const estadoPill = (u: AdminUser) => {
+    if (u.estado === "inactivo") return <StatusPill tone="neutral">Inactivo</StatusPill>;
+    if (u.status === "delayed") return <StatusPill tone="danger">Retrasado</StatusPill>;
+    return <StatusPill tone="success">Activo</StatusPill>;
+  };
+
   return (
     <div className="space-y-4">
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-xs text-gray-500">Filtros</span>
+      {loadError && (
+        <InlineAlert
+          action={
+            <button type="button" className="ds-btn ds-btn-secondary ds-btn-sm" onClick={() => void loadUsers()}>
+              Reintentar
+            </button>
+          }
+        >
+          No se pudo cargar la información de usuarios.
+        </InlineAlert>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[14rem] flex-1 basis-64">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-subtle" aria-hidden />
+          <input
+            type="search"
+            placeholder="Buscar por nombre, correo o programa"
+            aria-label="Buscar usuarios"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="ds-input pl-9"
+          />
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="w-full sm:w-56" aria-label="Filtrar por escuela" role="group">
           <AppSelect
             value={selectedSchool}
             onValueChange={(v) => {
               setSelectedSchool(v);
               setSelectedProgram("Todos");
             }}
-            options={[
-              { value: "Todas", label: "Todas las escuelas" },
-              ...schools.map((s) => ({ value: s, label: s })),
-            ]}
-            className="bg-gray-50"
+            options={[{ value: "Todas", label: "Todas las escuelas" }, ...schools.map((s) => ({ value: s, label: s }))]}
+            className="w-full"
           />
+        </div>
+        <div className="w-full sm:w-56" aria-label="Filtrar por programa" role="group">
           <AppSelect
             value={selectedProgram}
             onValueChange={(v) => setSelectedProgram(v)}
-            options={[
-              { value: "Todos", label: "Todos los programas" },
-              ...programsForSchool.map((p) => ({ value: p, label: p })),
-            ]}
-            className="bg-gray-50"
+            options={[{ value: "Todos", label: "Todos los programas" }, ...programsForSchool.map((p) => ({ value: p, label: p }))]}
+            className="w-full"
           />
         </div>
-      </div>
-
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Buscar usuario..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-white"
-          />
-        </div>
-        <button
-          onClick={handleOpenModal}
-          className="flex items-center gap-2 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white px-4 py-2.5 rounded-lg text-sm transition-colors shadow-sm shrink-0"
-          style={{ fontWeight: 600 }}
-        >
-          <Plus className="w-4 h-4" /> Agregar usuario
+        <button type="button" onClick={handleOpenModal} className="ds-btn ds-btn-primary shrink-0">
+          <Plus className="h-4 w-4" aria-hidden /> Agregar usuario
         </button>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[900px]">
-            <thead>
-              <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                <th className="text-left px-6 py-3">Nombre</th>
-                <th className="text-left px-6 py-3">Correo</th>
-                <th className="text-left px-6 py-3">Rol</th>
-                <th className="text-left px-6 py-3">Tipo</th>
-                <th className="text-left px-6 py-3">Grupo matriz</th>
-                <th className="text-left px-6 py-3">Programa</th>
-                <th className="text-left px-6 py-3">Estado</th>
-                <th className="text-left px-6 py-3">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {filteredUsers.map((u) => (
-                <tr key={u.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 bg-[#1e3a8a] rounded-full flex items-center justify-center text-white text-xs shrink-0">
-                        {initials(u.name)}
-                      </div>
-                      <span className="text-gray-800" style={{ fontWeight: 500 }}>
-                        {u.name}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 text-gray-500">{u.email}</td>
-                  <td className="px-6 py-4">
-                    <span
-                      className={`px-2 py-0.5 rounded text-xs ${
-                        u.role === "Administrador"
-                          ? "bg-purple-100 text-purple-700"
-                          : "bg-blue-100 text-blue-700"
-                      }`}
-                      style={{ fontWeight: 500 }}
-                    >
-                      {u.role === "Administrador" ? "admin" : "docente"}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4">
-                    {u.rol === "docente" ? (
-                      <span
-                        className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${
-                          tipoIsNuevo(u.tipo_docente)
-                            ? "bg-blue-100 text-blue-700"
-                            : "bg-gray-100 text-gray-600"
-                        }`}
-                      >
-                        {u.tipo_docente || "ANTIGUO"}
-                      </span>
-                    ) : (
-                      <span className="text-gray-300">—</span>
-                    )}
-                  </td>
-                  <td className="px-6 py-4">
-                    {u.grupo_matriz_nombre ? (
-                      <span className="text-gray-700 text-xs">{u.grupo_matriz_nombre}</span>
-                    ) : (
-                      <span className="inline-flex px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-500">
-                        Sin grupo
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-6 py-4 text-gray-600">{u.program}</td>
-                  <td className="px-6 py-4">
-                    <Badge variant={u.status} />
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => openEdit(u)}
-                        className="text-[#1d4ed8] hover:text-[#1e3a8a] transition-colors"
-                        title="Editar"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleDelete(u)}
-                        className="text-gray-400 hover:text-red-500 transition-colors"
-                        title="Eliminar"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </td>
+      <Panel
+        title="Usuarios"
+        description={`${filteredUsers.length} de ${total} usuarios${hasFilters ? " con los filtros actuales" : ""}`}
+        bodyClassName=""
+      >
+        {loading && <PageLoading label="Cargando usuarios…" />}
+        {!loading && !loadError && filteredUsers.length === 0 && (
+          <EmptyState
+            icon={UserX}
+            title={hasFilters ? "Ningún usuario coincide con los filtros" : "Aún no hay usuarios"}
+            action={
+              hasFilters ? (
+                <button type="button" onClick={clearFilters} className="ds-btn ds-btn-secondary ds-btn-sm">
+                  Limpiar filtros
+                </button>
+              ) : (
+                <button type="button" onClick={handleOpenModal} className="ds-btn ds-btn-primary ds-btn-sm">
+                  <Plus className="h-4 w-4" aria-hidden /> Agregar usuario
+                </button>
+              )
+            }
+          >
+            {hasFilters ? "Prueba con otro término o quita algún filtro." : "Agrega el primer docente o administrador."}
+          </EmptyState>
+        )}
+        {!loading && filteredUsers.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="ds-table">
+              <thead>
+                <tr>
+                  <th>Nombre</th>
+                  <th className="hidden md:table-cell">Correo</th>
+                  <th className="hidden sm:table-cell">Rol</th>
+                  <th className="hidden lg:table-cell">Tipo</th>
+                  <th className="hidden xl:table-cell">Grupo matriz</th>
+                  <th className="hidden lg:table-cell">Programa</th>
+                  <th>Estado</th>
+                  <th className="text-right">Acciones</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div className="flex items-center justify-end gap-2">
-        <button
-          onClick={() => setPage((p) => Math.max(1, p - 1))}
-          disabled={page <= 1}
-          className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Anterior
-        </button>
-        <span className="text-xs text-gray-500">Página {page}</span>
-        <button
-          onClick={() => setPage((p) => p + 1)}
-          disabled={page * limit >= total}
-          className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Siguiente
-        </button>
-      </div>
-
-      {showModal && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] overflow-y-auto">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <h3 className="text-gray-800">Agregar nuevo usuario</h3>
-              <button
-                onClick={() => setShowModal(false)}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                    Nombres
-                  </label>
-                  <input
-                    type="text"
-                    value={newFirstName}
-                    onChange={(e) => setNewFirstName(e.target.value)}
-                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                    Apellidos
-                  </label>
-                  <input
-                    type="text"
-                    value={newLastName}
-                    onChange={(e) => setNewLastName(e.target.value)}
-                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                  Correo institucional
-                </label>
-                <input
-                  type="email"
-                  placeholder="usuario@universidad.edu"
-                  value={newEmail}
-                  onChange={(e) => setNewEmail(e.target.value)}
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                    Rol
-                  </label>
-                  <AppSelect
-                    value={newRole}
-                    onValueChange={(v) => {
-                      const nextRole = v === "Administrador" ? "Administrador" : "Docente";
-                      setNewRole(nextRole);
-                      if (nextRole === "Administrador") setNewGroupId("");
-                    }}
-                    options={[
-                      { value: "Docente", label: "Docente" },
-                      { value: "Administrador", label: "Administrador" },
-                    ]}
-                    className="w-full bg-gray-50"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                    Escuela
-                  </label>
-                  <AppSelect
-                    value={newSchool}
-                    onValueChange={(v) => {
-                      setNewSchool(v);
-                      setNewProgram("");
-                    }}
-                    placeholder="Seleccionar escuela..."
-                    options={catalogSchools.map((s) => ({ value: s, label: s }))}
-                    className="w-full bg-gray-50"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                  Programa
-                </label>
-                <AppSelect
-                  value={newProgram}
-                  onValueChange={(v) => setNewProgram(v)}
-                  placeholder="Seleccionar programa..."
-                  options={programsForNewSchool.map((p) => ({ value: p, label: p }))}
-                  className="w-full bg-gray-50"
-                />
-              </div>
-              {newRole === "Docente" && (
-                <>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm text-gray-700 mb-1.5 font-medium">
-                        Tipo de docente
-                      </label>
-                      <AppSelect
-                        value={newTeacherType}
-                        onValueChange={(v) => {
-                          setNewTeacherType(v === "NUEVO" ? "NUEVO" : "ANTIGUO");
-                          setNewGroupId("");
-                        }}
-                        options={[
-                          { value: "ANTIGUO", label: "Antiguo" },
-                          { value: "NUEVO", label: "Nuevo" },
-                        ]}
-                        className="w-full bg-gray-50"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm text-gray-700 mb-1.5 font-medium">
-                        Regional
-                      </label>
-                      <input
-                        type="text"
-                        value={newRegional}
-                        onChange={(e) => setNewRegional(e.target.value)}
-                        placeholder="Ej. Bogotá"
-                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-700 mb-1.5 font-medium">
-                      Grupo matriz
-                    </label>
-                    <AppSelect
-                      value={newGroupId === "" ? "" : String(newGroupId)}
-                      emptyValue="__none__"
-                      onValueChange={(v) => setNewGroupId(v === "" ? "" : Number(v))}
-                      options={[
-                        { value: "__none__", label: "Sin grupo" },
-                        ...groupOptions
-                          .filter(
-                            (group) =>
-                              group.activo !== false &&
-                              (!group.tipo_docente || group.tipo_docente === newTeacherType)
-                          )
-                          .map((group) => ({
-                            value: String(group.id),
-                            label: `${group.nombre} (${group.semestre})`,
-                          })),
-                      ]}
-                      className="w-full bg-gray-50"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-700 mb-1.5 font-medium">
-                      Carpeta de Google Drive
-                    </label>
-                    <input
-                      type="url"
-                      value={newDriveLink}
-                      onChange={(e) => setNewDriveLink(e.target.value)}
-                      placeholder="https://drive.google.com/..."
-                      className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="flex gap-3 px-6 pb-6">
-              <button
-                onClick={() => setShowModal(false)}
-                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50 transition-colors"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleSaveUser}
-                className="flex-1 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white py-2.5 rounded-lg text-sm transition-colors shadow-sm"
-                style={{ fontWeight: 600 }}
-                disabled={savingUser}
-              >
-                {savingUser ? "Guardando..." : "Guardar usuario"}
-              </button>
-            </div>
+              </thead>
+              <tbody>
+                {filteredUsers.map((u) => (
+                  <tr key={u.id}>
+                    <td>
+                      <div className="flex items-center gap-3">
+                        <span
+                          className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-xs text-blue-700 sm:flex"
+                          style={{ fontWeight: 600 }}
+                          aria-hidden
+                        >
+                          {initials(u.name)}
+                        </span>
+                        <div className="min-w-0 max-w-[10.5rem] sm:max-w-[16rem]">
+                          <p className="truncate" style={{ fontWeight: 550 }}>{u.name}</p>
+                          <p className="truncate text-xs text-text-subtle md:hidden">{u.email}</p>
+                          <p className="text-xs text-text-subtle sm:hidden">{u.role === "Administrador" ? "Administrador" : "Docente"}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="hidden text-text-muted md:table-cell">{u.email}</td>
+                    <td className="hidden sm:table-cell">
+                      <StatusPill tone={u.role === "Administrador" ? "violet" : "brand"} dot={false}>
+                        {u.role === "Administrador" ? "Administrador" : "Docente"}
+                      </StatusPill>
+                    </td>
+                    <td className="hidden lg:table-cell">
+                      {u.rol === "docente" ? (
+                        <StatusPill tone={tipoIsNuevo(u.tipo_docente) ? "signal" : "neutral"} dot={false}>
+                          {tipoIsNuevo(u.tipo_docente) ? "Nuevo" : "Antiguo"}
+                        </StatusPill>
+                      ) : (
+                        <span className="text-text-subtle" aria-label="No aplica">—</span>
+                      )}
+                    </td>
+                    <td className="hidden xl:table-cell">
+                      {u.grupo_matriz_nombre ? (
+                        <span className="text-xs">{u.grupo_matriz_nombre}</span>
+                      ) : (
+                        <span className="text-xs text-text-subtle">Sin grupo</span>
+                      )}
+                    </td>
+                    <td className="hidden text-text-muted lg:table-cell">{u.program}</td>
+                    <td>{estadoPill(u)}</td>
+                    <td>
+                      <div className="flex items-center justify-end gap-1">
+                        <button type="button" onClick={() => openEdit(u)} className={iconBtn} aria-label={`Editar a ${u.name}`}>
+                          <Pencil className="h-4 w-4" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDelete(u)}
+                          className={`${iconBtn} hover:!text-red-700`}
+                          aria-label={`Eliminar a ${u.name}`}
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2 border-t border-line px-4 py-2.5">
+          <span className="text-xs text-text-subtle" aria-live="polite">Página {page}</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="ds-btn ds-btn-secondary ds-btn-sm"
+            >
+              Anterior
+            </button>
+            <button
+              type="button"
+              onClick={() => setPage((p) => p + 1)}
+              disabled={page * limit >= total}
+              className="ds-btn ds-btn-secondary ds-btn-sm"
+            >
+              Siguiente
+            </button>
           </div>
         </div>
-      )}
+      </Panel>
 
-      {showEditModal && editId != null && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] overflow-y-auto">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <h3 className="text-gray-800 font-semibold">Editar usuario</h3>
-              <button
-                type="button"
-                onClick={() => setShowEditModal(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1.5 font-medium">Nombre</label>
-                  <input
-                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                    value={editNombre}
-                    onChange={(e) => setEditNombre(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1.5 font-medium">Apellido</label>
-                  <input
-                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                    value={editApellido}
-                    onChange={(e) => setEditApellido(e.target.value)}
-                  />
-                </div>
+      <Dialog open={showModal} onOpenChange={(open) => !savingUser && setShowModal(open)}>
+        <DialogContent className={modalClass}>
+          <DialogHeader className="border-b border-line px-5 py-4">
+            <DialogTitle className="text-base">Agregar usuario</DialogTitle>
+            <DialogDescription className="text-xs text-text-subtle">
+              Crea una cuenta de docente o administrador con su correo institucional.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[70vh] space-y-4 overflow-y-auto p-5">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label htmlFor="nu-nombres" className="ds-label">Nombres *</label>
+                <input id="nu-nombres" type="text" value={newFirstName} onChange={(e) => setNewFirstName(e.target.value)} className="ds-input" />
               </div>
               <div>
-                <label className="block text-sm text-gray-700 mb-1.5 font-medium">Correo</label>
-                <input
-                  type="email"
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                  value={editCorreo}
-                  onChange={(e) => setEditCorreo(e.target.value)}
+                <label htmlFor="nu-apellidos" className="ds-label">Apellidos *</label>
+                <input id="nu-apellidos" type="text" value={newLastName} onChange={(e) => setNewLastName(e.target.value)} className="ds-input" />
+              </div>
+            </div>
+            <div>
+              <label htmlFor="nu-correo" className="ds-label">Correo institucional *</label>
+              <input
+                id="nu-correo"
+                type="email"
+                placeholder="usuario@universidad.edu"
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                className="ds-input"
+              />
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div role="group" aria-labelledby="nu-rol-l">
+                <span id="nu-rol-l" className="ds-label">Rol</span>
+                <AppSelect
+                  value={newRole}
+                  onValueChange={(v) => {
+                    const nextRole = v === "Administrador" ? "Administrador" : "Docente";
+                    setNewRole(nextRole);
+                    if (nextRole === "Administrador") setNewGroupId("");
+                  }}
+                  options={[
+                    { value: "Docente", label: "Docente" },
+                    { value: "Administrador", label: "Administrador" },
+                  ]}
+                  className="w-full"
                 />
               </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-1.5 font-medium">Rol</label>
+              <div role="group" aria-labelledby="nu-esc-l">
+                <span id="nu-esc-l" className="ds-label">Escuela</span>
                 <AppSelect
-                  className="w-full bg-gray-50"
+                  value={newSchool}
+                  onValueChange={(v) => {
+                    setNewSchool(v);
+                    setNewProgram("");
+                  }}
+                  placeholder="Seleccionar escuela…"
+                  options={catalogSchools.map((s) => ({ value: s, label: s }))}
+                  className="w-full"
+                />
+              </div>
+            </div>
+            <div role="group" aria-labelledby="nu-prog-l">
+              <span id="nu-prog-l" className="ds-label">Programa</span>
+              <AppSelect
+                value={newProgram}
+                onValueChange={(v) => setNewProgram(v)}
+                placeholder="Seleccionar programa…"
+                options={programsForNewSchool.map((p) => ({ value: p, label: p }))}
+                className="w-full"
+              />
+            </div>
+            {newRole === "Docente" && (
+              <>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div role="group" aria-labelledby="nu-tipo-l">
+                    <span id="nu-tipo-l" className="ds-label">Tipo de docente</span>
+                    <AppSelect
+                      value={newTeacherType}
+                      onValueChange={(v) => {
+                        setNewTeacherType(v === "NUEVO" ? "NUEVO" : "ANTIGUO");
+                        setNewGroupId("");
+                      }}
+                      options={[
+                        { value: "ANTIGUO", label: "Antiguo" },
+                        { value: "NUEVO", label: "Nuevo" },
+                      ]}
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="nu-regional" className="ds-label">Regional</label>
+                    <input
+                      id="nu-regional"
+                      type="text"
+                      value={newRegional}
+                      onChange={(e) => setNewRegional(e.target.value)}
+                      placeholder="Ej. Bogotá"
+                      className="ds-input"
+                    />
+                  </div>
+                </div>
+                <div role="group" aria-labelledby="nu-grupo-l">
+                  <span id="nu-grupo-l" className="ds-label">Grupo matriz</span>
+                  <AppSelect
+                    value={newGroupId === "" ? "" : String(newGroupId)}
+                    emptyValue="__none__"
+                    onValueChange={(v) => setNewGroupId(v === "" ? "" : Number(v))}
+                    options={[
+                      { value: "__none__", label: "Sin grupo" },
+                      ...groupOptions
+                        .filter((group) => group.activo !== false && (!group.tipo_docente || group.tipo_docente === newTeacherType))
+                        .map((group) => ({
+                          value: String(group.id),
+                          label: `${group.nombre} (${group.semestre})`,
+                        })),
+                    ]}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="nu-drive" className="ds-label">Carpeta de Google Drive</label>
+                  <input
+                    id="nu-drive"
+                    type="url"
+                    value={newDriveLink}
+                    onChange={(e) => setNewDriveLink(e.target.value)}
+                    placeholder="https://drive.google.com/..."
+                    className="ds-input"
+                  />
+                </div>
+              </>
+            )}
+          </div>
+          <DialogFooter className="border-t border-line px-5 py-3">
+            <button type="button" onClick={() => setShowModal(false)} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" onClick={handleSaveUser} disabled={savingUser} className="ds-btn ds-btn-primary">
+              {savingUser ? "Guardando…" : "Guardar usuario"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showEditModal && editId != null} onOpenChange={(open) => !savingEdit && setShowEditModal(open)}>
+        <DialogContent className={modalClass}>
+          <DialogHeader className="border-b border-line px-5 py-4">
+            <DialogTitle className="text-base">Editar usuario</DialogTitle>
+            <DialogDescription className="text-xs text-text-subtle">
+              Actualiza los datos, el rol y el estado de la cuenta.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[70vh] space-y-4 overflow-y-auto p-5">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label htmlFor="eu-nombre" className="ds-label">Nombre *</label>
+                <input id="eu-nombre" className="ds-input" value={editNombre} onChange={(e) => setEditNombre(e.target.value)} />
+              </div>
+              <div>
+                <label htmlFor="eu-apellido" className="ds-label">Apellido *</label>
+                <input id="eu-apellido" className="ds-input" value={editApellido} onChange={(e) => setEditApellido(e.target.value)} />
+              </div>
+            </div>
+            <div>
+              <label htmlFor="eu-correo" className="ds-label">Correo *</label>
+              <input id="eu-correo" type="email" className="ds-input" value={editCorreo} onChange={(e) => setEditCorreo(e.target.value)} />
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div role="group" aria-labelledby="eu-rol-l">
+                <span id="eu-rol-l" className="ds-label">Rol</span>
+                <AppSelect
+                  className="w-full"
                   value={editRol}
                   onValueChange={(v) => {
                     const nextRole = v === "admin" ? "admin" : "docente";
@@ -759,132 +734,105 @@ export default function UserManagement() {
                     if (nextRole === "admin") setEditGroupId("");
                   }}
                   options={[
-                    { value: "docente", label: "docente" },
-                    { value: "admin", label: "admin" },
+                    { value: "docente", label: "Docente" },
+                    { value: "admin", label: "Administrador" },
                   ]}
                 />
               </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-1.5 font-medium">Estado</label>
+              <div role="group" aria-labelledby="eu-estado-l">
+                <span id="eu-estado-l" className="ds-label">Estado</span>
                 <AppSelect
-                  className="w-full bg-gray-50"
+                  className="w-full"
                   value={editEstado}
-                  onValueChange={(v) =>
-                    setEditEstado(v === "inactivo" ? "inactivo" : "activo")
-                  }
+                  onValueChange={(v) => setEditEstado(v === "inactivo" ? "inactivo" : "activo")}
                   options={[
                     { value: "activo", label: "Activo" },
                     { value: "inactivo", label: "Inactivo" },
                   ]}
                 />
               </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-1.5 font-medium">Programa</label>
-                <AppSelect
-                  className="w-full bg-gray-50"
-                  value={editProgramaId === "" ? "" : String(editProgramaId)}
-                  emptyValue="__none__"
-                  onValueChange={(v) => setEditProgramaId(v === "" ? "" : Number(v))}
-                  options={[
-                    { value: "__none__", label: "Sin programa" },
-                    ...programsInEditModal.map((p) => ({
-                      value: String(p.id),
-                      label: `${p.name} (${p.school})`,
-                    })),
-                  ]}
-                />
-              </div>
-              {editRol === "docente" && (
-                <>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm text-gray-700 mb-1.5 font-medium">
-                        Tipo de docente
-                      </label>
-                      <AppSelect
-                        className="w-full bg-gray-50"
-                        value={editTeacherType}
-                        onValueChange={(v) => {
-                          setEditTeacherType(v === "NUEVO" ? "NUEVO" : "ANTIGUO");
-                          setEditGroupId("");
-                        }}
-                        options={[
-                          { value: "ANTIGUO", label: "Antiguo" },
-                          { value: "NUEVO", label: "Nuevo" },
-                        ]}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm text-gray-700 mb-1.5 font-medium">
-                        Regional
-                      </label>
-                      <input
-                        type="text"
-                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                        value={editRegional}
-                        onChange={(e) => setEditRegional(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-700 mb-1.5 font-medium">
-                      Grupo matriz
-                    </label>
+            </div>
+            <div role="group" aria-labelledby="eu-prog-l">
+              <span id="eu-prog-l" className="ds-label">Programa</span>
+              <AppSelect
+                className="w-full"
+                value={editProgramaId === "" ? "" : String(editProgramaId)}
+                emptyValue="__none__"
+                onValueChange={(v) => setEditProgramaId(v === "" ? "" : Number(v))}
+                options={[
+                  { value: "__none__", label: "Sin programa" },
+                  ...programsInEditModal.map((p) => ({
+                    value: String(p.id),
+                    label: `${p.name} (${p.school})`,
+                  })),
+                ]}
+              />
+            </div>
+            {editRol === "docente" && (
+              <>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div role="group" aria-labelledby="eu-tipo-l">
+                    <span id="eu-tipo-l" className="ds-label">Tipo de docente</span>
                     <AppSelect
-                      className="w-full bg-gray-50"
-                      value={editGroupId === "" ? "" : String(editGroupId)}
-                      emptyValue="__none__"
-                      onValueChange={(v) => setEditGroupId(v === "" ? "" : Number(v))}
+                      className="w-full"
+                      value={editTeacherType}
+                      onValueChange={(v) => {
+                        setEditTeacherType(v === "NUEVO" ? "NUEVO" : "ANTIGUO");
+                        setEditGroupId("");
+                      }}
                       options={[
-                        { value: "__none__", label: "Sin grupo" },
-                        ...groupOptions
-                          .filter(
-                            (group) =>
-                              group.activo !== false &&
-                              (!group.tipo_docente || group.tipo_docente === editTeacherType)
-                          )
-                          .map((group) => ({
-                            value: String(group.id),
-                            label: `${group.nombre} (${group.semestre})`,
-                          })),
+                        { value: "ANTIGUO", label: "Antiguo" },
+                        { value: "NUEVO", label: "Nuevo" },
                       ]}
                     />
                   </div>
                   <div>
-                    <label className="block text-sm text-gray-700 mb-1.5 font-medium">
-                      Carpeta de Google Drive
-                    </label>
-                    <input
-                      type="url"
-                      className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                      value={editDriveLink}
-                      onChange={(e) => setEditDriveLink(e.target.value)}
-                      placeholder="https://drive.google.com/..."
-                    />
+                    <label htmlFor="eu-regional" className="ds-label">Regional</label>
+                    <input id="eu-regional" type="text" className="ds-input" value={editRegional} onChange={(e) => setEditRegional(e.target.value)} />
                   </div>
-                </>
-              )}
-            </div>
-            <div className="flex gap-3 px-6 pb-6">
-              <button
-                type="button"
-                onClick={() => setShowEditModal(false)}
-                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={savingEdit}
-                onClick={() => void handleSaveEdit()}
-                className="flex-1 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white py-2.5 rounded-lg text-sm font-semibold disabled:opacity-50"
-              >
-                {savingEdit ? "Guardando…" : "Guardar cambios"}
-              </button>
-            </div>
+                </div>
+                <div role="group" aria-labelledby="eu-grupo-l">
+                  <span id="eu-grupo-l" className="ds-label">Grupo matriz</span>
+                  <AppSelect
+                    className="w-full"
+                    value={editGroupId === "" ? "" : String(editGroupId)}
+                    emptyValue="__none__"
+                    onValueChange={(v) => setEditGroupId(v === "" ? "" : Number(v))}
+                    options={[
+                      { value: "__none__", label: "Sin grupo" },
+                      ...groupOptions
+                        .filter((group) => group.activo !== false && (!group.tipo_docente || group.tipo_docente === editTeacherType))
+                        .map((group) => ({
+                          value: String(group.id),
+                          label: `${group.nombre} (${group.semestre})`,
+                        })),
+                    ]}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="eu-drive" className="ds-label">Carpeta de Google Drive</label>
+                  <input
+                    id="eu-drive"
+                    type="url"
+                    className="ds-input"
+                    value={editDriveLink}
+                    onChange={(e) => setEditDriveLink(e.target.value)}
+                    placeholder="https://drive.google.com/..."
+                  />
+                </div>
+              </>
+            )}
           </div>
-        </div>
-      )}
+          <DialogFooter className="border-t border-line px-5 py-3">
+            <button type="button" onClick={() => setShowEditModal(false)} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" disabled={savingEdit} onClick={() => void handleSaveEdit()} className="ds-btn ds-btn-primary">
+              {savingEdit ? "Guardando…" : "Guardar cambios"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

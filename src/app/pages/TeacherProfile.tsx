@@ -1,5 +1,7 @@
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { ExternalLink, Loader2, UserX } from "lucide-react";
+import { EmptyState, InlineAlert, Page, PageHeader, Panel, ProgressBar, StatusPill } from "../components/ds/primitives";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
@@ -35,6 +37,15 @@ type PerfilPayload = {
 
 function tipoIsNuevo(t: string | null | undefined) {
   return String(t ?? "").toUpperCase() === "NUEVO";
+}
+
+function Dato({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs text-text-subtle">{label}</dt>
+      <dd className="mt-0.5 text-sm text-text">{children}</dd>
+    </div>
+  );
 }
 
 export default function TeacherProfile() {
@@ -97,153 +108,154 @@ export default function TeacherProfile() {
 
   if (!userId) {
     return (
-      <div className="p-6">
-        <p className="text-sm text-gray-600">Inicia sesión para ver tu perfil.</p>
-      </div>
+      <Page>
+        <Panel>
+          <EmptyState icon={UserX} title="Inicia sesión para ver tu perfil" />
+        </Panel>
+      </Page>
     );
   }
 
   if (loading) {
     return (
-      <div className="p-6 space-y-4 max-w-3xl mx-auto animate-pulse">
-        <div className="h-10 bg-gray-200 rounded-lg w-1/3" />
-        <div className="h-32 bg-gray-200 rounded-xl" />
-        <div className="h-24 bg-gray-200 rounded-xl" />
-        <div className="h-28 bg-gray-200 rounded-xl" />
-      </div>
+      <Page>
+        <div className="mx-auto max-w-3xl space-y-4 animate-pulse" role="status" aria-label="Cargando perfil">
+          <div className="h-8 w-1/3 rounded-lg bg-gray-100" />
+          <div className="h-28 rounded-xl bg-gray-100" />
+          <div className="h-24 rounded-xl bg-gray-100" />
+          <div className="h-28 rounded-xl bg-gray-100" />
+        </div>
+      </Page>
     );
   }
 
   if (!perfil) {
     return (
-      <div className="p-6">
-        <p className="text-sm text-gray-600">
-          {loadFailed ? "No se pudo cargar el perfil." : "Perfil no disponible."}
-        </p>
-      </div>
+      <Page>
+        <div className="mx-auto max-w-3xl">
+          {loadFailed ? (
+            <InlineAlert action={<button type="button" onClick={() => void load()} className="ds-btn ds-btn-secondary ds-btn-sm">Reintentar</button>}>
+              No se pudo cargar el perfil.
+            </InlineAlert>
+          ) : (
+            <Panel>
+              <EmptyState icon={UserX} title="Perfil no disponible" />
+            </Panel>
+          )}
+        </div>
+      </Page>
     );
   }
 
   const iniciales =
     `${(perfil.nombre || "?")[0] || ""}${(perfil.apellido || "?")[0] || ""}`.toUpperCase();
-  const tipoBadge = tipoIsNuevo(perfil.tipo_docente) ? "NUEVO" : "ANTIGUO";
+  const nuevo = tipoIsNuevo(perfil.tipo_docente);
   const pct = Math.min(100, Math.max(0, perfil.stats.porcentaje_avance));
+  const driveCambiado = driveLink.trim() !== (perfil.link_drive || "").trim();
 
   return (
-    <div className="p-6 space-y-6 max-w-3xl mx-auto">
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 flex flex-col sm:flex-row gap-4 sm:items-center">
-        <div className="w-16 h-16 rounded-full bg-[#1e3a8a] text-white flex items-center justify-center text-lg font-bold shrink-0">
-          {iniciales}
-        </div>
-        <div className="flex-1 space-y-1">
-          <h1 className="text-gray-900 text-lg font-semibold">
-            {perfil.nombre} {perfil.apellido}
-          </h1>
-          <p className="text-sm text-gray-500">{perfil.correo}</p>
-          <p className="text-sm text-gray-700">
-            Rol: <span className="font-medium">Docente de Proyección Social</span>
-          </p>
-          <div className="flex flex-wrap gap-2 pt-1">
-            <span className="text-xs text-gray-600">
-              Regional: {perfil.regional || "—"}
-            </span>
-            <span
-              className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${
-                tipoIsNuevo(perfil.tipo_docente)
-                  ? "bg-blue-100 text-blue-700"
-                  : "bg-gray-100 text-gray-600"
-              }`}
+    <Page>
+      <div className="mx-auto w-full max-w-3xl space-y-5">
+        <PageHeader title="Mi perfil" description="Tus datos académicos, tu carga y tu avance del semestre." />
+
+        <Panel>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+            <div
+              className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-brand text-lg text-white"
+              style={{ fontWeight: 650 }}
+              aria-hidden
             >
-              Tipo: {tipoBadge}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-2">
-        <h2 className="text-gray-800 font-semibold border-b border-gray-100 pb-2">
-          Información académica
-        </h2>
-        <p className="text-sm text-gray-700">
-          <span className="text-gray-500">Escuela:</span> {perfil.escuela.nombre}
-        </p>
-        <p className="text-sm text-gray-700">
-          <span className="text-gray-500">Programa:</span> {perfil.programa.nombre}
-        </p>
-      </div>
-
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
-        <h2 className="text-gray-800 font-semibold border-b border-gray-100 pb-2">
-          Grupo y carga
-        </h2>
-        {perfil.grupo_matriz ? (
-          <>
-            <p className="text-sm text-gray-800 font-medium">
-              {perfil.grupo_matriz.nombre}
-            </p>
-            <p className="text-xs text-gray-500">
-              Horas totales: {perfil.grupo_matriz.horas_totales ?? "—"}
-            </p>
-            <div className="flex flex-wrap gap-2 pt-1">
-              {[
-                ["Proyectos", perfil.grupo_matriz.num_proyectos],
-                ["Actividades", perfil.grupo_matriz.num_actividades],
-                ["Conv. nuevos", perfil.grupo_matriz.num_convenios_nuevos],
-                ["Conv. dinamizados", perfil.grupo_matriz.num_convenios_dinamizados],
-              ].map(([label, n]) => (
-                <span
-                  key={String(label)}
-                  className="inline-flex px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-medium"
-                >
-                  {n} {label}
-                </span>
-              ))}
+              {iniciales}
             </div>
-          </>
-        ) : (
-          <p className="text-sm text-gray-500">Sin grupo matriz asignado.</p>
-        )}
-      </div>
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate text-lg">{perfil.nombre} {perfil.apellido}</h2>
+              <p className="truncate text-sm text-text-muted">{perfil.correo}</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <StatusPill tone="neutral" dot={false}>Docente de proyección social</StatusPill>
+                <StatusPill tone={nuevo ? "brand" : "neutral"} dot={false}>Tipo: {nuevo ? "Nuevo" : "Antiguo"}</StatusPill>
+                <span className="text-xs text-text-subtle">Regional: {perfil.regional || "—"}</span>
+              </div>
+            </div>
+          </div>
+        </Panel>
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
-        <h2 className="text-gray-800 font-semibold border-b border-gray-100 pb-2">
-          Avance semestral
-        </h2>
-        <div className="h-4 w-full bg-gray-100 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-[#1d4ed8] rounded-full transition-all"
-            style={{ width: `${pct}%` }}
-          />
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+          <Panel title="Información académica">
+            <dl className="space-y-3">
+              <Dato label="Escuela">{perfil.escuela.nombre}</Dato>
+              <Dato label="Programa">{perfil.programa.nombre}</Dato>
+            </dl>
+          </Panel>
+
+          <Panel title="Grupo y carga">
+            {perfil.grupo_matriz ? (
+              <div className="space-y-3">
+                <dl className="grid grid-cols-2 gap-3">
+                  <Dato label="Grupo">{perfil.grupo_matriz.nombre}</Dato>
+                  <Dato label="Horas totales">{perfil.grupo_matriz.horas_totales ?? "—"}</Dato>
+                </dl>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    ["Proyectos", perfil.grupo_matriz.num_proyectos],
+                    ["Actividades", perfil.grupo_matriz.num_actividades],
+                    ["Conv. nuevos", perfil.grupo_matriz.num_convenios_nuevos],
+                    ["Conv. dinamizados", perfil.grupo_matriz.num_convenios_dinamizados],
+                  ].map(([label, n]) => (
+                    <StatusPill key={String(label)} dot={false}>
+                      <span className="tabular-nums">{n}</span> {label}
+                    </StatusPill>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-text-muted">Sin grupo matriz asignado.</p>
+            )}
+          </Panel>
         </div>
-        <p className="text-sm text-gray-600">
-          {perfil.stats.completados} de {perfil.stats.total_plantillas} entregables completados
-          <span className="text-gray-900 font-semibold ml-2">{pct}%</span>
-        </p>
-      </div>
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
-        <h2 className="text-gray-800 font-semibold border-b border-gray-100 pb-2">
-          Tu enlace de Drive
-        </h2>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <input
-            type="url"
-            className="flex-1 px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:ring-2 focus:ring-[#1d4ed8]"
-            value={driveLink}
-            onChange={(e) => setDriveLink(e.target.value)}
-            placeholder="https://drive.google.com/..."
-          />
-          <button
-            type="button"
-            disabled={savingDrive}
-            onClick={() => void saveDrive()}
-            className="px-4 py-2.5 bg-[#1e3a8a] text-white rounded-lg text-sm font-semibold hover:bg-[#1d4ed8] disabled:opacity-50 inline-flex items-center justify-center gap-2"
+        <Panel title="Avance semestral">
+          <div className="space-y-2">
+            <div className="flex items-baseline justify-between gap-3">
+              <p className="text-sm text-text-muted">
+                {perfil.stats.completados} de {perfil.stats.total_plantillas} entregables completados
+              </p>
+              <p className="text-lg tabular-nums" style={{ fontWeight: 650 }}>{pct}%</p>
+            </div>
+            <ProgressBar value={pct} tone="brand" label="Avance semestral" />
+          </div>
+        </Panel>
+
+        <Panel title="Tu enlace de Drive" description="Carpeta donde reúnes las evidencias de tus entregables.">
+          <form
+            className="space-y-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void saveDrive();
+            }}
           >
-            {savingDrive && <Loader2 className="w-4 h-4 animate-spin" />}
-            Guardar
-          </button>
-        </div>
+            <label htmlFor="perfil-drive" className="ds-label">Enlace de Drive</label>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                id="perfil-drive"
+                type="url"
+                className="ds-input flex-1"
+                value={driveLink}
+                onChange={(e) => setDriveLink(e.target.value)}
+                placeholder="https://drive.google.com/…"
+              />
+              {driveLink.trim() && (
+                <a href={driveLink} target="_blank" rel="noopener noreferrer" className="ds-btn ds-btn-secondary" aria-label="Abrir enlace de Drive en una pestaña nueva">
+                  <ExternalLink className="h-4 w-4" aria-hidden /> Abrir
+                </a>
+              )}
+              <button type="submit" disabled={savingDrive || !driveCambiado} className="ds-btn ds-btn-primary">
+                {savingDrive && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+                Guardar
+              </button>
+            </div>
+          </form>
+        </Panel>
       </div>
-    </div>
+    </Page>
   );
 }

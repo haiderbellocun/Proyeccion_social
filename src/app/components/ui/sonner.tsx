@@ -10,13 +10,13 @@ const Toaster = ({ ...props }: ToasterProps) => (
     duration={4200}
     toastOptions={{
       classNames: {
-        toast: "border shadow-lg",
-        title: "text-sm font-medium",
+        toast: "border shadow-md !rounded-xl",
+        title: "text-sm !font-semibold",
         description: "text-xs opacity-90",
-        success: "!bg-emerald-50 !text-emerald-900 !border-emerald-200",
+        success: "!bg-emerald-50 !text-emerald-800 !border-emerald-200",
         error: "!bg-red-50 !text-red-900 !border-red-200",
         warning: "!bg-amber-50 !text-amber-900 !border-amber-200",
-        info: "!bg-blue-50 !text-blue-900 !border-blue-200",
+        info: "!bg-blue-50 !text-blue-800 !border-blue-200",
       },
     }}
     {...props}

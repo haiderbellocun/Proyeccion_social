@@ -78,7 +78,7 @@ export function EnlaceEvidencia({ e, anterior = false }: { e: EvidenciaEnlace; a
         </p>
       </div>
       {seguro && (
-        <a href={e.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[#1d4ed8] hover:underline shrink-0" aria-label={`Abrir ${ETIQUETA_TIPO[e.tipo_enlace] ?? "enlace"} en una pestaña nueva`}>
+        <a href={e.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-brand hover:underline shrink-0" aria-label={`Abrir ${ETIQUETA_TIPO[e.tipo_enlace] ?? "enlace"} en una pestaña nueva`}>
           Abrir <ExternalLink className="w-3.5 h-3.5" />
         </a>
       )}

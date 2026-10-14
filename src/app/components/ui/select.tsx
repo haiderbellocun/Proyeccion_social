@@ -37,13 +37,13 @@ function SelectTrigger({
       data-slot="select-trigger"
       data-size={size}
       className={cn(
-        "flex min-w-0 w-full items-center justify-between gap-2 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 px-3 text-sm text-gray-800 whitespace-nowrap outline-none transition-colors",
-        "hover:border-gray-300",
-        "focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:border-transparent",
+        "flex min-w-0 w-full items-center justify-between gap-2 overflow-hidden rounded-lg border border-line-strong bg-surface px-3 text-sm text-text whitespace-nowrap outline-none transition-colors",
+        "hover:border-gray-400",
+        "focus:outline-none focus:border-brand focus:ring-[3px] focus:ring-blue-600/15",
         "disabled:cursor-not-allowed disabled:opacity-50",
         "data-[placeholder]:text-gray-400",
-        "data-[size=default]:h-10 data-[size=default]:py-2.5",
-        "data-[size=sm]:h-9 data-[size=sm]:py-2",
+        "data-[size=default]:h-9 data-[size=default]:py-2",
+        "data-[size=sm]:h-8 data-[size=sm]:py-1.5",
         "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
       )}
@@ -68,7 +68,7 @@ function SelectContent({
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(
-          "relative z-[200] max-h-[min(24rem,var(--radix-select-content-available-height))] min-w-[8rem] overflow-hidden rounded-xl border border-gray-200 bg-white text-gray-800 shadow-lg",
+          "relative z-[200] max-h-[min(24rem,var(--radix-select-content-available-height))] min-w-[8rem] overflow-hidden rounded-xl border border-line bg-surface text-text shadow-lg",
           "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
           "data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2",
           position === "popper" &&
@@ -117,9 +117,9 @@ function SelectItem({
       data-slot="select-item"
       className={cn(
         "relative flex w-full cursor-pointer items-center gap-2 rounded-lg py-2 pr-8 pl-2.5 text-sm text-gray-700 outline-none select-none",
-        "focus:bg-[#eff6ff] focus:text-[#1e3a8a]",
-        "data-[highlighted]:bg-[#eff6ff] data-[highlighted]:text-[#1e3a8a]",
-        "data-[state=checked]:bg-[#eff6ff] data-[state=checked]:text-[#1e3a8a] data-[state=checked]:font-medium",
+        "focus:bg-brand-soft focus:text-brand-strong",
+        "data-[highlighted]:bg-brand-soft data-[highlighted]:text-brand",
+        "data-[state=checked]:bg-brand-soft data-[state=checked]:text-brand data-[state=checked]:font-medium",
         "data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
         className
       )}
@@ -127,7 +127,7 @@ function SelectItem({
     >
       <span className="absolute right-2 flex size-3.5 items-center justify-center">
         <SelectPrimitive.ItemIndicator>
-          <CheckIcon className="size-4 text-[#1d4ed8]" />
+          <CheckIcon className="size-4 text-brand" />
         </SelectPrimitive.ItemIndicator>
       </span>
       <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>

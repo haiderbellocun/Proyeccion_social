@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router";
-import { GraduationCap, ShieldCheck } from "lucide-react";
+import { ClipboardCheck, FileCheck2, ShieldCheck, TableProperties } from "lucide-react";
+import { Marca } from "../components/ds/Marca";
 import { API_BASE } from "../config/api";
 import { clearSession, getSessionToken, readCurrentUser, saveSession } from "../config/auth";
 import { notify } from "../lib/notify";
@@ -179,41 +180,84 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#1e3a8a] via-[#1d4ed8] to-[#3b82f6] flex items-center justify-center p-4">
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute -top-32 -right-32 w-96 h-96 bg-white/5 rounded-full" />
-        <div className="absolute -bottom-20 -left-20 w-64 h-64 bg-white/5 rounded-full" />
-      </div>
-      <div className="relative w-full max-w-sm">
-        <div className="bg-white rounded-2xl shadow-2xl p-8">
-          <div className="flex flex-col items-center mb-7">
-            <div className="w-16 h-16 bg-[#1e3a8a] rounded-2xl flex items-center justify-center mb-4 shadow-lg">
-              <GraduationCap className="w-8 h-8 text-white" />
-            </div>
-            <h1 className="text-gray-900 font-bold">ProySocial</h1>
-            <p className="text-gray-500 text-sm text-center mt-1">
-              Sistema de Seguimiento de Proyección Social
-            </p>
+    <div className="grid min-h-dvh bg-canvas lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
+      {/* Panel de marca */}
+      <aside className="on-ink relative hidden overflow-hidden bg-ink text-ink-text lg:flex lg:flex-col lg:justify-between lg:p-12">
+        <svg className="pointer-events-none absolute inset-0 h-full w-full opacity-[0.07]" aria-hidden>
+          <defs>
+            <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+              <path d="M44 0H0V44" fill="none" stroke="white" strokeWidth="1" />
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#grid)" />
+        </svg>
+        <div className="relative flex items-center gap-3">
+          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand text-white"><Marca className="h-6 w-6" /></span>
+          <span className="leading-tight">
+            <span className="block text-lg text-white" style={{ fontWeight: 650, letterSpacing: "-0.01em" }}>ProySocial</span>
+            <span className="block text-xs text-ink-muted">Corporación Unificada Nacional · CUN</span>
+          </span>
+        </div>
+
+        <div className="relative max-w-xl">
+          <h2 className="text-balance text-[2.5rem] leading-[1.08] text-white" style={{ fontWeight: 650, letterSpacing: "-0.03em" }}>
+            Cada entregable de Proyección Social, con su evidencia y su revisión.
+          </h2>
+          <ul className="mt-9 space-y-4">
+            {[
+              { icon: TableProperties, t: "Matrices de seguimiento", d: "Entregables, semanas, horas y vencimientos del semestre en una sola vista." },
+              { icon: FileCheck2, t: "Evidencias con trazabilidad", d: "Enlaces, versiones e historial de cada envío, observación y aprobación." },
+              { icon: ClipboardCheck, t: "Revisión de coordinación", d: "Una bandeja para aprobar, observar y resolver problemas de acceso." },
+            ].map((x) => (
+              <li key={x.t} className="flex gap-3.5">
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ink-3 text-signal-bright"><x.icon className="h-[18px] w-[18px]" /></span>
+                <span>
+                  <span className="block text-[0.9375rem] text-white" style={{ fontWeight: 600 }}>{x.t}</span>
+                  <span className="block text-sm text-ink-muted">{x.d}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <p className="relative text-xs text-ink-muted">Seguimiento de Proyección Social · acceso institucional</p>
+      </aside>
+
+      {/* Acceso */}
+      <main className="flex items-center justify-center px-5 py-10 sm:px-8">
+        <div className="w-full max-w-[400px]">
+          <div className="mb-8 flex items-center gap-3 lg:hidden">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-ink text-white"><Marca className="h-6 w-6" /></span>
+            <span className="text-lg text-text" style={{ fontWeight: 650, letterSpacing: "-0.01em" }}>ProySocial</span>
           </div>
 
-          <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-3 mb-5 flex gap-2.5">
-            <ShieldCheck className="w-5 h-5 text-blue-700 shrink-0 mt-0.5" />
-            <p className="text-xs text-blue-900 leading-relaxed">
-              Ingresa únicamente con la cuenta de Google previamente autorizada por la institución.
-            </p>
-          </div>
+          <h1 className="text-[1.75rem]">Inicia sesión</h1>
+          <p className="mt-1.5 text-sm text-text-muted">Accede con tu cuenta institucional de Google para ver tu seguimiento.</p>
 
-          {googleClientId && (
-            <div className={loading ? "opacity-50 pointer-events-none" : ""}>
-              <div ref={buttonRef} className="min-h-11 flex justify-center" />
-              {loading && <p className="text-center text-xs text-gray-500 mt-3">Validando tu cuenta…</p>}
+          <div className="ds-panel mt-7 p-6">
+            <div className="mb-5 flex gap-2.5 rounded-lg bg-brand-soft px-3.5 py-3">
+              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-blue-700" aria-hidden />
+              <p className="text-xs leading-relaxed text-blue-900">
+                Ingresa únicamente con la cuenta de Google previamente autorizada por la institución.
+              </p>
             </div>
-          )}
+
+            {googleClientId ? (
+              <div className={loading ? "pointer-events-none opacity-50" : ""}>
+                <div ref={buttonRef} className="flex min-h-11 justify-center" />
+                {loading && <p className="mt-3 text-center text-xs text-text-subtle" role="status">Validando tu cuenta…</p>}
+              </div>
+            ) : (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-3 text-xs text-amber-800" role="status">
+                El inicio de sesión con Google no está configurado en este entorno.
+              </p>
+            )}
+          </div>
 
           {import.meta.env.DEV && devUsers.length > 0 && (
-            <div className="mt-5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-3">
-              <p className="text-xs font-semibold text-amber-900">Entorno de pruebas local · datos sintéticos</p>
-              <p className="text-xs text-amber-800 mt-0.5 mb-2">
+            <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
+              <p className="text-xs text-amber-900" style={{ fontWeight: 650 }}>Entorno de pruebas local · datos sintéticos</p>
+              <p className="mb-3 mt-0.5 text-xs text-amber-800">
                 Base <code>proysocial_dev</code>, solo en localhost. No es producción ni usa Google.
               </p>
               <div className="space-y-1.5">
@@ -223,24 +267,22 @@ export default function Login() {
                     type="button"
                     disabled={loading}
                     onClick={() => handleDevLogin(u.correo)}
-                    className="w-full text-left text-xs border border-amber-300 bg-white hover:bg-amber-100 rounded-md px-3 py-2 disabled:opacity-50"
+                    className="w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-left text-xs transition-colors hover:bg-amber-100 disabled:opacity-50"
                   >
-                    <span className="font-semibold text-gray-900">
-                      {u.nombre} {u.apellido}
-                    </span>{" "}
-                    <span className="text-gray-500">· {u.rol === "admin" ? "Administrador" : "Docente"}</span>
-                    <span className="block text-gray-400">{u.correo}</span>
+                    <span className="text-text" style={{ fontWeight: 650 }}>{u.nombre} {u.apellido}</span>{" "}
+                    <span className="text-text-subtle">· {u.rol === "admin" ? "Administrador" : "Docente"}</span>
+                    <span className="block text-text-subtle">{u.correo}</span>
                   </button>
                 ))}
               </div>
             </div>
           )}
 
-          <p className="text-center text-xs text-gray-400 mt-6">
-            Corporación Unificada Nacional de Educación Superior "CUN"
+          <p className="mt-8 text-center text-xs text-text-subtle">
+            Corporación Unificada Nacional de Educación Superior «CUN»
           </p>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

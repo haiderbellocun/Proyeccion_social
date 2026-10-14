@@ -1,11 +1,13 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { Fragment, useState, useMemo, useEffect, useCallback } from "react";
 import React from "react";
 import { useLocation, useNavigate } from "react-router";
 import {
   Filter,
   ExternalLink,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
+  Search,
   Info,
   Calendar,
   Clock,
@@ -23,7 +25,7 @@ import {
   type IndicadoresSeguimiento,
   type SemanaActual,
 } from "../data/matrizConstants";
-import { CategoryTag } from "../components/CategoryTag";
+import { EmptyState, Kpi, Page, PageHeader, PageLoading, ProgressBar, StatusPill, type Tone } from "../components/ds/primitives";
 import { AvisoAcceso } from "../components/EnlaceEvidencia";
 import { AppSelect } from "../components/AppSelect";
 import { useCurrentUser } from "../hooks/useCurrentUser";
@@ -250,12 +252,13 @@ export default function MatrizSeguimiento() {
   const [filterMonth, setFilterMonth] = useState<string>(ALL);
   const [filterCategory, setFilterCategory] = useState<string>(ALL);
   const [filterExcelStatus, setFilterExcelStatus] = useState<string>(ALL);
+  const [busqueda, setBusqueda] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [collapsedPhase, setCollapsedPhase] = useState<Record<string, boolean>>(
     {}
   );
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
-  const [showLegend, setShowLegend] = useState(true);
+  const [showLegend, setShowLegend] = useState(false);
 
   const [entregables, setEntregables] = useState<EntregableMatriz[]>([]);
   const [resumen, setResumen] = useState<IndicadoresSeguimiento | null>(null);
@@ -468,13 +471,17 @@ export default function MatrizSeguimiento() {
       const coincideEstado =
         filterExcelStatus === ALL ||
         (filterExcelStatus === "vencido" ? e.vencido : key === filterExcelStatus);
+      const t = busqueda.trim().toLowerCase();
+      const coincideTexto =
+        !t || `${e.entregable} ${e.iniciativa_titulo} ${e.numero ?? ""} ${e.fase}`.toLowerCase().includes(t);
       return (
         (filterMonth === ALL || e.mes === filterMonth) &&
         (filterCategory === ALL || e.categoria === filterCategory) &&
-        coincideEstado
+        coincideEstado &&
+        coincideTexto
       );
     });
-  }, [entregables, filterMonth, filterCategory, filterExcelStatus, semanaNumero]);
+  }, [entregables, filterMonth, filterCategory, filterExcelStatus, semanaNumero, busqueda]);
 
   const availableMonths = useMemo(
     () => [...new Set(entregables.map((item) => item.mes.trim()).filter(Boolean))],
@@ -528,1123 +535,467 @@ export default function MatrizSeguimiento() {
     setCollapsedPhase((prev) => ({ ...prev, [k]: !prev[k] }));
   };
 
-  const MetricCard = ({
-    title,
-    subLabel,
-    detail,
-    numerator,
-    denominator,
-    pct,
-    neutral,
-  }: {
-    title: string;
-    subLabel: string;
-    detail: string;
-    numerator: number;
-    denominator: number;
-    pct: number | null;
-    neutral?: boolean;
-  }) => {
-    const empty = denominator === 0 || pct == null;
-    const sem = neutral
-      ? {
-          card: "border-blue-100 bg-blue-50",
-          label: "text-blue-800",
-          pct: "text-blue-700",
-          barTrack: "bg-blue-100",
-          barFill: "bg-blue-500",
-        }
-      : semaphoreClasses(pct ?? 0, empty);
+  const semaforoUi = resumen ? semaforoConfig[resumen.semaforo] : null;
+  const TONE_ESTATUS: Record<EstatusKey, Tone> = {
+    aprobado: "success",
+    en_revision: "violet",
+    observado: "warning",
+    borrador: "brand",
+    en_curso: "signal",
+    no_iniciada: "neutral",
+    vencido: "danger",
+  };
+  const tonoSemaforo: Tone = resumen?.semaforo === "verde" ? "success" : resumen?.semaforo === "amarillo" ? "warning" : resumen?.semaforo === "rojo" ? "danger" : "neutral";
+  const hayFiltros = filterMonth !== ALL || filterCategory !== ALL || filterExcelStatus !== ALL || busqueda.trim() !== "";
+  const limpiarFiltros = () => {
+    setFilterMonth(ALL);
+    setFilterCategory(ALL);
+    setFilterExcelStatus(ALL);
+    setBusqueda("");
+  };
+  const COLUMNAS = 7;
+
+  /** Panel de evidencia y envío de un entregable (misma lógica y reglas que antes). */
+  const renderAccion = (e: EntregableMatriz, evidencias: string[]) => {
+    const guardando = !!savingPlantilla[e.id];
+    const bloqueado = e.estado === "aprobado";
+    const yaEnviado = e.estado === "enviado";
+    const esReenvio = e.estado === "observado";
     return (
-      <div className={`rounded-xl border shadow-sm p-5 ${sem.card}`}>
-        <p
-          className="text-gray-500 text-xs uppercase tracking-wider"
-          style={{ fontWeight: 650 }}
-        >
-          {title}
-        </p>
-        <p
-          className={`text-xs mt-1 ${empty ? "text-gray-500" : "text-gray-600"}`}
-          style={{ fontWeight: 600 }}
-        >
-          {empty ? "Sin entregables exigibles" : subLabel}
-        </p>
+      <div className="space-y-3 rounded-lg border border-line bg-surface p-3.5" onClick={(ev) => ev.stopPropagation()}>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
+          {e.num_envios > 1 && <span>{e.num_envios} envíos</span>}
+          {e.entrega_tardia && <span className="text-red-700">Primer envío posterior a la fecha límite</span>}
+          <span>
+            {e.requiere_evidencia
+              ? e.tipo_evidencia === "drive"
+                ? "Requiere enlace de Google Drive"
+                : e.tipo_evidencia === "formulario"
+                ? "Requiere enlace de formulario institucional"
+                : "Requiere enlace de evidencia"
+              : "No requiere evidencia"}
+          </span>
+        </div>
 
-        <p className={`text-3xl mt-3 ${sem.pct}`} style={{ fontWeight: 850 }}>
-          {empty ? "—" : `${Math.round(pct ?? 0)}%`}
-        </p>
-
-        {!empty && (
-          <p className="text-xs text-gray-500 mt-1">
-            {numerator} / {denominator} {detail}
-          </p>
+        {evidencias.length > 0 && (
+          <ul className="space-y-1 text-xs">
+            {evidencias.map((u) => (
+              <li key={u}>
+                <a href={u} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1 break-all text-brand underline-offset-2 hover:underline">
+                  <ExternalLink className="h-3 w-3 shrink-0" /> {u}
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+        {e.evidencia_exenta && e.justificacion_exencion && (
+          <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">Sin evidencia — justificación: {e.justificacion_exencion}</p>
         )}
 
-        <div
-          className={`w-full h-2 ${sem.barTrack} rounded-full overflow-hidden mt-3`}
+        <button
+          type="button"
+          onClick={() => navigate(`/docente/evidencias?entregable=${e.id}`)}
+          className="text-xs text-brand hover:underline"
         >
-          <div
-            className={`h-full ${sem.barFill} rounded-full transition-all`}
-            style={{ width: empty ? "0%" : `${Math.min(100, pct ?? 0)}%` }}
-          />
-        </div>
+          Ver estado, historial y versiones en Mis Evidencias
+        </button>
+
+        {bloqueado ? (
+          <p className="text-xs text-emerald-700">Entregable aprobado: no puede modificarse. Si hay un error, solicita su reapertura al administrador.</p>
+        ) : yaEnviado ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-xs text-purple-700">Enviado el {formatDateTimeBogota(e.fecha_cargue_evidencia)}; está pendiente de revisión.</p>
+            <button type="button" disabled={guardando} onClick={() => handleRetirar(e)} className="ds-btn ds-btn-secondary ds-btn-sm">
+              Retirar envío
+            </button>
+            {guardando && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {e.requiere_evidencia && (
+              <div>
+                <label className="ds-label" htmlFor={`evid-${e.id}`}>
+                  {esReenvio ? "Enlace(s) de evidencia corregida (opcional si no cambia)" : "Enlace(s) de evidencia"}
+                </label>
+                <input
+                  id={`evid-${e.id}`}
+                  type="url"
+                  value={evidenciaInput[e.id] ?? ""}
+                  onChange={(ev) => setEvidenciaInput((v) => ({ ...v, [e.id]: ev.target.value }))}
+                  placeholder="https://drive.google.com/..."
+                  disabled={!!sinEvidencia[e.id]}
+                  className="ds-input disabled:bg-gray-100"
+                />
+                <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-text-muted">
+                  <input type="checkbox" checked={!!sinEvidencia[e.id]} onChange={(ev) => setSinEvidencia((v) => ({ ...v, [e.id]: ev.target.checked }))} />
+                  No aplica evidencia (excepción justificada)
+                </label>
+                {sinEvidencia[e.id] && (
+                  <textarea
+                    value={justificacionInput[e.id] ?? ""}
+                    onChange={(ev) => setJustificacionInput((v) => ({ ...v, [e.id]: ev.target.value }))}
+                    rows={2}
+                    placeholder="Explica por qué no hay evidencia (mínimo 10 caracteres)"
+                    aria-label="Justificación"
+                    className="ds-input mt-1.5"
+                  />
+                )}
+              </div>
+            )}
+            {candidatos[e.id] && (
+              <div>
+                <label className="ds-label" htmlFor={`ini-${e.id}`}>Iniciativa a la que corresponde</label>
+                <select id={`ini-${e.id}`} value={iniciativaElegida[e.id] ?? ""} onChange={(ev) => setIniciativaElegida((v) => ({ ...v, [e.id]: Number(ev.target.value) }))} className="ds-input">
+                  <option value="">Selecciona…</option>
+                  {candidatos[e.id].map((c) => (
+                    <option key={c.id} value={c.id}>{c.titulo ?? `Iniciativa ${c.id}`}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {e.requiere_evidencia && <AvisoAcceso />}
+            {avisos[e.id] && <p className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-700" role="alert">{avisos[e.id]}</p>}
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" disabled={guardando} onClick={() => handleEnviar(e)} className="ds-btn ds-btn-primary ds-btn-sm">
+                {esReenvio ? "Reenviar corrección" : "Enviar para revisión"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const query = new URLSearchParams({ plantilla: String(e.id) });
+                  if (e.iniciativa_id != null) query.set("iniciativa", String(e.iniciativa_id));
+                  navigate(`/docente/reportar?${query.toString()}`);
+                }}
+                className="ds-btn ds-btn-ghost ds-btn-sm !text-brand"
+              >
+                Reportar con descripción y avance
+              </button>
+              {guardando && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
+            </div>
+          </div>
+        )}
       </div>
     );
   };
 
-  const pctAprobado = Math.round(resumen?.pct_aprobado ?? 0);
-  const colorAprobado = pctAprobado >= 80 ? "#10b981" : pctAprobado >= 60 ? "#f59e0b" : "#ef4444";
-  const semaforoUi = resumen ? semaforoConfig[resumen.semaforo] : null;
+  /** Detalle expandido: descripción, fechas y acción. */
+  const renderDetalle = (e: EntregableMatriz, evidencias: string[]) => {
+    const progInicio = e.fecha_inicio_calculada;
+    const progFin = e.fecha_fin_calculada;
+    // Fechas YYYY-MM-DD comparables como texto (sin zonas horarias).
+    const tardia = !!(e.fecha_real_entrega && progFin && e.fecha_real_entrega > progFin);
+    return (
+      <div className="grid gap-4 lg:grid-cols-5">
+        <div className="space-y-3 lg:col-span-3">
+          <div>
+            <p className="ds-label">Descripción del entregable</p>
+            <p className="whitespace-pre-line text-sm leading-relaxed text-text-muted">
+              {e.descripcion_evidencia ? parseTextWithLinks(e.descripcion_evidencia) : e.entregable}
+            </p>
+            {e.enlace_referencia && (
+              <a href={e.enlace_referencia} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs text-brand underline-offset-2 hover:underline" style={{ fontWeight: 600 }}>
+                <ExternalLink className="h-3.5 w-3.5" /> Abrir recurso o formulario de referencia
+              </a>
+            )}
+          </div>
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-3">
+            <div><dt className="text-text-subtle">Fecha programada</dt><dd className="text-text">{progInicio && progFin ? `${formatDate(progInicio)} – ${formatDate(progFin)}` : "—"}</dd></div>
+            <div><dt className="text-text-subtle">Entrega real</dt><dd className={tardia ? "text-red-700" : e.fecha_real_entrega ? "text-emerald-700" : "text-text"}>{e.fecha_real_entrega ? formatDate(e.fecha_real_entrega) : "—"}{tardia ? " · fuera de plazo" : ""}</dd></div>
+            <div><dt className="text-text-subtle">Primer envío</dt><dd className="text-text">{e.fecha_primer_envio ? formatDate(e.fecha_primer_envio) : "—"}</dd></div>
+            {e.fecha_cargue_evidencia && <div><dt className="text-text-subtle">Registro automático</dt><dd className="text-text">{formatDateTimeBogota(e.fecha_cargue_evidencia)}</dd></div>}
+            <div className="col-span-2"><dt className="text-text-subtle">Indicador</dt><dd className="text-text">{e.fase}</dd></div>
+          </dl>
+        </div>
+        <div className="lg:col-span-2">{renderAccion(e, evidencias)}</div>
+      </div>
+    );
+  };
+
+  if (loadingMatrix) return <PageLoading label="Cargando matriz…" />;
 
   return (
-    <>
-      {loadingMatrix ? (
-        <div className="p-6 flex items-center justify-center min-h-[60vh]">
-          <div className="w-10 h-10 border-2 border-gray-200 border-t-[#1d4ed8] rounded-full animate-spin" />
-          <span
-            className="ml-3 text-sm text-gray-500"
-            style={{ fontWeight: 500 }}
-          >
-            Cargando matriz...
-          </span>
-        </div>
-      ) : (
-        <div className="p-6 space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div>
-              <h1 className="text-gray-900">Matriz de Seguimiento</h1>
-              <p className="text-gray-500 text-sm mt-0.5">
-                Ciclo · {entregables.length} entregables programados ·{" "}
-                {currentWeekLabel}
-              </p>
-            </div>
-            <button
-              onClick={() => navigate("/docente/reportar")}
-              className="flex items-center gap-2 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white px-4 py-2 rounded-lg text-sm transition-colors shadow-sm shrink-0"
-              style={{ fontWeight: 600 }}
-            >
-              <FileText className="w-4 h-4" />
-              Reportar entregable
-            </button>
-          </div>
+    <Page wide>
+      <PageHeader
+        title="Matriz de seguimiento"
+        description={`${entregables.length} entregables programados · ${currentWeekLabel}`}
+        meta={semaforoUi ? <StatusPill tone={tonoSemaforo}>{semaforoUi.label}</StatusPill> : undefined}
+        actions={
+          <button type="button" className="ds-btn ds-btn-primary" onClick={() => navigate("/docente/reportar")}>
+            <FileText className="h-4 w-4" /> Reportar entregable
+          </button>
+        }
+      />
 
-          {perfil && (
-            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-              <div className="flex flex-wrap gap-6 items-start">
-                <div className="flex flex-col gap-1 min-w-[200px]">
-                  <div className="flex items-center gap-2">
-                    <div className="w-10 h-10 rounded-full bg-blue-900 text-white flex items-center justify-center text-sm font-bold">
-                      {(perfil.nombre[0] ?? "?").toUpperCase()}
-                      {(perfil.apellido[0] ?? "?").toUpperCase()}
-                    </div>
-                    <div>
-                      <p className="font-semibold text-gray-900">
-                        {perfil.nombre} {perfil.apellido}
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        {perfil.programa?.nombre ?? "—"}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-3 mt-2 text-xs text-gray-600">
-                    <span>📍 {perfil.regional ?? "—"}</span>
-                    <span>
-                      🕐{" "}
-                      {perfil.grupo_matriz?.horas_totales != null
-                        ? perfil.grupo_matriz.horas_totales
-                        : "—"}{" "}
-                      horas PS
-                    </span>
-                    {perfil.tipo_docente && (
-                      <span
-                        className={`px-2 py-0.5 rounded-full font-semibold ${
-                          perfil.tipo_docente === "NUEVO"
-                            ? "bg-blue-100 text-blue-700"
-                            : "bg-gray-100 text-gray-600"
-                        }`}
-                      >
-                        {perfil.tipo_docente}
-                      </span>
-                    )}
-                  </div>
-                  {perfil.link_drive && (
-                    <a
-                      href={perfil.link_drive}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs text-blue-600 underline mt-1 flex items-center gap-1"
-                    >
-                      <ExternalLink className="w-3 h-3" /> Ver carpeta Drive
-                    </a>
-                  )}
-                </div>
-
-                <div className="hidden md:block w-px bg-gray-200 self-stretch min-h-[4rem]" />
-
-                {perfil.grupo_matriz && (
-                  <div className="flex flex-col gap-1">
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                      Indicadores — {perfil.grupo_matriz.nombre}
-                    </p>
-                    <div className="flex flex-wrap gap-2 mt-1">
-                      {[
-                        {
-                          label: "Proyectos",
-                          value: perfil.grupo_matriz.num_proyectos,
-                          color: "bg-indigo-100 text-indigo-700",
-                        },
-                        {
-                          label: "Actividades",
-                          value: perfil.grupo_matriz.num_actividades,
-                          color: "bg-purple-100 text-purple-700",
-                        },
-                        {
-                          label: "Conv. Nuevos",
-                          value: perfil.grupo_matriz.num_convenios_nuevos,
-                          color: "bg-green-100 text-green-700",
-                        },
-                        {
-                          label: "Conv. Dinamizados",
-                          value: perfil.grupo_matriz.num_convenios_dinamizados,
-                          color: "bg-orange-100 text-orange-700",
-                        },
-                      ]
-                        .filter((i) => i.value > 0)
-                        .map((i) => (
-                          <span
-                            key={i.label}
-                            className={`px-2.5 py-1 rounded-full text-xs font-semibold ${i.color}`}
-                          >
-                            {i.value} {i.label}
-                          </span>
-                        ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4">
-            <div className="sm:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5 flex items-center gap-5">
-              <div className="relative w-20 h-20 shrink-0">
-                <svg viewBox="0 0 36 36" className="w-20 h-20 -rotate-90">
-                  <circle
-                    cx="18"
-                    cy="18"
-                    r="15.9"
-                    fill="none"
-                    stroke="#f0f0f0"
-                    strokeWidth="3"
-                  />
-                  <circle
-                    cx="18"
-                    cy="18"
-                    r="15.9"
-                    fill="none"
-                    stroke={colorAprobado}
-                    strokeWidth="3"
-                    strokeDasharray={`${pctAprobado} ${100 - pctAprobado}`}
-                    strokeLinecap="round"
-                  />
-                </svg>
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <span
-                    className="text-lg text-gray-800"
-                    style={{ fontWeight: 800 }}
-                  >
-                    {pctAprobado}%
-                  </span>
-                </div>
-              </div>
-              <div>
-                <p
-                  className="text-gray-500 text-xs"
-                  style={{ fontWeight: 500 }}
-                >
-                  Avance aprobado
-                </p>
-                <p
-                  className="text-gray-800 mt-1"
-                  style={{ fontWeight: 700, fontSize: 20 }}
-                >
-                  {resumen?.aprobados ?? 0} / {resumen?.total ?? 0}
-                </p>
-                <p className="text-gray-400 text-xs mt-0.5">
-                  entregables aprobados por el administrador
-                </p>
-                <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                  <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
-                  <span
-                    className="text-xs text-emerald-600"
-                    style={{ fontWeight: 500 }}
-                  >
-                    {currentWeekLabel}
-                  </span>
-                  {semaforoUi && (
-                    <span
-                      className={`ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] ${semaforoUi.badge}`}
-                      style={{ fontWeight: 600 }}
-                    >
-                      <span className={`w-1.5 h-1.5 rounded-full ${semaforoUi.dot}`} />
-                      {semaforoUi.label}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {byMonth.map((m) => {
-              const empty = m.total === 0;
-              const sem = semaphoreClasses(m.pct, empty);
-              return (
-                <button
-                  type="button"
-                  key={m.month}
-                  className={`rounded-xl border shadow-sm p-4 text-left cursor-pointer hover:shadow-md transition-shadow ${sem.card}`}
-                  onClick={() =>
-                    setFilterMonth(filterMonth === m.month ? ALL : m.month)
-                  }
-                >
-                  <p
-                    className={`text-xs uppercase tracking-wide ${sem.label}`}
-                    style={{ fontWeight: 700 }}
-                  >
-                    {m.month}
-                  </p>
-                  <div className="flex items-baseline justify-between gap-2 mt-2">
-                    <span
-                      className={`text-lg tabular-nums ${sem.pct}`}
-                      style={{ fontWeight: 800 }}
-                    >
-                      {empty ? "—" : `${m.pct}%`}
-                    </span>
-                  </div>
-                  <div
-                    className={`w-full h-2 ${sem.barTrack} rounded-full overflow-hidden mt-2`}
-                  >
-                    <div
-                      className={`h-full ${sem.barFill} rounded-full transition-all`}
-                      style={{ width: empty ? "0%" : `${m.pct}%` }}
-                    />
-                  </div>
-                  <p
-                    className={`text-xs mt-2 ${empty ? "text-gray-400" : sem.label}`}
-                  >
-                    {m.reportados} / {m.total} reportados · {m.aprobados} aprobados
-                  </p>
-                  {!empty && (
-                    <p className="text-[11px] text-gray-500 mt-1">
-                      Esperado: {m.expectedPct}%
-                    </p>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          {resumen && (
-            <>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <MetricCard
-                  title="Avance reportado"
-                  subLabel="Enviados a revisión o aprobados"
-                  detail="entregables"
-                  numerator={resumen.reportados}
-                  denominator={resumen.total}
-                  pct={resumen.pct_reportado}
-                />
-                <MetricCard
-                  title="Avance esperado"
-                  subLabel={`Con fecha límite hasta hoy${hoy ? ` (${formatDate(hoy)})` : ""}`}
-                  detail="entregables"
-                  numerator={resumen.esperado}
-                  denominator={resumen.total}
-                  pct={resumen.pct_esperado}
-                  neutral
-                />
-                <MetricCard
-                  title="Cumplimiento exigible"
-                  subLabel="Exigibles ya aprobados"
-                  detail="exigibles aprobados"
-                  numerator={resumen.exigibles_aprobados}
-                  denominator={resumen.exigibles}
-                  pct={resumen.cumplimiento_exigible}
-                />
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <span className="px-2.5 py-1 rounded-full bg-blue-100 text-blue-700" style={{ fontWeight: 600 }}>
-                  {resumen.enviados_pendientes_revision} en revisión
-                </span>
-                <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800" style={{ fontWeight: 600 }}>
-                  {resumen.observados} observados
-                </span>
-                <span className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-700" style={{ fontWeight: 600 }}>
-                  {resumen.borradores} borradores
-                </span>
-                <span className="px-2.5 py-1 rounded-full bg-red-100 text-red-700" style={{ fontWeight: 600 }}>
-                  {resumen.vencidos} vencidos
-                </span>
-                <span
-                  className={`px-2.5 py-1 rounded-full ${resumen.brecha_entregables < 0 ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"}`}
-                  style={{ fontWeight: 600 }}
-                  title="Brecha = entregables aprobados − entregables esperados a la fecha"
-                >
-                  Brecha: {resumen.brecha_entregables > 0 ? "+" : ""}
-                  {resumen.brecha_entregables} frente al cronograma ({resumen.brecha_pct > 0 ? "+" : ""}
-                  {resumen.brecha_pct} pts)
-                </span>
-                <span className="px-2.5 py-1 rounded-full bg-gray-100 text-gray-700" style={{ fontWeight: 600 }} title="Horas programadas en tu matriz / reportadas / aprobadas">
-                  Horas: {resumen.horas_programadas} programadas · {resumen.horas_reportadas} reportadas · {resumen.horas_aprobadas} aprobadas
-                </span>
-              </div>
-            </>
-          )}
-
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
-            <button
-              onClick={() => setShowLegend(!showLegend)}
-              className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors rounded-xl"
-            >
-              <div
-                className="flex items-center gap-2 text-sm text-gray-700"
-                style={{ fontWeight: 500 }}
-              >
-                <Info className="w-4 h-4 text-gray-400" />
-                Leyenda de categorías y estados
-              </div>
-              {showLegend ? (
-                <ChevronUp className="w-4 h-4 text-gray-400" />
-              ) : (
-                <ChevronDown className="w-4 h-4 text-gray-400" />
-              )}
-            </button>
-            {showLegend && (
-              <div className="px-5 pb-4 grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-gray-100 pt-4">
-                <div>
-                  <p
-                    className="text-xs text-gray-500 uppercase tracking-wider mb-2"
-                    style={{ fontWeight: 600 }}
-                  >
-                    Categorías de entregable
-                  </p>
-                  <div className="grid grid-cols-1 gap-1">
-                    {Object.entries(categoryConfig).map(([key, cfg]) => (
-                      <div key={key} className="flex items-center gap-2">
-                        <span className={`w-3 h-3 rounded-sm ${cfg.dot} shrink-0`} />
-                        <span className="text-xs text-gray-600">{cfg.label}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <p
-                    className="text-xs text-gray-500 uppercase tracking-wider mb-2"
-                    style={{ fontWeight: 600 }}
-                  >
-                    Estados de seguimiento
-                  </p>
-                  <div className="grid grid-cols-1 gap-1">
-                    {ESTATUS_OPTIONS.map((opt) => (
-                      <div key={opt.value} className="flex items-center gap-2">
-                        <span className={`w-3 h-3 rounded-full ${opt.dot} shrink-0`} />
-                        <span className="text-xs text-gray-600">{opt.label}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-wrap gap-3 items-center">
-            <div className="flex items-center gap-2 text-sm text-gray-500">
-              <Filter className="w-4 h-4" /> Filtrar:
-            </div>
-
-            <AppSelect
-              value={filterMonth}
-              onValueChange={(value) => setFilterMonth(value)}
-              options={[
-                { value: ALL, label: "Todos los meses" },
-                ...availableMonths.map((m) => ({ value: m, label: m })),
-              ]}
-            />
-
-            <AppSelect
-              value={filterCategory}
-              onValueChange={(value) => setFilterCategory(value)}
-              options={[
-                { value: ALL, label: "Todas las categorías" },
-                ...Object.entries(categoryConfig).map(([key, cfg]) => ({
-                  value: key,
-                  label: cfg.label,
-                })),
-              ]}
-            />
-
-            <AppSelect
-              value={filterExcelStatus}
-              onValueChange={(value) => setFilterExcelStatus(value)}
-              options={[
-                { value: ALL, label: "Todos los estados" },
-                ...ESTATUS_OPTIONS.map((opt) => ({
-                  value: opt.value,
-                  label: opt.label,
-                })),
-              ]}
-            />
-
-            {(filterMonth !== ALL ||
-              filterCategory !== ALL ||
-              filterExcelStatus !== ALL) && (
-              <button
-                onClick={() => {
-                  setFilterMonth(ALL);
-                  setFilterCategory(ALL);
-                  setFilterExcelStatus(ALL);
-                }}
-                className="text-xs text-[#1d4ed8] hover:underline"
-              >
-                Limpiar filtros
-              </button>
-            )}
-
-            <span className="ml-auto text-xs text-gray-400">
-              {filtered.length} entregable{filtered.length !== 1 ? "s" : ""}
+      {perfil && (
+        <div className="ds-panel flex flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-ink text-sm text-white" aria-hidden>
+              {(perfil.nombre[0] ?? "?").toUpperCase()}{(perfil.apellido[0] ?? "").toUpperCase()}
             </span>
-          </div>
-
-          <div className="space-y-4">
-            {groupedByMonthPhase.map(({ month, items, phases }) => {
-              const mDone = items.filter((e) =>
-                isDeliverableCompleted({ estado: e.estado })
-              ).length;
-              const mTotal = items.length;
-              const mPct = mTotal > 0 ? Math.round((mDone / mTotal) * 100) : 0;
-              const sem = semaphoreClasses(mPct, mTotal === 0);
-              const fin0 = items[0]?.fecha_fin_calculada;
-
-              return (
-                <div
-                  key={month}
-                  className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden"
-                >
-                  <button
-                    type="button"
-                    onClick={() => toggleCollapse(month)}
-                    className="w-full flex flex-wrap items-center gap-3 px-5 py-3.5 hover:bg-gray-50 transition-colors text-left"
-                  >
-                    <Calendar className="w-4 h-4 shrink-0 text-[#1d4ed8]" />
-                    <span
-                      className="text-gray-800 text-sm"
-                      style={{ fontWeight: 800 }}
-                    >
-                      {month}
-                      {fin0
-                        ? ` ${new Date(fin0 + "T12:00:00").getFullYear()}`
-                        : ""}
-                    </span>
-                    <span className="text-xs text-gray-500">
-                      · Reportados: {mDone}/{mTotal} ({mTotal ? `${mPct}%` : "—"})
-                    </span>
-                    <div
-                      className={`flex-1 min-w-[120px] h-2 rounded-full overflow-hidden ${sem.barTrack}`}
-                    >
-                      <div
-                        className={`h-full ${sem.barFill} transition-all rounded-full`}
-                        style={{ width: mTotal ? `${mPct}%` : "0%" }}
-                      />
-                    </div>
-                    {collapsed[month] ? (
-                      <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
-                    ) : (
-                      <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" />
-                    )}
-                  </button>
-
-                  {!collapsed[month] && (
-                    <div className="border-t border-gray-100 bg-gray-50/60 px-3 py-3 space-y-2">
-                      {phases.map(({ phase, items: phaseItems }) => {
-                        const pk = phaseKey(month, phase);
-                        const phaseCollapsed = collapsedPhase[pk];
-                        return (
-                          <div
-                            key={pk}
-                            className="rounded-xl border border-gray-100 bg-white overflow-hidden shadow-sm"
-                          >
-                            <button
-                              type="button"
-                              onClick={() => togglePhaseCollapse(month, phase)}
-                              className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-gray-50/80 transition-colors border-b border-gray-50"
-                            >
-                              {phaseCollapsed ? (
-                                <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
-                              ) : (
-                                <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" />
-                              )}
-                              <span
-                                className="text-sm text-gray-800 flex-1 truncate"
-                                style={{ fontWeight: 600 }}
-                              >
-                                {phase}
-                              </span>
-                              <span className="text-[11px] text-gray-400 tabular-nums shrink-0">
-                                {phaseItems.length}{" "}
-                                {phaseItems.length === 1
-                                  ? "entregable"
-                                  : "entregables"}
-                              </span>
-                            </button>
-
-                            {!phaseCollapsed && (() => {
-                              const byWeek = new Map<number, EntregableMatriz[]>();
-                              for (const it of phaseItems) {
-                                const w = it.semana_numero;
-                                if (!byWeek.has(w)) byWeek.set(w, []);
-                                byWeek.get(w)!.push(it);
-                              }
-                              const weekNums = [...byWeek.keys()].sort(
-                                (a, b) => a - b
-                              );
-                              return (
-                                <div className="divide-y divide-gray-100">
-                                  {weekNums.map((weekNum) => {
-                                    const semanaItems = byWeek.get(weekNum)!;
-                                    const mesHeader = semanaItems[0]?.mes ?? "";
-                                    const completadosSemana = semanaItems.filter(
-                                      (i) => isDeliverableCompleted({ estado: i.estado })
-                                    ).length;
-                                    const totalSemana = semanaItems.length;
-                                    const horasSemana = semanaItems.reduce(
-                                      (acc, i) => acc + (i.horas || 0),
-                                      0
-                                    );
-                                    return (
-                                      <div key={weekNum}>
-                                        <div className="flex items-center justify-between w-full px-4 py-2.5 bg-slate-50 border-b border-gray-100 gap-2">
-                                          <span
-                                            className="font-semibold text-sm text-gray-800 min-w-0 truncate"
-                                            style={{ fontWeight: 700 }}
-                                          >
-                                            Semana {weekNum}
-                                            {mesHeader ? ` · ${mesHeader}` : ""}
-                                          </span>
-                                          <div className="flex items-center gap-2 sm:gap-3 text-sm shrink-0 flex-wrap justify-end">
-                                            <span className="text-gray-500 tabular-nums">
-                                              {horasSemana}h
-                                            </span>
-                                            <span
-                                              className={`font-medium tabular-nums text-xs sm:text-sm ${
-                                                completadosSemana === totalSemana
-                                                  ? "text-green-600"
-                                                  : completadosSemana === 0
-                                                  ? "text-gray-400"
-                                                  : "text-blue-600"
-                                              }`}
-                                            >
-                                              {completadosSemana}/{totalSemana}{" "}
-                                              reportados
-                                            </span>
-                                            <div className="w-12 sm:w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden hidden sm:block">
-                                              <div
-                                                className="h-full bg-green-500 rounded-full transition-all"
-                                                style={{
-                                                  width: `${
-                                                    totalSemana > 0
-                                                      ? (completadosSemana /
-                                                          totalSemana) *
-                                                        100
-                                                      : 0
-                                                  }%`,
-                                                }}
-                                              />
-                                            </div>
-                                          </div>
-                                        </div>
-                                        <ul className="divide-y divide-gray-50">
-                                          {semanaItems.map((e) => {
-                                            const estatus = computeEstatus(e, semanaNumero);
-                                            const catCfg =
-                                              categoryConfig[
-                                                categoryUi(e.categoria)
-                                              ];
-                                            const isCurrent =
-                                              estatus.key === "en_curso";
-                                            const isExpanded =
-                                              expandedRow === e.id;
-                                            const guardando = !!savingPlantilla[e.id];
-                                            const bloqueado = e.estado === "aprobado";
-                                            const yaEnviado = e.estado === "enviado";
-                                            const esReenvio = e.estado === "observado";
-                                            const evidencias =
-                                              e.evidencias && e.evidencias.length > 0
-                                                ? e.evidencias
-                                                : e.url_evidencia
-                                                ? [e.url_evidencia]
-                                                : [];
-
-                                            const progInicio =
-                                              e.fecha_inicio_calculada;
-                                            const progFin =
-                                              e.fecha_fin_calculada;
-                                            // Fechas YYYY-MM-DD comparables como texto (sin zonas horarias).
-                                            let fechaRealClass = "text-gray-700";
-                                            if (e.fecha_real_entrega && progFin) {
-                                              fechaRealClass =
-                                                e.fecha_real_entrega > progFin
-                                                  ? "text-red-600"
-                                                  : "text-green-700";
-                                            }
-
-                                  return (
-                                    <li
-                                      key={e.id}
-                                      id={`entregable-${e.id}`}
-                                      className={
-                                        e.id === notificationTemplateId
-                                          ? "scroll-mt-24 rounded-lg ring-2 ring-blue-400 ring-offset-2"
-                                          : undefined
-                                      }
-                                    >
-                                      <div
-                                        role="button"
-                                        tabIndex={0}
-                                        onClick={() =>
-                                          setExpandedRow(
-                                            isExpanded ? null : e.id
-                                          )
-                                        }
-                                        onKeyDown={(ev) => {
-                                          if (
-                                            ev.key === "Enter" ||
-                                            ev.key === " "
-                                          ) {
-                                            ev.preventDefault();
-                                            setExpandedRow(
-                                              isExpanded ? null : e.id
-                                            );
-                                          }
-                                        }}
-                                        className={`px-4 py-3 cursor-pointer border-l-4 transition-colors ${catCfg.border} ${
-                                          isCurrent
-                                            ? "bg-blue-50/50"
-                                            : "hover:bg-gray-50/90"
-                                        }`}
-                                      >
-                                        <div className="flex flex-wrap items-start gap-3">
-                                          <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
-                                            <span className="text-[11px] text-gray-500 bg-gray-100 px-2 py-0.5 rounded font-semibold tabular-nums shrink-0">
-                                              {e.numero != null && e.numero !== 0
-                                                ? `#${e.numero}`
-                                                : `S${e.semana_numero}`}
-                                            </span>
-                                            <CategoryTag
-                                              category={categoryUi(e.categoria)}
-                                              compact
-                                            />
-                                            <span
-                                              className="text-sm text-gray-900 leading-snug"
-                                              style={{ fontWeight: 600 }}
-                                            >
-                                              {e.entregable}
-                                            </span>
-                                          </div>
-                                          <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 shrink-0">
-                                            <span
-                                              className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${estatus.bg} ${estatus.color}`}
-                                            >
-                                              <span
-                                                className={`w-1.5 h-1.5 rounded-full ${estatus.dot}`}
-                                              />
-                                              {estatus.label}
-                                            </span>
-                                            {e.vencido && (
-                                              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
-                                                <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                                                Vencido
-                                              </span>
-                                            )}
-                                            <span className="inline-flex items-center gap-1">
-                                              <Clock className="w-3.5 h-3.5" />
-                                              {e.horas}h
-                                            </span>
-                                            {evidencias[0] ? (
-                                              <a
-                                                href={evidencias[0]}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                className="inline-flex text-[#1d4ed8] hover:text-[#1e3a8a] p-1"
-                                                onClick={(ev) =>
-                                                  ev.stopPropagation()
-                                                }
-                                                aria-label="Abrir evidencia"
-                                              >
-                                                <ExternalLink className="w-4 h-4" />
-                                              </a>
-                                            ) : null}
-                                          </div>
-                                        </div>
-                                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                                          <span className="font-semibold text-gray-500">
-                                            Iniciativa:
-                                          </span>
-                                          <span className="text-gray-800">
-                                            {e.iniciativa_titulo}
-                                          </span>
-                                          {e.tiene_excepcion && (
-                                            <span className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800">
-                                              Ajuste individual
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
-                                          <Calendar className="w-3.5 h-3.5 shrink-0" />
-                                          <span>
-                                            {progInicio && progFin
-                                              ? `${formatDate(progInicio)} – ${formatDate(progFin)}`
-                                              : "—"}
-                                          </span>
-                                          <span className="text-gray-300 mx-1">
-                                            ·
-                                          </span>
-                                          <span className="text-gray-400">
-                                            F. límite:{" "}
-                                            {e.fecha_fin_calculada
-                                              ? formatDate(
-                                                  e.fecha_fin_calculada
-                                                )
-                                              : "—"}
-                                          </span>
-                                        </div>
-                                        {e.estado === "observado" && e.comentario_revision && (
-                                          <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                                            Observación del revisor: {e.comentario_revision}
-                                          </p>
-                                        )}
-                                      </div>
-                                      {isExpanded && (
-                                        <div
-                                          className={`px-4 py-3 text-sm border-l-4 ${catCfg.border} ${catCfg.bg}`}
-                                        >
-                                          <div className="p-3 bg-white rounded-lg border mb-3 space-y-3">
-                                            <div className="flex flex-wrap items-center gap-2">
-                                              <span
-                                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${estatus.bg} ${estatus.color}`}
-                                              >
-                                                <span className={`w-1.5 h-1.5 rounded-full ${estatus.dot}`} />
-                                                {estatus.label}
-                                              </span>
-                                              {e.num_envios > 1 && (
-                                                <span className="text-xs text-gray-500">
-                                                  {e.num_envios} envíos
-                                                </span>
-                                              )}
-                                              {e.entrega_tardia && (
-                                                <span className="text-xs text-red-600">
-                                                  Primer envío posterior a la fecha límite
-                                                </span>
-                                              )}
-                                              {e.requiere_evidencia ? (
-                                                <span className="text-xs text-gray-500">
-                                                  {e.tipo_evidencia === "drive"
-                                                    ? "Requiere enlace de Google Drive"
-                                                    : e.tipo_evidencia === "formulario"
-                                                    ? "Requiere enlace de formulario institucional"
-                                                    : "Requiere enlace de evidencia"}
-                                                </span>
-                                              ) : (
-                                                <span className="text-xs text-gray-500">
-                                                  No requiere evidencia
-                                                </span>
-                                              )}
-                                            </div>
-
-                                            {evidencias.length > 0 && (
-                                              <ul className="text-xs space-y-0.5">
-                                                {evidencias.map((u) => (
-                                                  <li key={u}>
-                                                    <a
-                                                      href={u}
-                                                      target="_blank"
-                                                      rel="noreferrer"
-                                                      className="text-blue-600 underline break-all"
-                                                      onClick={(ev) => ev.stopPropagation()}
-                                                    >
-                                                      {u}
-                                                    </a>
-                                                  </li>
-                                                ))}
-                                              </ul>
-                                            )}
-                                            {e.evidencia_exenta && e.justificacion_exencion && (
-                                              <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                                                Sin evidencia — justificación: {e.justificacion_exencion}
-                                              </p>
-                                            )}
-
-                                            <button
-                                              type="button"
-                                              onClick={(ev) => {
-                                                ev.stopPropagation();
-                                                navigate(`/docente/evidencias?entregable=${e.id}`);
-                                              }}
-                                              className="text-xs text-[#1d4ed8] hover:underline mb-2"
-                                            >
-                                              Ver estado, historial y versiones en Mis Evidencias
-                                            </button>
-                                            {bloqueado ? (
-                                              <p className="text-xs text-green-700">
-                                                Entregable aprobado: no puede modificarse. Si hay un error, solicita su reapertura al administrador.
-                                              </p>
-                                            ) : yaEnviado ? (
-                                              <div className="flex flex-wrap items-center gap-3">
-                                                <p className="text-xs text-blue-700">
-                                                  Enviado el {formatDateTimeBogota(e.fecha_cargue_evidencia)}; está pendiente de revisión.
-                                                </p>
-                                                <button
-                                                  type="button"
-                                                  disabled={guardando}
-                                                  onClick={(ev) => {
-                                                    ev.stopPropagation();
-                                                    handleRetirar(e);
-                                                  }}
-                                                  className="text-xs border border-gray-300 text-gray-700 hover:bg-gray-50 px-3 py-1.5 rounded-lg disabled:opacity-50"
-                                                >
-                                                  Retirar envío
-                                                </button>
-                                                {guardando && <Loader2 className="w-4 h-4 animate-spin text-gray-400" />}
-                                              </div>
-                                            ) : (
-                                              <div className="space-y-2" onClick={(ev) => ev.stopPropagation()}>
-                                                {e.requiere_evidencia && (
-                                                  <div>
-                                                    <label className="text-xs text-gray-500 font-medium" htmlFor={`evid-${e.id}`}>
-                                                      {esReenvio ? "Enlace(s) de evidencia corregida (opcional si no cambia)" : "Enlace(s) de evidencia"}
-                                                    </label>
-                                                    <input
-                                                      id={`evid-${e.id}`}
-                                                      type="url"
-                                                      value={evidenciaInput[e.id] ?? ""}
-                                                      onChange={(ev) =>
-                                                        setEvidenciaInput((v) => ({ ...v, [e.id]: ev.target.value }))
-                                                      }
-                                                      placeholder="https://drive.google.com/..."
-                                                      disabled={!!sinEvidencia[e.id]}
-                                                      className="mt-1 w-full text-sm border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:bg-gray-100"
-                                                    />
-                                                    <label className="mt-1 flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
-                                                      <input
-                                                        type="checkbox"
-                                                        checked={!!sinEvidencia[e.id]}
-                                                        onChange={(ev) =>
-                                                          setSinEvidencia((v) => ({ ...v, [e.id]: ev.target.checked }))
-                                                        }
-                                                      />
-                                                      No aplica evidencia (excepción justificada)
-                                                    </label>
-                                                    {sinEvidencia[e.id] && (
-                                                      <textarea
-                                                        value={justificacionInput[e.id] ?? ""}
-                                                        onChange={(ev) =>
-                                                          setJustificacionInput((v) => ({ ...v, [e.id]: ev.target.value }))
-                                                        }
-                                                        rows={2}
-                                                        placeholder="Explica por qué no hay evidencia (mínimo 10 caracteres)"
-                                                        className="mt-1 w-full text-sm border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400"
-                                                      />
-                                                    )}
-                                                  </div>
-                                                )}
-                                                {candidatos[e.id] && (
-                                                  <div>
-                                                    <label className="text-xs text-gray-500 font-medium" htmlFor={`ini-${e.id}`}>
-                                                      Iniciativa a la que corresponde
-                                                    </label>
-                                                    <select
-                                                      id={`ini-${e.id}`}
-                                                      value={iniciativaElegida[e.id] ?? ""}
-                                                      onChange={(ev) =>
-                                                        setIniciativaElegida((v) => ({ ...v, [e.id]: Number(ev.target.value) }))
-                                                      }
-                                                      className="mt-1 w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white"
-                                                    >
-                                                      <option value="">Selecciona…</option>
-                                                      {candidatos[e.id].map((c) => (
-                                                        <option key={c.id} value={c.id}>
-                                                          {c.titulo ?? `Iniciativa ${c.id}`}
-                                                        </option>
-                                                      ))}
-                                                    </select>
-                                                  </div>
-                                                )}
-                                                {e.requiere_evidencia && <AvisoAcceso />}
-                                                {avisos[e.id] && (
-                                                  <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
-                                                    {avisos[e.id]}
-                                                  </p>
-                                                )}
-                                                <div className="flex flex-wrap items-center gap-3">
-                                                  <button
-                                                    type="button"
-                                                    disabled={guardando}
-                                                    onClick={() => handleEnviar(e)}
-                                                    className="text-xs text-white bg-[#1e3a8a] hover:bg-[#1d4ed8] px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
-                                                    style={{ fontWeight: 600 }}
-                                                  >
-                                                    {esReenvio ? "Reenviar corrección" : "Enviar para revisión"}
-                                                  </button>
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                      const query = new URLSearchParams({
-                                                        plantilla: String(e.id),
-                                                      });
-                                                      if (e.iniciativa_id != null) {
-                                                        query.set("iniciativa", String(e.iniciativa_id));
-                                                      }
-                                                      navigate(`/docente/reportar?${query.toString()}`);
-                                                    }}
-                                                    className="text-xs text-[#1e3a8a] hover:underline"
-                                                    style={{ fontWeight: 500 }}
-                                                  >
-                                                    Reportar con descripción y avance
-                                                  </button>
-                                                  {guardando && <Loader2 className="w-4 h-4 animate-spin text-gray-400" />}
-                                                </div>
-                                              </div>
-                                            )}
-                                          </div>
-                                          <p
-                                            className="text-xs text-gray-500 uppercase tracking-wider mb-1"
-                                            style={{ fontWeight: 600 }}
-                                          >
-                                            Descripción del entregable
-                                          </p>
-                                          <p className="text-gray-700 leading-relaxed whitespace-pre-line">
-                                            {e.descripcion_evidencia
-                                              ? parseTextWithLinks(
-                                                  e.descripcion_evidencia
-                                                )
-                                              : e.entregable}
-                                          </p>
-                                          {e.enlace_referencia && (
-                                            <a
-                                              href={e.enlace_referencia}
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                              onClick={(ev) => ev.stopPropagation()}
-                                              className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-blue-700 underline"
-                                            >
-                                              <ExternalLink className="h-3.5 w-3.5" />
-                                              Abrir recurso o formulario de referencia
-                                            </a>
-                                          )}
-                                          <div className="mt-3 flex flex-wrap gap-4 items-start">
-                                            <div className="space-y-1 text-xs text-gray-600 min-w-0">
-                                              <p>
-                                                <span style={{ fontWeight: 600 }}>
-                                                  Fecha programada:{" "}
-                                                </span>
-                                                {progInicio && progFin
-                                                  ? `${formatDate(progInicio)} - ${formatDate(progFin)}`
-                                                  : "—"}
-                                              </p>
-                                              {e.fecha_real_entrega ? (
-                                                <p className={fechaRealClass}>
-                                                  <span
-                                                    style={{ fontWeight: 600 }}
-                                                  >
-                                                    Fecha real entrega:{" "}
-                                                  </span>
-                                                  {formatDate(
-                                                    e.fecha_real_entrega
-                                                  )}
-                                                </p>
-                                              ) : (
-                                                <p className="text-gray-500">
-                                                  <span
-                                                    style={{ fontWeight: 600 }}
-                                                  >
-                                                    Fecha real entrega:{" "}
-                                                  </span>
-                                                  —
-                                                </p>
-                                              )}
-                                              {e.fecha_primer_envio && (
-                                                <p>
-                                                  <span style={{ fontWeight: 600 }}>
-                                                    Primer envío:{" "}
-                                                  </span>
-                                                  {formatDate(e.fecha_primer_envio)}
-                                                </p>
-                                              )}
-                                              {e.fecha_cargue_evidencia && (
-                                                <p className="pt-1 text-gray-600">
-                                                  <span style={{ fontWeight: 600 }}>
-                                                    Registro automático: {" "}
-                                                  </span>
-                                                  {formatDateTimeBogota(e.fecha_cargue_evidencia)}
-                                                </p>
-                                              )}
-                                              {e.fecha_real_entrega &&
-                                                e.fecha_fin_calculada &&
-                                                e.fecha_real_entrega >
-                                                  e.fecha_fin_calculada && (
-                                                  <span className="text-xs text-red-600">
-                                                    Entrega fuera de plazo
-                                                  </span>
-                                                )}
-                                              <p>
-                                                <span style={{ fontWeight: 600 }}>
-                                                  Indicador:{" "}
-                                                </span>
-                                                {e.fase}
-                                              </p>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      )}
-                                    </li>
-                                  );
-                                          })}
-                                        </ul>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              );
-                            })()}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {groupedByMonthPhase.length === 0 && (
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm py-16 text-center">
-              <p className="text-gray-400 text-sm">
-                No hay entregables con los filtros seleccionados
-              </p>
-              <button
-                onClick={() => {
-                  setFilterMonth(ALL);
-                  setFilterCategory(ALL);
-                  setFilterExcelStatus(ALL);
-                }}
-                className="mt-3 text-sm text-[#1d4ed8] hover:underline"
-              >
-                Limpiar filtros
-              </button>
+            <div className="min-w-0 leading-tight">
+              <p className="truncate text-text" style={{ fontWeight: 600 }}>{perfil.nombre} {perfil.apellido}</p>
+              <p className="truncate text-xs text-text-subtle">{perfil.programa?.nombre ?? "—"}{perfil.regional ? ` · ${perfil.regional}` : ""}</p>
             </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
+            <StatusPill tone="neutral" dot={false}>{perfil.grupo_matriz?.horas_totales != null ? perfil.grupo_matriz.horas_totales : "—"} h de Proyección Social</StatusPill>
+            {perfil.tipo_docente && <StatusPill tone={perfil.tipo_docente === "NUEVO" ? "brand" : "neutral"} dot={false}>{perfil.tipo_docente}</StatusPill>}
+            {perfil.grupo_matriz && (
+              <>
+                <span className="hidden text-text-subtle md:inline">Grupo {perfil.grupo_matriz.nombre}:</span>
+                {[
+                  { l: "proyectos", v: perfil.grupo_matriz.num_proyectos },
+                  { l: "actividades", v: perfil.grupo_matriz.num_actividades },
+                  { l: "conv. nuevos", v: perfil.grupo_matriz.num_convenios_nuevos },
+                  { l: "conv. dinamizados", v: perfil.grupo_matriz.num_convenios_dinamizados },
+                ]
+                  .filter((i) => i.v > 0)
+                  .map((i) => (
+                    <StatusPill key={i.l} tone="violet" dot={false}>{i.v} {i.l}</StatusPill>
+                  ))}
+              </>
+            )}
+          </div>
+          {perfil.link_drive && (
+            <a href={perfil.link_drive} target="_blank" rel="noopener noreferrer" className="ds-btn ds-btn-ghost ds-btn-sm ml-auto !text-brand">
+              <ExternalLink className="h-3.5 w-3.5" /> Mi carpeta de Drive
+            </a>
           )}
         </div>
       )}
-    </>
+
+      {resumen && (
+        <>
+          <section aria-label="Indicadores de la matriz" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <Kpi label="Avance aprobado" tone="success" value={`${Math.round(resumen.pct_aprobado ?? 0)}%`} progress={resumen.pct_aprobado ?? 0} marker={resumen.pct_esperado} hint={`${resumen.aprobados} de ${resumen.total} aprobados por coordinación`} />
+            <Kpi label="Avance reportado" tone="brand" value={resumen.total === 0 || resumen.pct_reportado == null ? "—" : `${Math.round(resumen.pct_reportado)}%`} progress={resumen.pct_reportado ?? 0} marker={resumen.pct_esperado} hint={`${resumen.reportados} / ${resumen.total} enviados a revisión o aprobados`} />
+            <Kpi label="Avance esperado" tone="neutral" value={resumen.pct_esperado == null ? "—" : `${Math.round(resumen.pct_esperado)}%`} hint={`Con fecha límite hasta hoy${hoy ? ` (${formatDate(hoy)})` : ""} · ${resumen.esperado} / ${resumen.total}`} />
+            <Kpi label="Cumplimiento exigible" tone={resumen.exigibles === 0 || resumen.cumplimiento_exigible == null ? "neutral" : resumen.cumplimiento_exigible >= 80 ? "success" : resumen.cumplimiento_exigible >= 60 ? "warning" : "danger"} value={resumen.exigibles === 0 || resumen.cumplimiento_exigible == null ? "—" : `${Math.round(resumen.cumplimiento_exigible)}%`} progress={resumen.cumplimiento_exigible ?? 0} hint={resumen.exigibles === 0 ? "Sin entregables exigibles" : `${resumen.exigibles_aprobados} / ${resumen.exigibles} exigibles aprobados`} />
+            <Kpi className="col-span-2 lg:col-span-1" label="Horas" tone="signal" value={<span>{resumen.horas_aprobadas}<span className="text-base text-text-subtle"> / {resumen.horas_programadas} h</span></span>} hint={`${resumen.horas_reportadas} h reportadas · ${resumen.horas_aprobadas} h aprobadas`} />
+          </section>
+
+          <div className="flex flex-wrap items-center gap-2 text-xs" aria-label="Resumen de estados">
+            <StatusPill tone="violet">{resumen.enviados_pendientes_revision} en revisión</StatusPill>
+            <StatusPill tone="warning">{resumen.observados} observados</StatusPill>
+            <StatusPill tone="brand">{resumen.borradores} borradores</StatusPill>
+            <StatusPill tone="danger">{resumen.vencidos} vencidos</StatusPill>
+            <StatusPill tone={resumen.brecha_entregables < 0 ? "danger" : "success"} title="Brecha = entregables aprobados − entregables esperados a la fecha">
+              Brecha {resumen.brecha_entregables > 0 ? "+" : ""}{resumen.brecha_entregables} frente al cronograma ({resumen.brecha_pct > 0 ? "+" : ""}{resumen.brecha_pct} pts)
+            </StatusPill>
+          </div>
+        </>
+      )}
+
+      {byMonth.length > 0 && (
+        <section aria-label="Avance por mes" className="flex gap-2 overflow-x-auto pb-1">
+          {byMonth.map((m) => {
+            const vacio = m.total === 0;
+            const activo = filterMonth === m.month;
+            const tono: Tone = vacio ? "neutral" : m.pct >= 80 ? "success" : m.pct >= 40 ? "warning" : "danger";
+            return (
+              <button
+                type="button"
+                key={m.month}
+                aria-pressed={activo}
+                onClick={() => setFilterMonth(activo ? ALL : m.month)}
+                className={`min-w-[148px] flex-1 rounded-xl border bg-surface p-3 text-left transition-colors ${activo ? "border-brand ring-2 ring-blue-100" : "border-line hover:border-line-strong"}`}
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-[0.8125rem] text-text" style={{ fontWeight: 600 }}>{m.month}</span>
+                  <span className="text-sm tabular-nums text-text" style={{ fontWeight: 650 }}>{vacio ? "—" : `${m.pct}%`}</span>
+                </div>
+                <ProgressBar value={vacio ? 0 : m.pct} marker={vacio ? null : m.expectedPct} tone={tono} className="mt-2" label={`${m.month}: ${m.pct}% reportado`} />
+                <p className="mt-1.5 text-[0.6875rem] text-text-subtle">{m.reportados}/{m.total} reportados · {m.aprobados} aprobados{!vacio ? ` · esperado ${m.expectedPct}%` : ""}</p>
+              </button>
+            );
+          })}
+        </section>
+      )}
+
+      <div className="ds-panel">
+        <div className="flex flex-wrap items-center gap-2.5 border-b border-line px-4 py-3">
+          <div className="relative w-full sm:w-72">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden />
+            <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar entregable, iniciativa o número" aria-label="Buscar en la matriz" className="ds-input !pl-9" />
+          </div>
+          <div className="w-40"><AppSelect value={filterMonth} onValueChange={setFilterMonth} options={[{ value: ALL, label: "Todos los meses" }, ...availableMonths.map((m) => ({ value: m, label: m }))]} /></div>
+          <div className="w-52"><AppSelect value={filterCategory} onValueChange={setFilterCategory} options={[{ value: ALL, label: "Todas las categorías" }, ...Object.entries(categoryConfig).map(([key, cfg]) => ({ value: key, label: cfg.label }))]} /></div>
+          <div className="w-44"><AppSelect value={filterExcelStatus} onValueChange={setFilterExcelStatus} options={[{ value: ALL, label: "Todos los estados" }, ...ESTATUS_OPTIONS.map((opt) => ({ value: opt.value, label: opt.label }))]} /></div>
+          {hayFiltros && <button type="button" onClick={limpiarFiltros} className="ds-btn ds-btn-ghost ds-btn-sm !text-brand">Limpiar filtros</button>}
+          <button type="button" onClick={() => setShowLegend(!showLegend)} aria-expanded={showLegend} className="ds-btn ds-btn-ghost ds-btn-sm">
+            <Info className="h-3.5 w-3.5" /> Leyenda
+          </button>
+          <span className="ml-auto text-xs tabular-nums text-text-subtle">{filtered.length} entregable{filtered.length !== 1 ? "s" : ""}</span>
+        </div>
+
+        {showLegend && (
+          <div className="grid gap-4 border-b border-line bg-surface-2 px-4 py-3 sm:grid-cols-2">
+            <div>
+              <p className="ds-label">Categorías de entregable</p>
+              <ul className="grid gap-1 sm:grid-cols-2">
+                {Object.entries(categoryConfig).map(([key, cfg]) => (
+                  <li key={key} className="flex items-center gap-2 text-xs text-text-muted"><span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${cfg.dot}`} />{cfg.label}</li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="ds-label">Estados de seguimiento</p>
+              <ul className="grid gap-1">
+                {ESTATUS_OPTIONS.map((opt) => (
+                  <li key={opt.value} className="flex items-center gap-2 text-xs text-text-muted"><span className={`h-2.5 w-2.5 shrink-0 rounded-full ${opt.dot}`} />{opt.label}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {groupedByMonthPhase.length === 0 ? (
+          <EmptyState icon={Search} title="Ningún entregable coincide con los filtros" action={<button type="button" onClick={limpiarFiltros} className="ds-btn ds-btn-secondary ds-btn-sm">Limpiar filtros</button>}>
+            Prueba con otro mes, categoría o estado.
+          </EmptyState>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="ds-table">
+              <thead>
+                <tr>
+                  <th className="hidden w-14 sm:table-cell">N.º</th>
+                  <th>Entregable</th>
+                  <th className="hidden md:table-cell">Periodo de entrega</th>
+                  <th className="hidden lg:table-cell text-right">Horas</th>
+                  <th className="hidden sm:table-cell">Estado</th>
+                  <th className="hidden sm:table-cell">Evidencia</th>
+                  <th className="w-px"><span className="sr-only">Detalle</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {groupedByMonthPhase.map(({ month, items, phases }) => {
+                  const mDone = items.filter((e) => isDeliverableCompleted({ estado: e.estado })).length;
+                  const mTotal = items.length;
+                  const mPct = mTotal > 0 ? Math.round((mDone / mTotal) * 100) : 0;
+                  const fin0 = items[0]?.fecha_fin_calculada;
+                  return (
+                    <Fragment key={month}>
+                      <tr>
+                        <td colSpan={COLUMNAS} className="!border-b !border-line !bg-gray-100/70 !p-0">
+                          <button type="button" onClick={() => toggleCollapse(month)} aria-expanded={!collapsed[month]} className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left [contain:inline-size]">
+                            {collapsed[month] ? <ChevronRight className="h-4 w-4 shrink-0 text-text-subtle" /> : <ChevronDown className="h-4 w-4 shrink-0 text-text-subtle" />}
+                            <Calendar className="h-4 w-4 shrink-0 text-brand" aria-hidden />
+                            <span className="text-sm text-text" style={{ fontWeight: 650 }}>{month}{fin0 ? ` ${new Date(`${fin0}T12:00:00`).getFullYear()}` : ""}</span>
+                            <span className="text-xs text-text-subtle">Reportados {mDone}/{mTotal}{mTotal ? ` (${mPct}%)` : ""}</span>
+                            <ProgressBar value={mPct} tone={mPct >= 80 ? "success" : mPct >= 40 ? "warning" : "danger"} className="hidden max-w-[10rem] flex-1 sm:block" label={`${month}: ${mPct}% reportado`} />
+                          </button>
+                        </td>
+                      </tr>
+                      {!collapsed[month] &&
+                        phases.map(({ phase, items: phaseItems }) => {
+                          const pk = phaseKey(month, phase);
+                          const cerrada = collapsedPhase[pk];
+                          return (
+                            <Fragment key={pk}>
+                              <tr>
+                                <td colSpan={COLUMNAS} className="!bg-surface-2 !p-0">
+                                  <button type="button" onClick={() => togglePhaseCollapse(month, phase)} aria-expanded={!cerrada} className="flex w-full items-center gap-2 py-1.5 pl-8 pr-3 text-left [contain:inline-size]">
+                                    {cerrada ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-subtle" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-subtle" />}
+                                    <span className="flex-1 truncate text-xs text-text-muted" style={{ fontWeight: 600 }}>{phase}</span>
+                                    <span className="shrink-0 text-[0.6875rem] tabular-nums text-text-subtle">{phaseItems.length} {phaseItems.length === 1 ? "entregable" : "entregables"}</span>
+                                  </button>
+                                </td>
+                              </tr>
+                              {!cerrada &&
+                                phaseItems.map((e) => {
+                                  const estatus = computeEstatus(e, semanaNumero);
+                                  const catCfg = categoryConfig[categoryUi(e.categoria)];
+                                  const abierto = expandedRow === e.id;
+                                  const evidencias = e.evidencias && e.evidencias.length > 0 ? e.evidencias : e.url_evidencia ? [e.url_evidencia] : [];
+                                  const destacado = e.id === notificationTemplateId;
+                                  const alternar = () => setExpandedRow(abierto ? null : e.id);
+                                  return (
+                                    <Fragment key={e.id}>
+                                      <tr
+                                        id={`entregable-${e.id}`}
+                                        tabIndex={0}
+                                        aria-expanded={abierto}
+                                        onClick={alternar}
+                                        onKeyDown={(ev) => {
+                                          if (ev.target !== ev.currentTarget) return;
+                                          if (ev.key === "Enter" || ev.key === " ") {
+                                            ev.preventDefault();
+                                            alternar();
+                                          }
+                                        }}
+                                        className={`cursor-pointer scroll-mt-24 ${destacado ? "[&>td]:bg-blue-50" : ""} ${abierto ? "[&>td]:bg-surface-2" : ""}`}
+                                      >
+                                        <td className="hidden tabular-nums text-text-subtle sm:table-cell">{e.numero != null && e.numero !== 0 ? `#${e.numero}` : `S${e.semana_numero}`}</td>
+                                        <td className="sm:max-w-[520px]">
+<div className="w-0 min-w-full sm:w-auto sm:min-w-0">
+                                          <p className="line-clamp-2 text-text" style={{ fontWeight: 600 }}>{e.entregable}</p>
+                                          <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-text-subtle">
+                                            <span className="inline-flex items-center gap-1.5"><span className={`h-2 w-2 shrink-0 rounded-sm ${catCfg.dot}`} aria-hidden />{catCfg.label}</span>
+                                            <span className="truncate">{e.iniciativa_titulo}</span>
+                                            {e.tiene_excepcion && <StatusPill tone="warning" dot={false}>Ajuste individual</StatusPill>}
+                                            <span className="md:hidden">{e.numero != null && e.numero !== 0 ? `#${e.numero} · ` : ""}S{e.semana_numero} · {e.fecha_fin_calculada ? `límite ${formatDate(e.fecha_fin_calculada)}` : "sin fecha"} · {e.horas} h</span>
+                                          </p>
+                                          <span className="mt-1.5 inline-flex flex-wrap items-center gap-1 sm:hidden">
+                                            <StatusPill tone={TONE_ESTATUS[estatus.key]}>{estatus.label}</StatusPill>
+                                            {e.vencido && <StatusPill tone="danger" dot={false}>Vencido</StatusPill>}
+                                            {evidencias[0] && (
+                                              <a href={evidencias[0]} target="_blank" rel="noopener noreferrer" onClick={(ev) => ev.stopPropagation()} className="inline-flex items-center gap-1 text-xs text-brand" aria-label="Abrir evidencia en una pestaña nueva">
+                                                <ExternalLink className="h-3.5 w-3.5" /> Evidencia
+                                              </a>
+                                            )}
+                                          </span>
+                                          {e.estado === "observado" && e.comentario_revision && (
+                                            <p className="mt-1 line-clamp-1 text-xs text-amber-800">Observación: {e.comentario_revision}</p>
+                                          )}
+                                        </div>
+</td>
+                                        <td className="hidden whitespace-nowrap text-text-muted md:table-cell">
+                                          <span className="tabular-nums">S{e.semana_numero}</span>
+                                          <span className="mx-1.5 text-text-subtle">·</span>
+                                          {e.fecha_inicio_calculada && e.fecha_fin_calculada ? `${formatDate(e.fecha_inicio_calculada)} → ${formatDate(e.fecha_fin_calculada)}` : "—"}
+                                        </td>
+                                        <td className="hidden text-right tabular-nums text-text-muted lg:table-cell">{e.horas} h</td>
+                                        <td className="hidden sm:table-cell">
+                                          <span className="inline-flex flex-wrap items-center gap-1">
+                                            <StatusPill tone={TONE_ESTATUS[estatus.key]}>{estatus.label}</StatusPill>
+                                            {e.vencido && <StatusPill tone="danger" dot={false}>Vencido</StatusPill>}
+                                          </span>
+                                        </td>
+                                        <td className="hidden sm:table-cell" onClick={(ev) => ev.stopPropagation()}>
+                                          {evidencias[0] ? (
+                                            <a href={evidencias[0]} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-brand hover:underline" aria-label="Abrir evidencia en una pestaña nueva">
+                                              <ExternalLink className="h-3.5 w-3.5" />
+                                              {evidencias.length > 1 ? `${evidencias.length} enlaces` : "Abrir"}
+                                            </a>
+                                          ) : e.requiere_evidencia && e.estado !== "aprobado" ? (
+                                            <span className="text-xs text-text-subtle">Pendiente</span>
+                                          ) : (
+                                            <span className="text-xs text-gray-300">—</span>
+                                          )}
+                                        </td>
+                                        <td className="text-text-subtle">{abierto ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</td>
+                                      </tr>
+                                      {abierto && (
+                                        <tr>
+                                          <td colSpan={COLUMNAS} className="!bg-surface-2 !px-4 !py-4">
+                                            {renderDetalle(e, evidencias)}
+                                          </td>
+                                        </tr>
+                                      )}
+                                    </Fragment>
+                                  );
+                                })}
+                            </Fragment>
+                          );
+                        })}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </Page>
   );
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BarChart2 } from "lucide-react";
+import { Layers } from "lucide-react";
 import { AppSelect } from "../components/AppSelect";
+import { EmptyState, InlineAlert, Kpi, Page, PageHeader, PageLoading, Panel, StatusPill } from "../components/ds/primitives";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
 
@@ -25,26 +26,14 @@ function tipoIsNuevo(tipo: IndicadoresGrupoRow["tipo_docente"]) {
 }
 
 function TipoBadge({ tipo }: { tipo: IndicadoresGrupoRow["tipo_docente"] }) {
-  const isNuevo = tipoIsNuevo(tipo);
-  const label = tipo ?? "—";
-  return (
-    <span
-      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-        isNuevo
-          ? "bg-blue-100 text-blue-700"
-          : "bg-gray-100 text-gray-600"
-      }`}
-      style={{ letterSpacing: "-0.01em" }}
-    >
-      {label}
-    </span>
-  );
+  return <StatusPill tone={tipoIsNuevo(tipo) ? "brand" : "neutral"}>{tipo ?? "—"}</StatusPill>;
 }
 
 export default function IndicadoresGrupo() {
   const [semestres, setSemestres] = useState<string[]>([]);
   const [semestreActivo, setSemestreActivo] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [grupos, setGrupos] = useState<IndicadoresGrupoRow[]>([]);
 
   useEffect(() => {
@@ -77,6 +66,7 @@ export default function IndicadoresGrupo() {
     if (!semestreActivo) return;
     try {
       setLoading(true);
+      setError(null);
       const q = encodeURIComponent(semestreActivo);
       const res = await fetch(`${API_BASE_URL}/admin/indicadores-grupo?semestre=${q}`);
       if (!res.ok) throw new Error("No se pudo cargar indicadores por grupo");
@@ -85,6 +75,7 @@ export default function IndicadoresGrupo() {
     } catch (err) {
       console.error(err);
       notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
+      setError("No se pudieron cargar los indicadores por grupo.");
       setGrupos([]);
     } finally {
       setLoading(false);
@@ -133,27 +124,17 @@ export default function IndicadoresGrupo() {
   }, [grupos]);
 
   if (!semestreActivo) {
-    return (
-      <div className="p-6 text-gray-500 text-sm flex items-center gap-2">
-        Cargando semestres…
-      </div>
-    );
+    return <PageLoading label="Cargando semestres…" />;
   }
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-gray-900" style={{ fontWeight: 750 }}>
-            Indicadores por Grupo
-          </h1>
-          <p className="text-gray-500 text-sm mt-0.5">
-            Resumen de la matriz por grupo y tipo docente.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-2 text-sm text-gray-700">
-            <span style={{ fontWeight: 600 }}>Semestre:</span>
+    <Page>
+      <PageHeader
+        title="Indicadores por grupo"
+        description="Resumen de la matriz por grupo y tipo docente."
+        actions={
+          <label className="flex items-center gap-2">
+            <span className="ds-label !mb-0">Semestre</span>
             <AppSelect
               value={semestreActivo}
               onValueChange={(value) => setSemestreActivo(value)}
@@ -162,82 +143,62 @@ export default function IndicadoresGrupo() {
                   ? [{ value: semestreActivo, label: semestreActivo }]
                   : semestres.map((s) => ({ value: s, label: s }))
               }
-              className="min-w-[100px]"
+              className="min-w-[110px]"
             />
           </label>
-          <div className="hidden sm:flex items-center gap-2 text-gray-600">
-            <BarChart2 className="w-4 h-4" />
-            <span className="text-xs" style={{ fontWeight: 600 }}>
-              Vista consolidada
-            </span>
-          </div>
-        </div>
-      </div>
+        }
+      />
 
-      {/* Panel KPIs */}
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <p className="text-gray-500 text-xs">Total grupos activos</p>
-          <p className="text-gray-900 mt-1 text-2xl" style={{ fontWeight: 850 }}>
-            {totals.totalGruposActivos}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <p className="text-gray-500 text-xs">Total docentes asignados</p>
-          <p className="text-gray-900 mt-1 text-2xl" style={{ fontWeight: 850 }}>
-            {totals.totalDocentes}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <p className="text-gray-500 text-xs">Total entregables en plantillas</p>
-          <p className="text-gray-900 mt-1 text-2xl" style={{ fontWeight: 850 }}>
-            {totals.totalPlantilla}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <p className="text-gray-500 text-xs">Distribución ANTIGUO vs NUEVO</p>
-          <p className="text-gray-900 mt-1 text-2xl" style={{ fontWeight: 850 }}>
-            {totals.antig} Antiguos / {totals.nuevo} Nuevos
-          </p>
-        </div>
-      </div>
+      {error && (
+        <InlineAlert action={<button type="button" className="ds-btn ds-btn-secondary ds-btn-sm" onClick={() => void loadGrupos()}>Reintentar</button>}>
+          {error}
+        </InlineAlert>
+      )}
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+      <section aria-label="Totales del semestre" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Kpi label="Grupos activos" tone="brand" value={totals.totalGruposActivos} hint={`${totals.antig} antiguos · ${totals.nuevo} nuevos`} />
+        <Kpi label="Docentes asignados" tone="neutral" value={totals.totalDocentes} />
+        <Kpi label="Entregables en plantillas" tone="violet" value={totals.totalPlantilla} />
+        <Kpi label="Indicadores totales" tone="signal" value={totals.totalIndicadores} hint="Proyectos, actividades y convenios" />
+      </section>
+
+      <Panel title="Indicadores por grupo" description={`Semestre ${semestreActivo}`} bodyClassName="">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[1200px]">
+          <table className="ds-table min-w-[1000px]">
             <thead>
-              <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                <th className="text-left px-4 py-3">Grupo</th>
-                <th className="text-left px-4 py-3 w-24">Semestre</th>
-                <th className="text-left px-4 py-3 w-32">Tipo</th>
-                <th className="text-left px-4 py-3 w-24">Horas</th>
-                <th className="text-left px-4 py-3 w-28">Proyectos</th>
-                <th className="text-left px-4 py-3 w-28">Actividades</th>
-                <th className="text-left px-4 py-3 w-32">Conv. Nuevos</th>
-                <th className="text-left px-4 py-3 w-36">Conv. Dinamizados</th>
-                <th className="text-left px-4 py-3 w-32">Total Indicadores</th>
-                <th className="text-left px-4 py-3 w-32">Docentes asignados</th>
-                <th className="text-left px-4 py-3 w-40">Entregables plantilla</th>
+              <tr>
+                <th className="min-w-[260px]">Grupo</th>
+                <th>Semestre</th>
+                <th>Tipo</th>
+                <th className="text-right">Horas</th>
+                <th className="text-right">Proyectos</th>
+                <th className="text-right">Actividades</th>
+                <th className="text-right">Conv. nuevos</th>
+                <th className="text-right">Conv. dinamizados</th>
+                <th className="text-right">Total indicadores</th>
+                <th className="text-right">Docentes</th>
+                <th className="text-right">Entregables plantilla</th>
               </tr>
             </thead>
 
-            <tbody className="divide-y divide-gray-50">
+            <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-10 text-center text-gray-400 text-sm">
-                    Cargando…
+                  <td colSpan={11}>
+                    <PageLoading label="Cargando…" />
                   </td>
                 </tr>
               ) : grupos.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-10 text-center text-gray-400 text-sm">
-                    No hay datos para mostrar.
+                  <td colSpan={11}>
+                    <EmptyState icon={Layers} title="No hay grupos en este semestre">
+                      Prueba con otro semestre o crea grupos desde la administración del sistema.
+                    </EmptyState>
                   </td>
                 </tr>
               ) : (
                 <>
                   {grupos.map((g) => {
-                    const isNuevo = tipoIsNuevo(g.tipo_docente);
                     const totalIndicadores =
                       (g.num_proyectos || 0) +
                       (g.num_actividades || 0) +
@@ -245,88 +206,43 @@ export default function IndicadoresGrupo() {
                       (g.num_convenios_dinamizados || 0);
 
                     return (
-                      <tr
-                        key={g.id}
-                        className={isNuevo ? "bg-blue-50/30" : "bg-white"}
-                      >
-                        <td className="px-4 py-3">
-                          <div className="text-gray-800" style={{ fontWeight: 650 }}>
-                            {g.nombre}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
-                            {g.semestre ?? "—"}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <TipoBadge tipo={g.tipo_docente} />
-                        </td>
-                        <td className="px-4 py-3 text-gray-700 tabular-nums">
-                          {g.horas_totales ?? 0}
-                        </td>
-                        <td className="px-4 py-3 text-gray-700 tabular-nums">
-                          {g.num_proyectos ?? 0}
-                        </td>
-                        <td className="px-4 py-3 text-gray-700 tabular-nums">
-                          {g.num_actividades ?? 0}
-                        </td>
-                        <td className="px-4 py-3 text-gray-700 tabular-nums">
-                          {g.num_convenios_nuevos ?? 0}
-                        </td>
-                        <td className="px-4 py-3 text-gray-700 tabular-nums">
-                          {g.num_convenios_dinamizados ?? 0}
-                        </td>
-                        <td className="px-4 py-3 text-gray-900 tabular-nums" style={{ fontWeight: 700 }}>
-                          {totalIndicadores}
-                        </td>
-                        <td className="px-4 py-3 text-gray-700 tabular-nums">
-                          {g.num_docentes ?? 0}
-                        </td>
-                        <td className="px-4 py-3 text-gray-700 tabular-nums">
-                          {g.num_plantilla_entregables ?? 0}
-                        </td>
+                      <tr key={g.id}>
+                        <td className="text-text" style={{ fontWeight: 600 }}>{g.nombre}</td>
+                        <td className="text-text-muted">{g.semestre ?? "—"}</td>
+                        <td><TipoBadge tipo={g.tipo_docente} /></td>
+                        <td className="text-right tabular-nums text-text-muted">{g.horas_totales ?? 0}</td>
+                        <td className="text-right tabular-nums text-text-muted">{g.num_proyectos ?? 0}</td>
+                        <td className="text-right tabular-nums text-text-muted">{g.num_actividades ?? 0}</td>
+                        <td className="text-right tabular-nums text-text-muted">{g.num_convenios_nuevos ?? 0}</td>
+                        <td className="text-right tabular-nums text-text-muted">{g.num_convenios_dinamizados ?? 0}</td>
+                        <td className="text-right tabular-nums text-text" style={{ fontWeight: 650 }}>{totalIndicadores}</td>
+                        <td className="text-right tabular-nums text-text-muted">{g.num_docentes ?? 0}</td>
+                        <td className="text-right tabular-nums text-text-muted">{g.num_plantilla_entregables ?? 0}</td>
                       </tr>
                     );
                   })}
-
-                  {/* Fila de totales */}
-                  <tr className="bg-gray-50 font-semibold">
-                    <td className="px-4 py-4 text-gray-900" colSpan={3}>
-                      Totales
-                    </td>
-                    <td className="px-4 py-4 text-gray-900 tabular-nums">
-                      {totals.horasTotales}
-                    </td>
-                    <td className="px-4 py-4 text-gray-900 tabular-nums">
-                      {totals.numProyectos}
-                    </td>
-                    <td className="px-4 py-4 text-gray-900 tabular-nums">
-                      {totals.numActividades}
-                    </td>
-                    <td className="px-4 py-4 text-gray-900 tabular-nums">
-                      {totals.numConveniosNuevos}
-                    </td>
-                    <td className="px-4 py-4 text-gray-900 tabular-nums">
-                      {totals.numConveniosDinamizados}
-                    </td>
-                    <td className="px-4 py-4 text-gray-900 tabular-nums">
-                      {totals.totalIndicadores}
-                    </td>
-                    <td className="px-4 py-4 text-gray-900 tabular-nums">
-                      {totals.totalDocentes}
-                    </td>
-                    <td className="px-4 py-4 text-gray-900 tabular-nums">
-                      {totals.totalPlantilla}
-                    </td>
-                  </tr>
                 </>
               )}
             </tbody>
+
+            {!loading && grupos.length > 0 && (
+              <tfoot>
+                <tr className="bg-surface-2 text-text" style={{ fontWeight: 650 }}>
+                  <td colSpan={3} className="px-3.5 py-2.5">Totales</td>
+                  <td className="px-3.5 py-2.5 text-right tabular-nums">{totals.horasTotales}</td>
+                  <td className="px-3.5 py-2.5 text-right tabular-nums">{totals.numProyectos}</td>
+                  <td className="px-3.5 py-2.5 text-right tabular-nums">{totals.numActividades}</td>
+                  <td className="px-3.5 py-2.5 text-right tabular-nums">{totals.numConveniosNuevos}</td>
+                  <td className="px-3.5 py-2.5 text-right tabular-nums">{totals.numConveniosDinamizados}</td>
+                  <td className="px-3.5 py-2.5 text-right tabular-nums">{totals.totalIndicadores}</td>
+                  <td className="px-3.5 py-2.5 text-right tabular-nums">{totals.totalDocentes}</td>
+                  <td className="px-3.5 py-2.5 text-right tabular-nums">{totals.totalPlantilla}</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
-      </div>
-    </div>
+      </Panel>
+    </Page>
   );
 }
-

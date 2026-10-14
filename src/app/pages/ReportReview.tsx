@@ -14,6 +14,7 @@ import {
   User,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
+import { Page, PageHeader, Segmented } from "../components/ds/primitives";
 import { EnlaceEvidencia, type EvidenciaEnlace } from "../components/EnlaceEvidencia";
 import { HistorialEntregable } from "../components/HistorialEntregable";
 import { AppSelect } from "../components/AppSelect";
@@ -393,83 +394,55 @@ export default function ReportReview() {
   const hasNextPage = page * limit < total;
 
   return (
-    <div className="p-4 sm:p-6 space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-gray-900">Revisión de Reportes</h1>
-          <p className="text-gray-500 text-sm mt-0.5">
+    <Page wide>
+      <PageHeader
+        title="Revisión de reportes"
+        description={
+          <>
             {total} entregable{total !== 1 ? "s" : ""} · {ESTADOS_BANDEJA.find((x) => x.id === estadoFiltro)?.label.toLowerCase()}
-          </p>
-          {metricas && (
-            <p className="text-xs text-gray-400 mt-1">{headerBadge}</p>
-          )}
-        </div>
+            {metricas && <span className="mt-1 block text-xs text-text-subtle">{headerBadge}</span>}
+          </>
+        }
+        actions={
+          <div className="flex flex-wrap items-center gap-2" aria-label="Navegación entre entregables">
+            <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={!hasPrevPage} className="ds-btn ds-btn-secondary ds-btn-sm">
+              Página anterior
+            </button>
+            <span className="text-xs tabular-nums text-text-subtle">Página {page}</span>
+            <button type="button" onClick={() => setPage((p) => p + 1)} disabled={!hasNextPage} className="ds-btn ds-btn-secondary ds-btn-sm">
+              Página siguiente
+            </button>
+            <span className="mx-1 h-5 w-px bg-line" aria-hidden />
+            <button type="button" aria-label="Entregable anterior" onClick={() => setCurrent(Math.max(0, safeIndex - 1))} disabled={safeIndex === 0 || filteredReports.length === 0} className="ds-btn ds-btn-secondary ds-btn-sm !px-2">
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <span className="text-sm tabular-nums text-text-muted">{filteredReports.length > 0 ? safeIndex + 1 : 0} / {filteredReports.length}</span>
+            <button
+              type="button"
+              aria-label="Entregable siguiente"
+              onClick={() => setCurrent(Math.min(filteredReports.length > 0 ? filteredReports.length - 1 : 0, safeIndex + 1))}
+              disabled={filteredReports.length === 0 || safeIndex === filteredReports.length - 1}
+              className="ds-btn ds-btn-secondary ds-btn-sm !px-2"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        }
+      />
 
-        {/* Navegación entre reportes */}
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={!hasPrevPage}
-            className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Anterior
-          </button>
-          <span className="text-xs text-gray-500">Página {page}</span>
-          <button
-            onClick={() => setPage((p) => p + 1)}
-            disabled={!hasNextPage}
-            className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Siguiente
-          </button>
-          <button
-            onClick={() => setCurrent(Math.max(0, safeIndex - 1))}
-            disabled={safeIndex === 0 || filteredReports.length === 0}
-            className="p-2 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <span className="text-sm text-gray-600">
-            {filteredReports.length > 0 ? safeIndex + 1 : 0} / {filteredReports.length}
-          </span>
-          <button
-            onClick={() =>
-              setCurrent(
-                Math.min(
-                  filteredReports.length > 0 ? filteredReports.length - 1 : 0,
-                  safeIndex + 1
-                )
-              )
-            }
-            disabled={
-              filteredReports.length === 0 || safeIndex === filteredReports.length - 1
-            }
-            className="p-2 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Estado de los entregables">
-        {ESTADOS_BANDEJA.map((e) => (
-          <button
-            key={e.id}
-            type="button"
-            role="tab"
-            aria-selected={estadoFiltro === e.id}
-            onClick={() => setEstadoFiltro(e.id)}
-            className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
-              estadoFiltro === e.id ? "bg-[#1e3a8a] border-[#1e3a8a] text-white" : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
-            }`}
-          >
-            {e.label}
-          </button>
-        ))}
-      </div>
+      <Segmented<EstadoFiltro>
+        label="Estado de los entregables"
+        value={estadoFiltro}
+        onChange={setEstadoFiltro}
+        items={ESTADOS_BANDEJA.map((e) => ({
+          id: e.id,
+          label: e.label,
+          tone: e.id === "enviado" ? "violet" : e.id === "sin_acceso" || e.id === "observado" ? "warning" : e.id === "aprobado" ? "success" : undefined,
+        }))}
+      />
 
       {/* Filtros debajo del título */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+      <div className="ds-panel p-4">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-xs text-gray-500">
             Filtros {loadingCatalogs && "(cargando...)"}
@@ -525,11 +498,11 @@ export default function ReportReview() {
           />
           <label className="text-xs text-gray-500">
             Enviado desde
-            <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" />
+            <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} className="ds-input mt-1" />
           </label>
           <label className="text-xs text-gray-500">
             Enviado hasta
-            <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" />
+            <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} className="ds-input mt-1" />
           </label>
           <form
             className="text-xs text-gray-500"
@@ -543,8 +516,8 @@ export default function ReportReview() {
               value={busqueda}
               onChange={(e) => setBusqueda(e.target.value)}
               onBlur={() => setBusquedaAplicada(busqueda.trim())}
-              placeholder="Buscar…"
-              className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+              placeholder="Buscar…" aria-label="Buscar por entregable o iniciativa"
+              className="ds-input mt-1"
             />
           </form>
         </div>
@@ -566,24 +539,24 @@ export default function ReportReview() {
             onClick={() => setCurrent(i)}
             className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
               i === safeIndex
-                ? "bg-[#1e3a8a] text-white"
+                ? "bg-brand text-white"
                 : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
             }`}
             style={{ fontWeight: i === safeIndex ? 600 : 400 }}
           >
             {reviewed[r.id] ? (
               <span className={actionLabels[reviewed[r.id] as keyof typeof actionLabels].color}>
-                ✓ {r.teacher.split(" ").slice(1).join(" ")}
+                ✓ {`${r.teacher.split(" ")[0]} ${r.teacher.split(" ").slice(1,2).map((x) => x[0] + ".").join("")} · ${r.week}`}
               </span>
             ) : (
-              r.teacher.split(" ").slice(1).join(" ")
+              `${r.teacher.split(" ")[0]} ${r.teacher.split(" ").slice(1,2).map((x) => x[0] + ".").join("")} · ${r.week}`
             )}
           </button>
         ))}
       </div>
 
       {!report ? (
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-sm text-gray-600" role="status">
+        <div className="ds-panel p-6 text-sm text-gray-600" role="status">
           {loadingReports
             ? "Cargando entregables…"
             : estadoFiltro === "enviado"
@@ -595,9 +568,9 @@ export default function ReportReview() {
         {/* Main content */}
         <div className="xl:col-span-2 space-y-5">
           {/* Teacher info */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+          <div className="ds-panel p-5">
             <div className="flex items-start gap-4">
-              <div className="w-12 h-12 bg-[#1e3a8a] rounded-full flex items-center justify-center text-white shrink-0">
+              <div className="w-12 h-12 bg-brand rounded-full flex items-center justify-center text-white shrink-0">
                 <User className="w-6 h-6" />
               </div>
               <div className="flex-1">
@@ -660,7 +633,7 @@ export default function ReportReview() {
           </div>
 
           {/* Activities */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+          <div className="ds-panel p-5">
             <h3 className="text-gray-800 mb-3">Actividades Reportadas</h3>
             <div className="bg-gray-50 rounded-lg p-4">
               <p className="text-sm text-gray-700" style={{ fontWeight: 500 }}>
@@ -671,7 +644,7 @@ export default function ReportReview() {
           </div>
 
           {/* Evidences */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+          <div className="ds-panel p-5">
             <h3 className="text-gray-800 mb-3">Evidencias</h3>
             {report.evidenciaExenta && (
               <p className="mb-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
@@ -724,7 +697,7 @@ export default function ReportReview() {
         {/* Actions panel */}
         <div className="space-y-5">
           {reviewed[report.id] ? (
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 text-center">
+            <div className="ds-panel p-5 text-center">
               <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
               <p className="text-gray-800 text-sm" style={{ fontWeight: 600 }}>
                 Reporte revisado
@@ -734,7 +707,7 @@ export default function ReportReview() {
               </p>
             </div>
           ) : report.status !== "pending" ? (
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-2">
+            <div className="ds-panel p-5 space-y-2">
               <h3 className="text-gray-800">{report.status === "approved" ? "Entregable aprobado" : "Devuelto al docente"}</h3>
               {report.problemaAcceso && (
                 <p className="flex gap-2 text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
@@ -750,7 +723,7 @@ export default function ReportReview() {
               </p>
             </div>
           ) : (
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
+            <div className="ds-panel p-5 space-y-4">
               <h3 className="text-gray-800">Decisión del Revisor</h3>
 
               <div>
@@ -761,8 +734,8 @@ export default function ReportReview() {
                   rows={4}
                   value={comment}
                   onChange={(e) => setComment(e.target.value)}
-                  placeholder="Escribe un comentario para el docente sobre este reporte..."
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50 resize-none"
+                  aria-label="Comentario para el docente" placeholder="Escribe un comentario para el docente sobre este reporte..."
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-strong bg-gray-50 resize-none"
                 />
               </div>
 
@@ -770,7 +743,7 @@ export default function ReportReview() {
                 <button
                   onClick={() => handleAction("approve")}
                   disabled={savingDecision}
-                  className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-lg text-sm transition-colors"
+                  className="ds-btn ds-btn-success w-full"
                   style={{ fontWeight: 600 }}
                 >
                   <CheckCircle2 className="w-4 h-4" /> {savingDecision ? "Guardando..." : "Aprobar reporte"}
@@ -778,7 +751,7 @@ export default function ReportReview() {
                 <button
                   onClick={() => handleAction("no_access")}
                   disabled={savingDecision}
-                  className="w-full flex items-center justify-center gap-2 border border-amber-400 text-amber-800 bg-amber-50 hover:bg-amber-100 py-2.5 rounded-lg text-sm transition-colors"
+                  className="ds-btn w-full border-amber-400 bg-amber-50 text-amber-800 hover:bg-amber-100"
                   style={{ fontWeight: 600 }}
                   title="El docente deberá compartir el enlace con coordinación y reenviar; no se pierde ningún dato"
                 >
@@ -787,7 +760,7 @@ export default function ReportReview() {
                 <button
                   onClick={() => handleAction("adjust")}
                   disabled={savingDecision}
-                  className="w-full flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 text-white py-2.5 rounded-lg text-sm transition-colors"
+                  className="ds-btn w-full bg-amber-500 text-white hover:bg-amber-600"
                   style={{ fontWeight: 600 }}
                 >
                   <AlertCircle className="w-4 h-4" /> Solicitar ajustes
@@ -795,7 +768,7 @@ export default function ReportReview() {
                 <button
                   onClick={() => handleAction("reject")}
                   disabled={savingDecision}
-                  className="w-full flex items-center justify-center gap-2 border border-red-300 text-red-600 hover:bg-red-50 py-2.5 rounded-lg text-sm transition-colors"
+                  className="ds-btn ds-btn-secondary w-full !border-red-300 !text-red-700 hover:!bg-red-50"
                   style={{ fontWeight: 600 }}
                 >
                   <XCircle className="w-4 h-4" /> Rechazar reporte
@@ -804,7 +777,7 @@ export default function ReportReview() {
             </div>
           )}
 
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+          <div className="ds-panel p-5">
             <h3 className="text-gray-800 mb-3">Notificar Docente</h3>
             <textarea
               rows={3}
@@ -812,8 +785,8 @@ export default function ReportReview() {
               onChange={(event) => {
                 setNotificationMessage(event.target.value);
               }}
-              placeholder="Mensaje personalizado para el docente..."
-              className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50 resize-none mb-3"
+              aria-label="Mensaje para el docente" placeholder="Mensaje personalizado para el docente..."
+              className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-strong bg-gray-50 resize-none mb-3"
             />
             <button
               type="button"
@@ -827,6 +800,6 @@ export default function ReportReview() {
         </div>
       </div>
       )}
-    </div>
+    </Page>
   );
 }

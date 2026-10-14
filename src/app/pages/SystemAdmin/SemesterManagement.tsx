@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { CalendarRange, CheckCircle2, Edit2, Loader2, Plus, Trash2, X } from "lucide-react";
+import { CalendarRange, Check, Pencil, Plus, Trash2 } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../components/ui/dialog";
+import { EmptyState, InlineAlert, Panel, PageLoading, StatusPill } from "../../components/ds/primitives";
 import { useConfirmationDialog } from "../../components/ConfirmationDialog";
 import { API_BASE, apiFetch as fetch } from "../../config/api";
 import { notify } from "../../lib/notify";
@@ -43,16 +45,19 @@ export default function SemesterManagement() {
   const [form, setForm] = useState<SemesterForm>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [busyCode, setBusyCode] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState(false);
 
   const loadSemesters = async () => {
     try {
       setLoading(true);
+      setLoadError(false);
       const response = await fetch(`${API_BASE}/admin/semestres`);
       if (!response.ok) throw new Error();
       const data = await response.json();
       setSemesters(data.detalle || []);
     } catch {
       setSemesters([]);
+      setLoadError(true);
       notify.error("No se pudieron cargar los semestres.");
     } finally {
       setLoading(false);
@@ -205,95 +210,112 @@ export default function SemesterManagement() {
     }
   };
 
+
+  const numCell = (value: number | null | undefined) => (
+    <td className="hidden text-right md:table-cell">{value || 0}</td>
+  );
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h2 className="text-gray-900 text-base font-bold">Calendario de semestres</h2>
-          <p className="text-xs text-gray-500 mt-0.5">
-            Crea, edita, activa o elimina periodos. La clonación de grupos está en Tareas semanales.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={openCreate}
-          className="inline-flex items-center gap-2 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white px-4 py-2 rounded-lg text-sm font-semibold"
+      {loadError && (
+        <InlineAlert
+          action={
+            <button type="button" className="ds-btn ds-btn-secondary ds-btn-sm" onClick={() => void loadSemesters()}>
+              Reintentar
+            </button>
+          }
         >
-          <Plus className="w-4 h-4" /> Nuevo semestre
-        </button>
-      </div>
+          No se pudieron cargar los semestres.
+        </InlineAlert>
+      )}
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-        {loading && (
-          <div className="p-6 flex items-center justify-center gap-2 text-sm text-gray-500">
-            <Loader2 className="w-4 h-4 animate-spin" /> Cargando semestres…
-          </div>
-        )}
-        {!loading && semesters.length === 0 && (
-          <div className="p-8 text-center text-sm text-gray-500">No hay semestres configurados.</div>
+      <Panel
+        title="Calendario de semestres"
+        description="Crea, edita, activa o elimina periodos. La clonación de grupos está en Tareas semanales."
+        action={
+          <button type="button" onClick={openCreate} className="ds-btn ds-btn-primary ds-btn-sm">
+            <Plus className="h-4 w-4" aria-hidden /> Nuevo semestre
+          </button>
+        }
+        bodyClassName=""
+      >
+        {loading && <PageLoading label="Cargando semestres…" />}
+        {!loading && !loadError && semesters.length === 0 && (
+          <EmptyState
+            icon={CalendarRange}
+            title="No hay semestres configurados"
+            action={
+              <button type="button" onClick={openCreate} className="ds-btn ds-btn-primary ds-btn-sm">
+                <Plus className="h-4 w-4" aria-hidden /> Crear el primer semestre
+              </button>
+            }
+          >
+            Crea un semestre para poder organizar grupos, plantillas y reportes.
+          </EmptyState>
         )}
         {!loading && semesters.length > 0 && (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[900px]">
+            <table className="ds-table">
               <thead>
-                <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                  <th className="text-left px-4 py-3">Semestre</th>
-                  <th className="text-left px-4 py-3">Fechas</th>
-                  <th className="text-right px-4 py-3">Semanas</th>
-                  <th className="text-right px-4 py-3">Grupos</th>
-                  <th className="text-right px-4 py-3">Plantillas</th>
-                  <th className="text-right px-4 py-3">Docentes</th>
-                  <th className="text-right px-4 py-3">Reportes</th>
-                  <th className="text-left px-4 py-3">Estado</th>
-                  <th className="text-right px-4 py-3">Acciones</th>
+                <tr>
+                  <th>Semestre</th>
+                  <th>Fechas</th>
+                  <th className="hidden text-right md:table-cell">Semanas</th>
+                  <th className="hidden text-right md:table-cell">Grupos</th>
+                  <th className="hidden text-right lg:table-cell">Plantillas</th>
+                  <th className="hidden text-right lg:table-cell">Docentes</th>
+                  <th className="hidden text-right lg:table-cell">Reportes</th>
+                  <th>Estado</th>
+                  <th className="text-right">Acciones</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-50">
+              <tbody>
                 {semesters.map((semester) => (
-                  <tr key={semester.codigo} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-semibold text-gray-900">{semester.codigo}</td>
-                    <td className="px-4 py-3 text-gray-600">
+                  <tr key={semester.codigo}>
+                    <td style={{ fontWeight: 600 }}>{semester.codigo}</td>
+                    <td className="whitespace-nowrap text-text-muted">
                       {dateOnly(semester.fecha_inicio)} – {dateOnly(semester.fecha_fin)}
                     </td>
-                    <td className="px-4 py-3 text-right text-gray-600">{semester.numero_semanas}</td>
-                    <td className="px-4 py-3 text-right text-gray-600">{semester.num_grupos || 0}</td>
-                    <td className="px-4 py-3 text-right text-gray-600">{semester.num_plantillas || 0}</td>
-                    <td className="px-4 py-3 text-right text-gray-600">{semester.num_docentes || 0}</td>
-                    <td className="px-4 py-3 text-right text-gray-600">{semester.num_reportes || 0}</td>
-                    <td className="px-4 py-3">
+                    {numCell(semester.numero_semanas)}
+                    {numCell(semester.num_grupos)}
+                    <td className="hidden text-right lg:table-cell">{semester.num_plantillas || 0}</td>
+                    <td className="hidden text-right lg:table-cell">{semester.num_docentes || 0}</td>
+                    <td className="hidden text-right lg:table-cell">{semester.num_reportes || 0}</td>
+                    <td>
                       {semester.activo ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-700 px-2.5 py-1 text-xs font-semibold">
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Activo
-                        </span>
+                        <StatusPill tone="success">Activo</StatusPill>
                       ) : (
                         <button
                           type="button"
                           disabled={busyCode === semester.codigo}
                           onClick={() => void activateSemester(semester)}
-                          className="text-xs text-emerald-700 hover:underline disabled:opacity-50"
+                          className="ds-btn ds-btn-secondary ds-btn-sm"
+                          aria-label={`Activar semestre ${semester.codigo}`}
                         >
-                          Activar
+                          <Check className="h-3.5 w-3.5" aria-hidden /> Activar
                         </button>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right space-x-2">
-                      <button
-                        type="button"
-                        onClick={() => openEdit(semester)}
-                        className="text-blue-700 hover:text-blue-900 inline-flex"
-                        aria-label={`Editar ${semester.codigo}`}
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busyCode === semester.codigo}
-                        onClick={() => void deleteSemester(semester)}
-                        className="text-gray-400 hover:text-red-600 inline-flex disabled:opacity-40"
-                        aria-label={`Eliminar ${semester.codigo}`}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                    <td>
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => openEdit(semester)}
+                          className="ds-btn ds-btn-ghost ds-btn-sm !px-1.5"
+                          aria-label={`Editar ${semester.codigo}`}
+                        >
+                          <Pencil className="h-4 w-4" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busyCode === semester.codigo}
+                          onClick={() => void deleteSemester(semester)}
+                          className="ds-btn ds-btn-ghost ds-btn-sm !px-1.5 hover:!text-red-700"
+                          aria-label={`Eliminar ${semester.codigo}`}
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -301,108 +323,85 @@ export default function SemesterManagement() {
             </table>
           </div>
         )}
-      </div>
+      </Panel>
 
-      {showModal && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                <CalendarRange className="w-5 h-5" /> {editing ? "Editar semestre" : "Nuevo semestre"}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowModal(false)}
-                className="text-gray-400 hover:text-gray-600"
-                aria-label="Cerrar"
-              >
-                <X className="w-5 h-5" />
-              </button>
+      <Dialog open={showModal} onOpenChange={(open) => !saving && setShowModal(open)}>
+        <DialogContent className="gap-0 rounded-xl border-line bg-surface p-0 sm:max-w-md">
+          <DialogHeader className="border-b border-line px-5 py-4">
+            <DialogTitle className="text-base">{editing ? "Editar semestre" : "Nuevo semestre"}</DialogTitle>
+            <DialogDescription className="text-xs text-text-subtle">
+              El código usa el formato AAAAA o AAAAB, por ejemplo 2026B.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[70vh] space-y-4 overflow-y-auto p-5">
+            <div>
+              <label htmlFor="sem-codigo" className="ds-label">Código *</label>
+              <input
+                id="sem-codigo"
+                value={form.codigo}
+                maxLength={5}
+                onChange={(event) => setForm((current) => ({ ...current, codigo: event.target.value.toUpperCase() }))}
+                placeholder="2026B"
+                className="ds-input"
+              />
             </div>
-            <div className="p-6 space-y-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Código *</label>
+                <label htmlFor="sem-inicio" className="ds-label">Inicio *</label>
                 <input
-                  value={form.codigo}
-                  maxLength={5}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, codigo: event.target.value.toUpperCase() }))
-                  }
-                  placeholder="2026B"
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
+                  id="sem-inicio"
+                  type="date"
+                  value={form.fecha_inicio}
+                  onChange={(event) => setForm((current) => ({ ...current, fecha_inicio: event.target.value }))}
+                  className="ds-input"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Inicio *</label>
-                  <input
-                    type="date"
-                    value={form.fecha_inicio}
-                    onChange={(event) =>
-                      setForm((current) => ({ ...current, fecha_inicio: event.target.value }))
-                    }
-                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Finalización *</label>
-                  <input
-                    type="date"
-                    min={form.fecha_inicio || undefined}
-                    value={form.fecha_fin}
-                    onChange={(event) =>
-                      setForm((current) => ({ ...current, fecha_fin: event.target.value }))
-                    }
-                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
-                  />
-                </div>
-              </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Número de semanas *</label>
+                <label htmlFor="sem-fin" className="ds-label">Finalización *</label>
                 <input
-                  type="number"
-                  min={1}
-                  max={53}
-                  value={form.numero_semanas}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, numero_semanas: event.target.value }))
-                  }
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50"
+                  id="sem-fin"
+                  type="date"
+                  min={form.fecha_inicio || undefined}
+                  value={form.fecha_fin}
+                  onChange={(event) => setForm((current) => ({ ...current, fecha_fin: event.target.value }))}
+                  className="ds-input"
                 />
               </div>
-              {!editing && (
-                <label className="flex items-center gap-2 text-sm text-gray-700">
-                  <input
-                    type="checkbox"
-                    checked={form.activo}
-                    onChange={(event) =>
-                      setForm((current) => ({ ...current, activo: event.target.checked }))
-                    }
-                  />
-                  Establecer como semestre activo
-                </label>
-              )}
             </div>
-            <div className="flex gap-3 px-6 pb-6">
-              <button
-                type="button"
-                onClick={() => setShowModal(false)}
-                className="flex-1 border border-gray-200 py-2.5 rounded-lg text-sm"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={saving}
-                onClick={() => void saveSemester()}
-                className="flex-1 bg-[#1e3a8a] text-white py-2.5 rounded-lg text-sm font-semibold disabled:opacity-50"
-              >
-                {saving ? "Guardando…" : "Guardar"}
-              </button>
+            <div>
+              <label htmlFor="sem-semanas" className="ds-label">Número de semanas *</label>
+              <input
+                id="sem-semanas"
+                type="number"
+                min={1}
+                max={53}
+                value={form.numero_semanas}
+                onChange={(event) => setForm((current) => ({ ...current, numero_semanas: event.target.value }))}
+                className="ds-input"
+              />
             </div>
+            {!editing && (
+              <label className="flex items-center gap-2 text-sm text-text">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-line-strong accent-[var(--color-brand)]"
+                  checked={form.activo}
+                  onChange={(event) => setForm((current) => ({ ...current, activo: event.target.checked }))}
+                />
+                Establecer como semestre activo
+              </label>
+            )}
           </div>
-        </div>
-      )}
+          <DialogFooter className="border-t border-line px-5 py-3">
+            <button type="button" onClick={() => setShowModal(false)} className="ds-btn ds-btn-secondary">
+              Cancelar
+            </button>
+            <button type="button" disabled={saving} onClick={() => void saveSemester()} className="ds-btn ds-btn-primary">
+              {saving ? "Guardando…" : "Guardar"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,14 +1,8 @@
 import { useEffect, useState, useMemo } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { BarChart3, Users } from "lucide-react";
+import { EmptyState, InlineAlert, Kpi, Page, PageHeader, PageLoading, Panel, ProgressBar, StatusPill } from "../components/ds/primitives";
+import { ChartLegend, ChartTooltip, axisTick, useChartColors } from "../components/ds/chart";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { notify } from "../lib/notify";
@@ -50,40 +44,36 @@ interface MetricasPayload {
 }
 
 function TipoDocenteBadge({ tipo }: { tipo: "ANTIGUO" | "NUEVO" }) {
-  const nuevo = tipo === "NUEVO";
-  return (
-    <span
-      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-        nuevo ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
-      }`}
-    >
-      {tipo}
-    </span>
-  );
+  return <StatusPill tone={tipo === "NUEVO" ? "brand" : "neutral"}>{tipo}</StatusPill>;
 }
 
 export default function ReportsMetrics() {
   const session = useCurrentUser();
+  const C = useChartColors();
   const [data, setData] = useState<MetricasPayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [recarga, setRecarga] = useState(0);
 
   useEffect(() => {
     const load = async () => {
       try {
         setLoading(true);
+        setError(null);
         const res = await fetch(`${API_BASE}/admin/metricas`);
         if (!res.ok) throw new Error("Error métricas");
         setData(await res.json());
       } catch (e) {
         console.error(e);
         notify.error("No se pudo cargar las métricas. Intente más tarde.");
+        setError("No se pudieron cargar las métricas.");
         setData(null);
       } finally {
         setLoading(false);
       }
     };
     void load();
-  }, []);
+  }, [recarga]);
 
   const fechaTitulo = useMemo(
     () =>
@@ -109,130 +99,101 @@ export default function ReportsMetrics() {
 
   const r = data?.resumen;
 
-  if (loading) {
-    return (
-      <div className="p-6 flex items-center justify-center min-h-[50vh]">
-        <div className="w-10 h-10 border-2 border-gray-200 border-t-[#1d4ed8] rounded-full animate-spin" />
-        <span className="ml-3 text-sm text-gray-500">Cargando métricas…</span>
-      </div>
-    );
-  }
+  if (loading) return <PageLoading label="Cargando métricas…" />;
 
   return (
-    <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-gray-900" style={{ fontWeight: 700 }}>
-          Reportes y Métricas
-        </h1>
-        <p className="text-gray-500 text-sm mt-0.5 capitalize">
-          {fechaTitulo}
-          {session?.correo ? (
-            <span className="not-lowercase text-gray-400"> · {session.correo}</span>
-          ) : null}
-        </p>
-      </div>
+    <Page>
+      <PageHeader
+        title="Reportes y métricas"
+        description={
+          <>
+            <span className="first-letter:uppercase">{fechaTitulo}</span>
+            {session?.correo ? ` · ${session.correo}` : ""}
+          </>
+        }
+      />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-          <p className="text-gray-500 text-xs uppercase tracking-wide" style={{ fontWeight: 600 }}>
-            Total reportes
-          </p>
-          <p className="text-2xl text-gray-900 mt-2" style={{ fontWeight: 800 }}>
-            {r?.total_reportes ?? 0}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-emerald-100 bg-emerald-50/40 shadow-sm p-5">
-          <p className="text-emerald-800 text-xs uppercase tracking-wide" style={{ fontWeight: 600 }}>
-            Aprobados
-          </p>
-          <p className="text-2xl text-emerald-700 mt-2" style={{ fontWeight: 800 }}>
-            {r?.aprobados ?? 0}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-amber-100 bg-amber-50/40 shadow-sm p-5">
-          <p className="text-amber-900 text-xs uppercase tracking-wide" style={{ fontWeight: 600 }}>
-            Pendientes
-          </p>
-          <p className="text-2xl text-amber-800 mt-2" style={{ fontWeight: 800 }}>
-            {r?.pendientes ?? 0}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-orange-100 bg-orange-50/40 shadow-sm p-5">
-          <p className="text-orange-900 text-xs uppercase tracking-wide" style={{ fontWeight: 600 }}>
-            Con observaciones
-          </p>
-          <p className="text-2xl text-orange-800 mt-2" style={{ fontWeight: 800 }}>
-            {r?.con_observaciones ?? 0}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-blue-100 bg-blue-50/40 shadow-sm p-5">
-          <p className="text-blue-900 text-xs uppercase tracking-wide" style={{ fontWeight: 600 }}>
-            % Aprobación
-          </p>
-          <p className="text-2xl text-blue-800 mt-2" style={{ fontWeight: 800 }}>
-            {r?.porcentaje_aprobacion ?? 0}%
-          </p>
-        </div>
-      </div>
+      {error && (
+        <InlineAlert action={<button type="button" className="ds-btn ds-btn-secondary ds-btn-sm" onClick={() => setRecarga((n) => n + 1)}>Reintentar</button>}>
+          {error}
+        </InlineAlert>
+      )}
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-        <h3 className="text-gray-800 mb-4" style={{ fontWeight: 600 }}>
-          Reportes por mes del semestre activo
-        </h3>
-        <ResponsiveContainer width="100%" height={320}>
-          <BarChart data={chartPorMes}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="mes" tick={{ fontSize: 12, fill: "#6b7280" }} />
-            <YAxis tick={{ fontSize: 12, fill: "#6b7280" }} />
-            <Tooltip contentStyle={{ borderRadius: 8, fontSize: 12 }} />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Bar dataKey="Aprobados" fill="#10b981" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="Observados" fill="#f97316" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="Pendientes" fill="#9ca3af" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      <section aria-label="Resumen de reportes" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <Kpi label="Total reportes" tone="neutral" value={r?.total_reportes ?? 0} />
+        <Kpi label="Aprobados" tone="success" value={r?.aprobados ?? 0} />
+        <Kpi label="Pendientes" tone="violet" value={r?.pendientes ?? 0} />
+        <Kpi label="Con observaciones" tone="warning" value={r?.con_observaciones ?? 0} />
+        <Kpi className="col-span-2 lg:col-span-1" label="% aprobación" tone="brand" value={`${r?.porcentaje_aprobacion ?? 0}%`} progress={r?.porcentaje_aprobacion ?? 0} />
+      </section>
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h3 className="text-gray-800" style={{ fontWeight: 600 }}>
-            Cumplimiento por grupo de matriz
-          </h3>
-          <p className="text-gray-500 text-xs mt-0.5">Entregables de plantilla reportados (enviados a revisión o aprobados)</p>
+      <Panel title="Reportes por mes del semestre activo">
+        <div className="mb-3">
+          <ChartLegend
+            items={[
+              { label: "Aprobados", color: C.aprobado },
+              { label: "Observados", color: C.observado },
+              { label: "Pendientes", color: C.esperado },
+            ]}
+          />
         </div>
+        {chartPorMes.length === 0 ? (
+          <EmptyState icon={BarChart3} title="Aún no hay reportes en el semestre activo">
+            Aparecerán aquí cuando los docentes envíen entregables.
+          </EmptyState>
+        ) : (
+          <div role="img" aria-label="Barras por mes: aprobados, observados y pendientes">
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={chartPorMes} margin={{ top: 8, right: 8, left: -18, bottom: 0 }} barGap={2}>
+                <CartesianGrid stroke={C.grid} vertical={false} />
+                <XAxis dataKey="mes" tick={axisTick(C)} axisLine={false} tickLine={false} />
+                <YAxis tick={axisTick(C)} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip content={<ChartTooltip />} cursor={{ fill: C.cursor }} />
+                <Bar dataKey="Aprobados" fill={C.aprobado} radius={[3, 3, 0, 0]} />
+                <Bar dataKey="Observados" fill={C.observado} radius={[3, 3, 0, 0]} />
+                <Bar dataKey="Pendientes" fill={C.esperado} radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </Panel>
+
+      <Panel
+        title="Cumplimiento por grupo de matriz"
+        description="Entregables de plantilla reportados (enviados a revisión o aprobados)"
+        bodyClassName=""
+      >
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="ds-table min-w-[720px]">
             <thead>
-              <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                <th className="text-left px-6 py-3">Grupo</th>
-                <th className="text-left px-6 py-3">Tipo</th>
-                <th className="text-left px-6 py-3">Docentes</th>
-                <th className="text-left px-6 py-3">Reportados</th>
-                <th className="text-left px-6 py-3">Total</th>
-                <th className="text-left px-6 py-3 min-w-[200px]">Progreso</th>
+              <tr>
+                <th>Grupo</th>
+                <th>Tipo</th>
+                <th className="text-right">Docentes</th>
+                <th className="text-right">Reportados</th>
+                <th className="text-right">Total</th>
+                <th className="min-w-[200px]">Progreso</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-50">
+            <tbody>
+              {(data?.por_grupo ?? []).length === 0 && (
+                <tr>
+                  <td colSpan={6}>
+                    <EmptyState icon={Users} title="Sin grupos con matriz">Cuando existan grupos con entregables se mostrará su cumplimiento.</EmptyState>
+                  </td>
+                </tr>
+              )}
               {(data?.por_grupo ?? []).map((g) => (
                 <tr key={g.grupo_id}>
-                  <td className="px-6 py-3 text-gray-800" style={{ fontWeight: 500 }}>
-                    {g.grupo_nombre}
-                  </td>
-                  <td className="px-6 py-3">
-                    <TipoDocenteBadge tipo={g.tipo_docente} />
-                  </td>
-                  <td className="px-6 py-3 text-gray-600">{g.total_docentes}</td>
-                  <td className="px-6 py-3 text-gray-600">{g.entregables_completados}</td>
-                  <td className="px-6 py-3 text-gray-600">{g.entregables_total}</td>
-                  <td className="px-6 py-3">
+                  <td className="text-text" style={{ fontWeight: 600 }}>{g.grupo_nombre}</td>
+                  <td><TipoDocenteBadge tipo={g.tipo_docente} /></td>
+                  <td className="text-right tabular-nums text-text-muted">{g.total_docentes}</td>
+                  <td className="text-right tabular-nums text-text-muted">{g.entregables_completados}</td>
+                  <td className="text-right tabular-nums text-text-muted">{g.entregables_total}</td>
+                  <td>
                     <div className="flex items-center gap-2">
-                      <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden min-w-[100px]">
-                        <div
-                          className="h-full bg-[#1d4ed8] rounded-full transition-all"
-                          style={{ width: `${Math.min(100, g.porcentaje)}%` }}
-                        />
-                      </div>
-                      <span className="text-xs text-gray-600 tabular-nums w-12">{g.porcentaje}%</span>
+                      <ProgressBar value={g.porcentaje} label={`Progreso de ${g.grupo_nombre}`} className="min-w-[100px] flex-1" />
+                      <span className="w-10 text-right text-xs tabular-nums text-text" style={{ fontWeight: 600 }}>{g.porcentaje}%</span>
                     </div>
                   </td>
                 </tr>
@@ -240,64 +201,71 @@ export default function ReportsMetrics() {
             </tbody>
           </table>
         </div>
-      </div>
+      </Panel>
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h3 className="text-gray-800" style={{ fontWeight: 600 }}>
-            Top atrasados (menor avance en matriz)
-          </h3>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                <th className="text-left px-6 py-3">Docente</th>
-                <th className="text-left px-6 py-3">Programa</th>
-                <th className="text-left px-6 py-3">Regional</th>
-                <th className="text-left px-6 py-3">Avance %</th>
-                <th className="text-left px-6 py-3">Vencidos</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {(data?.top_atrasados ?? []).map((row) => {
-                const low = row.porcentaje_avance < 30;
-                return (
-                  <tr key={row.docente_id} className={low ? "bg-red-50/50" : ""}>
-                    <td className="px-6 py-3 text-gray-800" style={{ fontWeight: 500 }}>
-                      {row.nombre}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <Panel
+          className="xl:col-span-2"
+          title="Docentes con menor avance"
+          description="Menor avance en matriz; en rojo, por debajo del 30 %"
+          bodyClassName=""
+        >
+          <div className="overflow-x-auto">
+            <table className="ds-table min-w-[480px]">
+              <thead>
+                <tr>
+                  <th>Docente</th>
+                  <th className="hidden md:table-cell">Programa</th>
+                  <th className="hidden md:table-cell">Regional</th>
+                  <th className="text-right">Avance</th>
+                  <th className="text-right">Vencidos</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data?.top_atrasados ?? []).length === 0 && (
+                  <tr>
+                    <td colSpan={5}>
+                      <EmptyState title="Sin docentes atrasados">Ningún docente presenta rezago en este momento.</EmptyState>
                     </td>
-                    <td className="px-6 py-3 text-gray-600">{row.programa}</td>
-                    <td className="px-6 py-3 text-gray-600">{row.regional}</td>
-                    <td className={`px-6 py-3 tabular-nums ${low ? "text-red-700 font-semibold" : "text-gray-700"}`}>
-                      {row.porcentaje_avance}%
-                    </td>
-                    <td className="px-6 py-3 text-gray-600">{row.entregables_vencidos}</td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                )}
+                {(data?.top_atrasados ?? []).map((row) => {
+                  const low = row.porcentaje_avance < 30;
+                  return (
+                    <tr key={row.docente_id}>
+                      <td className="text-text" style={{ fontWeight: 600 }}>{row.nombre}</td>
+                      <td className="hidden text-text-muted md:table-cell">{row.programa}</td>
+                      <td className="hidden text-text-muted md:table-cell">{row.regional}</td>
+                      <td className="text-right">
+                        <StatusPill tone={low ? "danger" : "neutral"}>{row.porcentaje_avance}%</StatusPill>
+                      </td>
+                      <td className={`text-right tabular-nums ${row.entregables_vencidos > 0 ? "text-red-700" : "text-text-muted"}`} style={{ fontWeight: row.entregables_vencidos > 0 ? 600 : 400 }}>
+                        {row.entregables_vencidos}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
 
-      {data?.por_regional && data.por_regional.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-          <h3 className="text-gray-800 mb-3" style={{ fontWeight: 600 }}>
-            Por regional
-          </h3>
-          <ul className="divide-y divide-gray-100 text-sm">
-            {data.por_regional.map((x) => (
-              <li key={x.regional} className="py-2 flex justify-between gap-4">
-                <span className="text-gray-700">{x.regional}</span>
-                <span className="text-gray-500">
-                  {x.docentes} docentes · avance {x.porcentaje_avance}%
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
+        {data?.por_regional && data.por_regional.length > 0 && (
+          <Panel title="Por regional" description="Docentes y avance promedio">
+            <ul className="space-y-3 text-sm">
+              {data.por_regional.map((x) => (
+                <li key={x.regional} className="space-y-1">
+                  <div className="flex justify-between gap-3">
+                    <span className="text-text">{x.regional}</span>
+                    <span className="text-xs tabular-nums text-text-subtle">{x.docentes} docentes · {x.porcentaje_avance}%</span>
+                  </div>
+                  <ProgressBar value={x.porcentaje_avance} label={`Avance ${x.regional}`} />
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        )}
+      </div>
+    </Page>
   );
 }

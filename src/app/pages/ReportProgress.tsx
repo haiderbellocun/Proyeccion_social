@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { FileEdit, Loader2, Save, Send, Link2, CheckCircle2, X } from "lucide-react";
+import { FileEdit, Loader2, Save, Send, Link2, CheckCircle2, X, AlertCircle } from "lucide-react";
+import { EmptyState, InlineAlert, Page, PageHeader, PageLoading, Panel, StatusPill } from "../components/ds/primitives";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
@@ -72,6 +73,10 @@ export default function ReportProgress() {
   const [sending, setSending] = useState(false);
   const [guardando, setGuardando] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [intentado, setIntentado] = useState(false);
+  const [loadingData, setLoadingData] = useState(true);
+  const [errorData, setErrorData] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const [actividadRealizada, setActividadRealizada] = useState("");
   const [descripcionReporte, setDescripcionReporte] = useState("");
@@ -91,6 +96,8 @@ export default function ReportProgress() {
 
     const load = async () => {
       try {
+        setLoadingData(true);
+        setErrorData(false);
         const res = await fetch(`${API_BASE_URL}/docente/${docenteId}/cronograma`);
         if (!res.ok) throw new Error("Error al cargar cronograma del docente");
         const data = await res.json();
@@ -141,12 +148,15 @@ export default function ReportProgress() {
         }
       } catch (e) {
         console.error(e);
+        setErrorData(true);
         notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
+      } finally {
+        setLoadingData(false);
       }
     };
 
     load();
-  }, [currentUser?.id, requestedInitiativeId, requestedTemplateId]);
+  }, [currentUser?.id, requestedInitiativeId, requestedTemplateId, reloadKey]);
 
   const selectedProject = useMemo(
     () =>
@@ -342,339 +352,344 @@ export default function ReportProgress() {
 
   if (submitted) {
     return (
-      <div className="p-6 flex items-center justify-center min-h-[60vh]">
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-10 text-center max-w-sm">
-          <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <CheckCircle2 className="w-8 h-8 text-emerald-600" />
-          </div>
-          <h2 className="text-gray-900 mb-2">¡Reporte enviado!</h2>
-          <p className="text-gray-500 text-sm">
-            Tu reporte semanal fue enviado correctamente y está pendiente de
-            revisión por el administrador.
-          </p>
-          <div className="flex gap-3 mt-6">
-            <button
-              onClick={() => setSubmitted(false)}
-              className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50 transition-colors"
+      <Page>
+        <div className="mx-auto max-w-md pt-10">
+          <Panel>
+            <EmptyState
+              icon={CheckCircle2}
+              title="Reporte enviado"
+              action={
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button type="button" onClick={() => setSubmitted(false)} className="ds-btn ds-btn-secondary">
+                    Nuevo reporte
+                  </button>
+                  <button type="button" onClick={() => navigate("/docente")} className="ds-btn ds-btn-primary">
+                    Ir al inicio
+                  </button>
+                </div>
+              }
             >
-              Nuevo reporte
-            </button>
-            <button
-              onClick={() => navigate("/docente")}
-              className="flex-1 bg-[#1e3a8a] text-white py-2.5 rounded-lg text-sm hover:bg-[#1d4ed8] transition-colors"
-              style={{ fontWeight: 600 }}
-            >
-              Ir al inicio
-            </button>
-          </div>
+              Tu reporte semanal se envió y queda pendiente de revisión por el administrador.
+            </EmptyState>
+          </Panel>
         </div>
-      </div>
+      </Page>
     );
   }
 
+  const errIniciativa = typeof selectedProjectId !== "number" ? "Selecciona una iniciativa." : null;
+  const errSemana = typeof selectedWeekId !== "number" ? "Selecciona una semana." : null;
+  const errEntregable = !selectedDeliverable ? "Selecciona el entregable que vas a reportar." : null;
+  // La descripción y la evidencia no se bloquean en el cliente: las reglas de evidencia las aplica el servidor
+  // según lo que exige cada entregable (enlace, formulario o ninguna).
+  const errDescripcion: string | null = null;
+  const errEvidencia: string | null = null;
+  const hayErrores = Boolean(errIniciativa || errSemana || errEntregable || errDescripcion || errEvidencia);
+
+  const intentarEnviar = () => {
+    setIntentado(true);
+    if (hayErrores) {
+      notify.warning("Revisa los campos marcados antes de enviar.");
+      return;
+    }
+    void handleSend();
+  };
+
+  const campoError = (msg: string | null, id: string) =>
+    intentado && msg ? (
+      <p id={id} role="alert" className="mt-1.5 flex items-center gap-1 text-xs text-red-700">
+        <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden /> {msg}
+      </p>
+    ) : null;
+  const invalid = (msg: string | null) => (intentado && msg ? "border-red-500" : "");
+
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="w-9 h-9 bg-[#1e3a8a] rounded-lg flex items-center justify-center">
-          <FileEdit className="w-5 h-5 text-white" />
-        </div>
-        <div>
-          <h1 className="text-gray-900">Reportar entregable</h1>
-          <p className="text-gray-500 text-sm">
-            {selectedWeek
-              ? `Semana ${selectedWeek.numero} — ${formatDateOnly(
-                  selectedWeek.fechaInicio
-                )} a ${formatDateOnly(selectedWeek.fechaFin)}`
-              : "Selecciona una iniciativa, una semana y un entregable"}
-          </p>
-        </div>
-      </div>
+    <Page>
+      <PageHeader
+        title="Reportar entregable"
+        description={
+          selectedWeek
+            ? `Semana ${selectedWeek.numero} · ${formatDateOnly(selectedWeek.fechaInicio)} a ${formatDateOnly(selectedWeek.fechaFin)}`
+            : "Selecciona una iniciativa, una semana y un entregable."
+        }
+        meta={<StatusPill tone="brand">Borrador</StatusPill>}
+      />
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Form */}
-        <div className="xl:col-span-2 space-y-5">
-          {/* Project & activity */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-4">
-            <h3 className="text-gray-800 border-b border-gray-100 pb-3">
-              Información del Reporte
-            </h3>
+      {loadingData ? (
+        <PageLoading label="Cargando cronograma…" />
+      ) : errorData ? (
+        <InlineAlert action={<button type="button" onClick={() => setReloadKey((k) => k + 1)} className="ds-btn ds-btn-secondary ds-btn-sm">Reintentar</button>}>
+          No se pudo cargar tu cronograma.
+        </InlineAlert>
+      ) : projects.length === 0 ? (
+        <Panel>
+          <EmptyState icon={FileEdit} title="No tienes iniciativas para reportar" action={<button type="button" onClick={() => navigate("/docente/proyectos")} className="ds-btn ds-btn-secondary">Ver mis iniciativas</button>}>
+            Cuando tengas una iniciativa con entregables programados podrás reportarlos aquí.
+          </EmptyState>
+        </Panel>
+      ) : (
+        <form
+          className="mx-auto w-full max-w-3xl space-y-5"
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            intentarEnviar();
+          }}
+        >
+          <Panel title="1. Entregable" description="Elige qué vas a reportar.">
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div role="group" aria-labelledby="rp-iniciativa-l">
+                  <span id="rp-iniciativa-l" className="ds-label">Iniciativa *</span>
+                  <AppSelect
+                    className={`w-full ${invalid(errIniciativa)}`}
+                    value={String(selectedProjectId)}
+                    onValueChange={(value) => {
+                      if (!value) {
+                        setSelectedProjectId("");
+                        setSelectedWeekId("");
+                        setSelectedDeliverableKey("");
+                        setActividadRealizada("");
+                        return;
+                      }
+                      const id = Number(value);
+                      setSelectedProjectId(id);
+                      const proj = projects.find((p) => p.id === id);
+                      const nextWeek =
+                        proj?.weeks.find(
+                          (week) => (week.entregablesDetalle?.length || 0) > 0
+                        ) || proj?.weeks[0];
+                      if (nextWeek) {
+                        const nextDeliverable = nextWeek.entregablesDetalle?.[0];
+                        setSelectedWeekId(nextWeek.id);
+                        setSelectedDeliverableKey(
+                          nextDeliverable ? deliverableKey(nextDeliverable) : ""
+                        );
+                        setActividadRealizada(nextDeliverable?.descripcion || "");
+                      } else {
+                        setSelectedWeekId("");
+                        setSelectedDeliverableKey("");
+                        setActividadRealizada("");
+                      }
+                    }}
+                    placeholder="Seleccionar iniciativa…"
+                    options={projects.map((p) => ({
+                      value: String(p.id),
+                      label: p.name,
+                    }))}
+                  />
+                  {campoError(errIniciativa, "rp-iniciativa-err")}
+                </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                  Iniciativa *
-                </label>
-                <AppSelect
-                  className="w-full"
-                  value={String(selectedProjectId)}
-                  onValueChange={(value) => {
-                    if (!value) {
-                      setSelectedProjectId("");
-                      setSelectedWeekId("");
-                      setSelectedDeliverableKey("");
-                      setActividadRealizada("");
-                      return;
-                    }
-                    const id = Number(value);
-                    setSelectedProjectId(id);
-                    const proj = projects.find((p) => p.id === id);
-                    const nextWeek =
-                      proj?.weeks.find(
-                        (week) => (week.entregablesDetalle?.length || 0) > 0
-                      ) || proj?.weeks[0];
-                    if (nextWeek) {
-                      const nextDeliverable = nextWeek.entregablesDetalle?.[0];
-                      setSelectedWeekId(nextWeek.id);
+                <div role="group" aria-labelledby="rp-semana-l">
+                  <span id="rp-semana-l" className="ds-label">Semana *</span>
+                  <AppSelect
+                    className={`w-full ${invalid(errSemana)}`}
+                    value={String(selectedWeekId)}
+                    onValueChange={(value) => {
+                      const weekId = value ? Number(value) : "";
+                      setSelectedWeekId(weekId);
+                      const nextWeek =
+                        typeof weekId === "number"
+                          ? selectedProject?.weeks.find((week) => week.id === weekId)
+                          : null;
+                      const nextDeliverable = nextWeek?.entregablesDetalle?.[0];
                       setSelectedDeliverableKey(
                         nextDeliverable ? deliverableKey(nextDeliverable) : ""
                       );
                       setActividadRealizada(nextDeliverable?.descripcion || "");
-                    } else {
-                      setSelectedWeekId("");
-                      setSelectedDeliverableKey("");
-                      setActividadRealizada("");
+                    }}
+                    placeholder="Seleccionar semana…"
+                    disabled={!selectedProject}
+                    options={
+                      selectedProject
+                        ? selectedProject.weeks.map((w) => ({
+                            value: String(w.id),
+                            label: `Semana ${w.numero} (${formatDateOnly(
+                              w.fechaInicio
+                            )} - ${formatDateOnly(w.fechaFin)})`,
+                          }))
+                        : []
                     }
+                  />
+                  {campoError(errSemana, "rp-semana-err")}
+                </div>
+              </div>
+
+              <div role="group" aria-labelledby="rp-entregable-l">
+                <span id="rp-entregable-l" className="ds-label">Entregable programado *</span>
+                <AppSelect
+                  className={`w-full ${invalid(errEntregable)}`}
+                  value={selectedDeliverableKey}
+                  onValueChange={(value) => {
+                    setSelectedDeliverableKey(value);
+                    const item = selectedWeek?.entregablesDetalle?.find(
+                      (candidate) => deliverableKey(candidate) === value
+                    );
+                    setActividadRealizada(item?.descripcion || "");
                   }}
-                  placeholder="Seleccionar iniciativa..."
-                  options={projects.map((p) => ({
-                    value: String(p.id),
-                    label: p.name,
-                  }))}
+                  placeholder="Seleccionar entregable…"
+                  disabled={!selectedWeek}
+                  options={(selectedWeek?.entregablesDetalle || [])
+                    .map((item) => ({
+                      value: deliverableKey(item),
+                      label: item.descripcion,
+                    }))
+                    .filter((option) => option.value !== "")}
                 />
+                {campoError(errEntregable, "rp-entregable-err")}
+                {selectedWeek && selectedWeek.entregables && selectedWeek.entregables.length > 0 && (
+                  <details className="mt-2 text-xs text-text-muted">
+                    <summary className="cursor-pointer select-none text-text-subtle hover:text-text">
+                      Entregables planificados de la semana ({selectedWeek.entregables.length})
+                    </summary>
+                    <ul className="mt-2 space-y-1">
+                      {selectedWeek.entregables.map((item, idx) => (
+                        <li key={idx} className="flex gap-2">
+                          <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-gray-400" aria-hidden />
+                          <span>{item}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            </div>
+          </Panel>
+
+          <Panel title="2. Avance" description="Cuánto del entregable está cumplido y qué hiciste.">
+            <div className="space-y-4">
+              <div>
+                <div className="mb-1.5 flex items-center justify-between">
+                  <label className="ds-label !mb-0" htmlFor="rp-avance">Porcentaje de cumplimiento</label>
+                  <span className="text-sm tabular-nums text-brand" style={{ fontWeight: 650 }}>{progress}%</span>
+                </div>
+                <input
+                  id="rp-avance"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={progress}
+                  onChange={(e) => setProgress(Number(e.target.value))}
+                  className="w-full accent-brand"
+                />
+                <div className="mt-1 flex justify-between text-xs text-text-subtle tabular-nums" aria-hidden>
+                  <span>0%</span>
+                  <span>25%</span>
+                  <span>50%</span>
+                  <span>75%</span>
+                  <span>100%</span>
+                </div>
               </div>
 
               <div>
-                <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                  Semana *
-                </label>
-                <AppSelect
-                  className="w-full"
-                  value={String(selectedWeekId)}
-                  onValueChange={(value) => {
-                    const weekId = value ? Number(value) : "";
-                    setSelectedWeekId(weekId);
-                    const nextWeek =
-                      typeof weekId === "number"
-                        ? selectedProject?.weeks.find((week) => week.id === weekId)
-                        : null;
-                    const nextDeliverable = nextWeek?.entregablesDetalle?.[0];
-                    setSelectedDeliverableKey(
-                      nextDeliverable ? deliverableKey(nextDeliverable) : ""
-                    );
-                    setActividadRealizada(nextDeliverable?.descripcion || "");
-                  }}
-                  placeholder="Seleccionar semana..."
-                  disabled={!selectedProject}
-                  options={
-                    selectedProject
-                      ? selectedProject.weeks.map((w) => ({
-                          value: String(w.id),
-                          label: `Semana ${w.numero} (${formatDateOnly(
-                            w.fechaInicio
-                          )} - ${formatDateOnly(w.fechaFin)})`,
-                        }))
-                      : []
-                  }
+                <label className="ds-label" htmlFor="rp-descripcion">Descripción del reporte *</label>
+                <textarea
+                  id="rp-descripcion"
+                  rows={4}
+                  placeholder="Describe el trabajo realizado, los logros, las dificultades y las observaciones del entregable."
+                  className={`ds-input resize-y ${invalid(errDescripcion)}`}
+                  aria-invalid={intentado && !!errDescripcion}
+                  aria-describedby={intentado && errDescripcion ? "rp-descripcion-err" : undefined}
+                  value={descripcionReporte}
+                  onChange={(e) => setDescripcionReporte(e.target.value)}
                 />
+                {campoError(errDescripcion, "rp-descripcion-err")}
               </div>
             </div>
+          </Panel>
 
-            <div>
-              <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                Entregable programado *
-              </label>
-              <AppSelect
-                className="w-full"
-                value={selectedDeliverableKey}
-                onValueChange={(value) => {
-                  setSelectedDeliverableKey(value);
-                  const item = selectedWeek?.entregablesDetalle?.find(
-                    (candidate) => deliverableKey(candidate) === value
-                  );
-                  setActividadRealizada(item?.descripcion || "");
-                }}
-                placeholder="Seleccionar entregable..."
-                disabled={!selectedWeek}
-                options={(selectedWeek?.entregablesDetalle || [])
-                  .map((item) => ({
-                    value: deliverableKey(item),
-                    label: item.descripcion,
-                  }))
-                  .filter((option) => option.value !== "")}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                Porcentaje de cumplimiento: <span className="text-[#1d4ed8]">{progress}%</span>
-              </label>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={progress}
-                onChange={(e) => setProgress(Number(e.target.value))}
-                className="w-full accent-[#1d4ed8]"
-              />
-              <div className="flex justify-between text-xs text-gray-400 mt-1">
-                <span>0%</span>
-                <span>25%</span>
-                <span>50%</span>
-                <span>75%</span>
-                <span>100%</span>
+          <Panel title="3. Evidencias" description="Enlaces de Drive o Forms que respaldan el entregable.">
+            <div className="space-y-3">
+              <div>
+                <label className="ds-label" htmlFor="rp-enlace">Enlace de evidencia</label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Link2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-subtle" aria-hidden />
+                    <input
+                      id="rp-enlace"
+                      type="url"
+                      value={link}
+                      onChange={(e) => setLink(e.target.value)}
+                      placeholder="https://drive.google.com/…"
+                      className="ds-input pl-9"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addLink();
+                        }
+                      }}
+                    />
+                  </div>
+                  <button type="button" onClick={addLink} className="ds-btn ds-btn-secondary">
+                    Agregar
+                  </button>
+                </div>
               </div>
-            </div>
 
-            <div>
-              <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                Descripción del reporte *
-              </label>
-              <textarea
-                rows={4}
-                placeholder="Describe el trabajo realizado, los logros, las dificultades y las observaciones del entregable..."
-                className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50 resize-none"
-                value={descripcionReporte}
-                onChange={(e) => setDescripcionReporte(e.target.value)}
-              />
-            </div>
-          </div>
+              {links.length > 0 && (
+                <ul className="space-y-1.5" aria-label="Enlaces adjuntos">
+                  {links.map((l, i) => (
+                    <li key={i} className="flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-1.5 text-sm text-blue-700">
+                      <Link2 className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <span className="flex-1 truncate">{l}</span>
+                      <button
+                        type="button"
+                        aria-label={`Quitar enlace ${l}`}
+                        onClick={() => setLinks(links.filter((_, j) => j !== i))}
+                        className="rounded p-0.5 text-text-subtle hover:text-red-700"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
 
-          {/* Evidencias en formulario */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-4">
-            <h3 className="text-gray-800 border-b border-gray-100 pb-3">
-              Evidencias
-            </h3>
-
-            {/* Enlace de evidencia */}
-            <div>
-              <label className="block text-sm text-gray-700 mb-1.5" style={{ fontWeight: 500 }}>
-                <Link2 className="inline w-3.5 h-3.5 mr-1" />
-                Enlace de evidencia
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="url"
-                  value={link}
-                  onChange={(e) => setLink(e.target.value)}
-                  placeholder="https://drive.google.com/..."
-                  className="flex-1 px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50"
-                  onKeyDown={(e) => e.key === "Enter" && addLink()}
-                />
-                <button
-                  onClick={addLink}
-                  className="px-4 py-2.5 bg-[#1e3a8a] text-white rounded-lg text-sm hover:bg-[#1d4ed8] transition-colors"
-                  style={{ fontWeight: 500 }}
-                >
-                  Agregar
-                </button>
-              </div>
               {links.length === 0 && (
-                <div className="mt-3">
-                  <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 500 }}>
-                    ¿No aplica evidencia? Justifícalo (mínimo 10 caracteres); el administrador lo revisará
+                <div>
+                  <label className="ds-label" htmlFor="rp-justificacion">
+                    ¿No aplica evidencia? Justifícalo (mínimo 10 caracteres)
                   </label>
                   <textarea
+                    id="rp-justificacion"
                     rows={2}
                     value={justificacionSinEvidencia}
                     onChange={(e) => setJustificacionSinEvidencia(e.target.value)}
-                    placeholder="Solo si el entregable no tiene evidencia que cargar"
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50 resize-none"
+                    placeholder="Solo si el entregable no tiene evidencia que cargar. El administrador lo revisará."
+                    className={`ds-input resize-y ${invalid(errEvidencia)}`}
+                    aria-invalid={intentado && !!errEvidencia}
+                    aria-describedby={intentado && errEvidencia ? "rp-evidencia-err" : undefined}
                   />
                 </div>
               )}
-              {links.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {links.map((l, i) => (
-                    <div key={i} className="flex items-center gap-2 text-sm text-[#1d4ed8] bg-blue-50 px-3 py-1.5 rounded-lg">
-                      <Link2 className="w-3.5 h-3.5 shrink-0" />
-                      <span className="truncate flex-1">{l}</span>
-                      <button onClick={() => setLinks(links.filter((_, j) => j !== i))}>
-                        <X className="w-3.5 h-3.5 text-gray-400 hover:text-red-500" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
+              {campoError(errEvidencia, "rp-evidencia-err")}
             </div>
+          </Panel>
 
-          </div>
-        </div>
-
-        {/* Side summary */}
-        <div className="space-y-5">
-          {selectedWeek && selectedWeek.entregables && selectedWeek.entregables.length > 0 && (
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-              <h3 className="text-gray-800 mb-3">Entregables planificados</h3>
-              <ul className="space-y-1.5 text-xs text-gray-700">
-                {selectedWeek.entregables.map((item, idx) => (
-                  <li key={idx} className="flex gap-2">
-                    <span className="mt-1 w-1.5 h-1.5 rounded-full bg-[#1d4ed8]" />
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ul>
+          <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface/95 px-4 py-3 shadow-xs backdrop-blur">
+            <div className="text-xs text-text-subtle" aria-live="polite">
+              {savedAt ? `Borrador guardado a las ${savedAt}` : selectedWeek ? `Fecha límite de la semana ${selectedWeek.numero}: ${formatDateOnly(selectedWeek.fechaFin)}` : "Selecciona una semana para ver su fecha límite."}
+              <span className="ml-2 tabular-nums">· {links.length} {links.length === 1 ? "enlace" : "enlaces"} · {progress}%</span>
             </div>
-          )}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-            <h3 className="text-gray-800 mb-4">Resumen del Reporte</h3>
-            <div className="space-y-3 text-sm">
-              <div className="flex justify-between">
-                <span className="text-gray-500">Cumplimiento reportado</span>
-                <span className="text-gray-800" style={{ fontWeight: 600 }}>{progress}%</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Enlaces adjuntos</span>
-                <span className="text-gray-800" style={{ fontWeight: 600 }}>{links.length}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Estado</span>
-                <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded text-xs" style={{ fontWeight: 500 }}>Borrador</span>
-              </div>
-            </div>
-
-            <div className="mt-5 space-y-2.5">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => void handleGuardarBorrador()}
-                disabled={guardando}
-                className="w-full flex items-center justify-center gap-2 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ fontWeight: 500 }}
+                disabled={guardando || sending}
+                className="ds-btn ds-btn-secondary"
               >
-                {guardando ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Save className="w-4 h-4" />
-                )}{" "}
+                {guardando ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Save className="h-4 w-4" aria-hidden />}
                 {guardando ? "Guardando…" : "Guardar borrador"}
               </button>
-              {savedAt && (
-                <span className="text-xs text-gray-500 block text-center">
-                  Borrador guardado a las {savedAt}
-                </span>
-              )}
-              <button
-                onClick={handleSend}
-                disabled={sending}
-                className="w-full flex items-center justify-center gap-2 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white py-2.5 rounded-lg text-sm transition-colors shadow-sm"
-                style={{ fontWeight: 600 }}
-              >
-                <Send className="w-4 h-4" /> {sending ? "Enviando..." : "Enviar reporte"}
+              <button type="submit" disabled={sending || guardando} className="ds-btn ds-btn-primary">
+                {sending ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Send className="h-4 w-4" aria-hidden />}
+                {sending ? "Enviando…" : "Enviar reporte"}
               </button>
             </div>
           </div>
-
-          <div className="bg-blue-50 rounded-xl border border-blue-100 p-4">
-            <p className="text-[#1e3a8a] text-sm" style={{ fontWeight: 600 }}>Recordatorio</p>
-            <p className="text-blue-700 text-xs mt-1">
-              {selectedWeek ? (
-                <>La fecha límite de la semana {selectedWeek.numero} es el <strong>{formatDateOnly(selectedWeek.fechaFin)}</strong>.</>
-              ) : (
-                "Selecciona una semana para ver su fecha límite."
-              )}
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
+        </form>
+      )}
+    </Page>
   );
 }

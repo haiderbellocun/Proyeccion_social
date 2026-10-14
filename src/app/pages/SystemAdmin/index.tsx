@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import { useSearchParams } from "react-router";
 import { Building2, Calendar, CalendarRange, FileText, FolderKanban, Users } from "lucide-react";
+import { Page, PageHeader } from "../../components/ds/primitives";
 import UserManagement from "./UserManagement";
 import ProjectManagement from "./ProjectManagement";
 import GroupManagement from "./GroupManagement";
@@ -25,47 +27,74 @@ export default function SystemAdminPage() {
   const tabParam = params.get("tab") as TabType | null;
   const [activeTab, setActiveTab] = useState<TabType>(tabParam && tabs.some((t) => t.id === tabParam) ? tabParam : "usuarios");
   const grupoParam = Number(params.get("grupo"));
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  // Navegación con flechas / Inicio / Fin (patrón WAI-ARIA de pestañas).
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next = index;
+    if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    setActiveTab(tabs[next].id);
+    tabRefs.current[tabs[next].id]?.focus();
+  };
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-gray-900">Administración del Sistema</h1>
-          <p className="text-gray-500 text-sm mt-0.5">
-            Gestión de usuarios, programas, iniciativas, grupos y plantillas
-          </p>
+    <Page>
+      <PageHeader
+        title="Administración del sistema"
+        description="Gestiona usuarios, semestres, escuelas, programas, iniciativas, tareas semanales y plantillas."
+      />
+
+      <div className="-mx-4 overflow-x-auto border-b border-line px-4 sm:mx-0 sm:px-0">
+        <div role="tablist" aria-label="Secciones de administración" className="flex min-w-max gap-1">
+          {tabs.map((tab, index) => {
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                ref={(el) => {
+                  tabRefs.current[tab.id] = el;
+                }}
+                type="button"
+                role="tab"
+                id={`tab-${tab.id}`}
+                aria-selected={active}
+                aria-controls={`panel-${tab.id}`}
+                tabIndex={active ? 0 : -1}
+                onClick={() => setActiveTab(tab.id)}
+                onKeyDown={(event) => onKeyDown(event, index)}
+                className={`-mb-px inline-flex items-center gap-2 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm transition-colors ${
+                  active
+                    ? "border-brand text-brand"
+                    : "border-transparent text-text-muted hover:border-line-strong hover:text-text"
+                }`}
+                style={{ fontWeight: active ? 600 : 500 }}
+              >
+                <tab.icon className="h-4 w-4" aria-hidden />
+                {tab.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      <div className="flex gap-1 bg-white rounded-xl border border-gray-100 shadow-sm p-1.5 overflow-x-auto">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm whitespace-nowrap transition-all ${
-              activeTab === tab.id
-                ? "bg-[#1e3a8a] text-white shadow-sm"
-                : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
-            }`}
-            style={{ fontWeight: activeTab === tab.id ? 600 : 400 }}
-          >
-            <tab.icon className="w-4 h-4" />
-            {tab.label}
-          </button>
-        ))}
+      <div role="tabpanel" id={`panel-${activeTab}`} aria-labelledby={`tab-${activeTab}`} className="space-y-5">
+        {activeTab === "usuarios" && <UserManagement />}
+        {activeTab === "semestres" && <SemesterManagement />}
+        {activeTab === "programas" && <ProgramManagement />}
+        {activeTab === "proyectos" && <ProjectManagement />}
+        {activeTab === "tareas" && <GroupManagement />}
+        {activeTab === "plantillas" && (
+          <PlantillaManagement
+            initialSemestre={params.get("semestre") || undefined}
+            initialGrupoId={Number.isInteger(grupoParam) && grupoParam > 0 ? grupoParam : null}
+          />
+        )}
       </div>
-
-      {activeTab === "usuarios" && <UserManagement />}
-      {activeTab === "semestres" && <SemesterManagement />}
-      {activeTab === "programas" && <ProgramManagement />}
-      {activeTab === "proyectos" && <ProjectManagement />}
-      {activeTab === "tareas" && <GroupManagement />}
-      {activeTab === "plantillas" && (
-        <PlantillaManagement
-          initialSemestre={params.get("semestre") || undefined}
-          initialGrupoId={Number.isInteger(grupoParam) && grupoParam > 0 ? grupoParam : null}
-        />
-      )}
-    </div>
+    </Page>
   );
 }

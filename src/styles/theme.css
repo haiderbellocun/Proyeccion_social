@@ -1,81 +1,304 @@
-@custom-variant dark (&:is(.dark *));
+/*
+ * ProySocial — sistema de diseño «Tinta»
+ * Enterprise SaaS + Academic Operations Intelligence.
+ *
+ * Capas:
+ *  1. Primitivas   → escalas de color (neutral, cobalto, señal, éxito, alerta, peligro, violeta).
+ *  2. Semánticas   → superficies, bordes, texto, navegación, estados y gráficos (lo que usan los componentes).
+ *  3. Componentes  → radios, elevaciones, foco, movimiento y tipografía base.
+ *
+ * Las escalas de Tailwind (gray, slate, blue, red, amber, emerald…) se reasignan aquí para que TODA la
+ * interfaz herede la paleta nueva sin colores arbitrarios repartidos por los componentes.
+ */
 
-:root {
-  --font-size: 16px;
-  --background: #ffffff;
-  --foreground: oklch(0.145 0 0);
-  --card: #ffffff;
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: #030213;
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.95 0.0058 264.53);
-  --secondary-foreground: #030213;
-  --muted: #ececf0;
-  --muted-foreground: #717182;
-  --accent: #e9ebef;
-  --accent-foreground: #030213;
-  --destructive: #d4183d;
-  --destructive-foreground: #ffffff;
-  --border: rgba(0, 0, 0, 0.1);
-  --input: transparent;
-  --input-background: #f3f3f5;
-  --switch-background: #cbced4;
-  --font-weight-medium: 500;
-  --font-weight-normal: 400;
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: #030213;
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+/* ─────────────── 1 + 2. Primitivas y semánticas ─────────────── */
+@theme {
+  /* Tipografía */
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+
+  /* Neutral frío (gray y slate comparten escala) */
+  --color-gray-50: #f6f8fb;
+  --color-gray-100: #eef1f6;
+  --color-gray-200: #e2e7ef;
+  --color-gray-300: #cdd5e1;
+  --color-gray-400: #8c99ad;
+  --color-gray-500: #66748b;
+  --color-gray-600: #4d5a71;
+  --color-gray-700: #384458;
+  --color-gray-800: #232e41;
+  --color-gray-900: #141d2e;
+  --color-gray-950: #0b1320;
+  --color-slate-50: #f6f8fb;
+  --color-slate-100: #eef1f6;
+  --color-slate-200: #e2e7ef;
+  --color-slate-300: #cdd5e1;
+  --color-slate-400: #8c99ad;
+  --color-slate-500: #66748b;
+  --color-slate-600: #4d5a71;
+  --color-slate-700: #384458;
+  --color-slate-800: #232e41;
+  --color-slate-900: #141d2e;
+  --color-slate-950: #0b1320;
+
+  /* Cobalto (marca y acciones) */
+  --color-blue-50: #eef2ff;
+  --color-blue-100: #dde5ff;
+  --color-blue-200: #bfceff;
+  --color-blue-300: #94aeff;
+  --color-blue-400: #6486fa;
+  --color-blue-500: #3f63f0;
+  --color-blue-600: #2e4fe0;
+  --color-blue-700: #243fbd;
+  --color-blue-800: #1f3496;
+  --color-blue-900: #1b2b73;
+  --color-blue-950: #111a47;
+
+  /* Señal (acento tecnológico: datos en vivo, foco, progreso) */
+  --color-cyan-50: #e6fafc;
+  --color-cyan-100: #c4f1f6;
+  --color-cyan-200: #8de3ee;
+  --color-cyan-300: #4fd0e2;
+  --color-cyan-400: #1fb9d1;
+  --color-cyan-500: #0e9fb8;
+  --color-cyan-600: #0a8099;
+  --color-cyan-700: #0b667b;
+  --color-cyan-800: #0e5364;
+  --color-cyan-900: #10444f;
+  --color-sky-50: #e6fafc;
+  --color-sky-100: #c4f1f6;
+  --color-sky-200: #8de3ee;
+  --color-sky-300: #4fd0e2;
+  --color-sky-400: #1fb9d1;
+  --color-sky-500: #0e9fb8;
+  --color-sky-600: #0a8099;
+  --color-sky-700: #0b667b;
+  --color-sky-800: #0e5364;
+  --color-sky-900: #10444f;
+  --color-teal-50: #e6fafc;
+  --color-teal-100: #c4f1f6;
+  --color-teal-200: #8de3ee;
+  --color-teal-300: #4fd0e2;
+  --color-teal-400: #1fb9d1;
+  --color-teal-500: #0e9fb8;
+  --color-teal-600: #0a8099;
+  --color-teal-700: #0b667b;
+  --color-teal-800: #0e5364;
+  --color-teal-900: #10444f;
+
+  /* Éxito / aprobado */
+  --color-emerald-50: #e9f8f1;
+  --color-emerald-100: #c9eedd;
+  --color-emerald-200: #9adbbf;
+  --color-emerald-300: #5fc29b;
+  --color-emerald-400: #2fa77c;
+  --color-emerald-500: #1b9167;
+  --color-emerald-600: #137652;
+  --color-emerald-700: #115c42;
+  --color-emerald-800: #0f4a36;
+  --color-emerald-900: #0c3b2c;
+  --color-green-50: #e9f8f1;
+  --color-green-100: #c9eedd;
+  --color-green-200: #9adbbf;
+  --color-green-300: #5fc29b;
+  --color-green-400: #2fa77c;
+  --color-green-500: #1b9167;
+  --color-green-600: #137652;
+  --color-green-700: #115c42;
+  --color-green-800: #0f4a36;
+  --color-green-900: #0c3b2c;
+
+  /* Alerta / observado */
+  --color-amber-50: #fff7e0;
+  --color-amber-100: #ffebb5;
+  --color-amber-200: #ffd97a;
+  --color-amber-300: #f5c03d;
+  --color-amber-400: #e3a50f;
+  --color-amber-500: #c98a00;
+  --color-amber-600: #a06c00;
+  --color-amber-700: #7a5200;
+  --color-amber-800: #5e3f05;
+  --color-amber-900: #4a3308;
+  --color-yellow-50: #fff7e0;
+  --color-yellow-100: #ffebb5;
+  --color-yellow-200: #ffd97a;
+  --color-yellow-300: #f5c03d;
+  --color-yellow-400: #e3a50f;
+  --color-yellow-500: #c98a00;
+  --color-yellow-600: #a06c00;
+  --color-yellow-700: #7a5200;
+  --color-yellow-800: #5e3f05;
+  --color-yellow-900: #4a3308;
+  --color-orange-50: #fff2ea;
+  --color-orange-100: #ffe0cc;
+  --color-orange-200: #ffc29e;
+  --color-orange-300: #ff9c66;
+  --color-orange-400: #f27a38;
+  --color-orange-500: #dc5f1c;
+  --color-orange-600: #b84913;
+  --color-orange-700: #8f3910;
+  --color-orange-800: #6e2c10;
+  --color-orange-900: #56240f;
+
+  /* Peligro / vencido */
+  --color-red-50: #fff0f2;
+  --color-red-100: #ffdce1;
+  --color-red-200: #ffb9c3;
+  --color-red-300: #ff8c9d;
+  --color-red-400: #f4607a;
+  --color-red-500: #de3d5c;
+  --color-red-600: #bf2a48;
+  --color-red-700: #9b2039;
+  --color-red-800: #7b1c33;
+  --color-red-900: #641b2e;
+  --color-rose-50: #fff0f2;
+  --color-rose-100: #ffdce1;
+  --color-rose-200: #ffb9c3;
+  --color-rose-300: #ff8c9d;
+  --color-rose-400: #f4607a;
+  --color-rose-500: #de3d5c;
+  --color-rose-600: #bf2a48;
+  --color-rose-700: #9b2039;
+  --color-rose-800: #7b1c33;
+  --color-rose-900: #641b2e;
+
+  /* Violeta (en revisión, reenvíos) */
+  --color-purple-50: #f4f1ff;
+  --color-purple-100: #e8e1ff;
+  --color-purple-200: #d3c6ff;
+  --color-purple-300: #b7a0ff;
+  --color-purple-400: #9a78fa;
+  --color-purple-500: #7f57ee;
+  --color-purple-600: #6a3fd6;
+  --color-purple-700: #5632ae;
+  --color-purple-800: #462b8a;
+  --color-purple-900: #392569;
+  --color-violet-50: #f4f1ff;
+  --color-violet-100: #e8e1ff;
+  --color-violet-200: #d3c6ff;
+  --color-violet-300: #b7a0ff;
+  --color-violet-400: #9a78fa;
+  --color-violet-500: #7f57ee;
+  --color-violet-600: #6a3fd6;
+  --color-violet-700: #5632ae;
+  --color-violet-800: #462b8a;
+  --color-violet-900: #392569;
+  --color-indigo-50: #f1f3ff;
+  --color-indigo-100: #e2e6ff;
+  --color-indigo-200: #c6ceff;
+  --color-indigo-300: #a0abff;
+  --color-indigo-400: #7a86fb;
+  --color-indigo-500: #5c63ef;
+  --color-indigo-600: #4a49d6;
+  --color-indigo-700: #3b3bad;
+  --color-indigo-800: #313189;
+  --color-indigo-900: #292968;
+
+  /* ── Semánticas de aplicación ── */
+  --color-canvas: #f3f5f9;       /* fondo de la aplicación */
+  --color-surface: #ffffff;      /* paneles, tablas, formularios */
+  --color-surface-2: #f8fafc;    /* franjas, encabezados de tabla, filas alternas */
+  --color-line: #e2e7ef;         /* bordes y separadores */
+  --color-line-strong: #cdd5e1;
+  --color-text: #141d2e;
+  --color-text-muted: #4d5a71;
+  --color-text-subtle: #66748b;
+
+  --color-brand: #2e4fe0;        /* acción primaria */
+  --color-brand-strong: #243fbd; /* hover / presionado */
+  --color-brand-soft: #eef2ff;   /* fondos suaves de marca */
+  --color-signal: #0e9fb8;       /* acento tecnológico sobre claro */
+  --color-signal-bright: #3dd6ea;/* acento tecnológico sobre navegación oscura */
+
+  /* Navegación oscura */
+  --color-ink: #0c1626;
+  --color-ink-2: #142238;
+  --color-ink-3: #1d2f4a;
+  --color-ink-line: #223350;
+  --color-ink-text: #c7d1e0;
+  --color-ink-muted: #8190a8;
+
+  /* Estados de entregable (una sola fuente de verdad para badges, barras y gráficos) */
+  --color-st-aprobado: #137652;
+  --color-st-enviado: #5632ae;
+  --color-st-observado: #a06c00;
+  --color-st-vencido: #bf2a48;
+  --color-st-borrador: #4d5a71;
+  --color-st-pendiente: #66748b;
+  --color-st-esperado: #8c99ad;
+  --color-st-reportado: #2e4fe0;
+
+  /* Gráficos (categórica validada para daltonismo: cobalto / turquesa / ámbar / violeta / coral) */
+  --color-chart-1: #2e4fe0;
+  --color-chart-2: #0e9fb8;
+  --color-chart-3: #e3a50f;
+  --color-chart-4: #7f57ee;
+  --color-chart-5: #de3d5c;
+
+  /* Radios */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+
+  /* Elevaciones: bordes primero, sombra solo para separar capas flotantes */
+  --shadow-xs: 0 1px 0 rgb(20 29 46 / 0.04);
+  --shadow-sm: 0 1px 2px rgb(20 29 46 / 0.05), 0 0 0 1px rgb(20 29 46 / 0.02);
+  --shadow-md: 0 4px 12px -2px rgb(20 29 46 / 0.08), 0 2px 4px -2px rgb(20 29 46 / 0.05);
+  --shadow-lg: 0 12px 28px -6px rgb(20 29 46 / 0.16), 0 4px 8px -4px rgb(20 29 46 / 0.08);
+  --shadow-xl: 0 20px 44px -10px rgb(20 29 46 / 0.22);
+  --shadow-2xl: 0 28px 64px -12px rgb(20 29 46 / 0.32);
+
+  /* Breakpoints de referencia: 390 móvil · 640 sm · 820 tablet · 1024 lg · 1280 portátil · 1440 escritorio */
+  --breakpoint-sm: 40rem;
+  --breakpoint-md: 51.25rem;
+  --breakpoint-lg: 64rem;
+  --breakpoint-xl: 80rem;
+  --breakpoint-2xl: 90rem;
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.145 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.145 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.396 0.141 25.723);
-  --destructive-foreground: oklch(0.637 0.237 25.331);
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.269 0 0);
-  --ring: oklch(0.439 0 0);
+/* ─────────────── Variables de shadcn/ui (los componentes de /ui las consumen) ─────────────── */
+:root {
+  --font-size: 16px;
+  --background: var(--color-canvas);
+  --foreground: var(--color-text);
+  --card: var(--color-surface);
+  --card-foreground: var(--color-text);
+  --popover: var(--color-surface);
+  --popover-foreground: var(--color-text);
+  --primary: var(--color-brand);
+  --primary-foreground: #ffffff;
+  --secondary: var(--color-gray-100);
+  --secondary-foreground: var(--color-text);
+  --muted: var(--color-gray-100);
+  --muted-foreground: var(--color-text-subtle);
+  --accent: var(--color-brand-soft);
+  --accent-foreground: var(--color-brand-strong);
+  --destructive: var(--color-red-600);
+  --destructive-foreground: #ffffff;
+  --border: var(--color-line);
+  --input: var(--color-line-strong);
+  --input-background: var(--color-surface);
+  --switch-background: var(--color-gray-300);
   --font-weight-medium: 500;
   --font-weight-normal: 400;
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.269 0 0);
-  --sidebar-ring: oklch(0.439 0 0);
+  --ring: var(--color-brand);
+  --chart-1: var(--color-chart-1);
+  --chart-2: var(--color-chart-2);
+  --chart-3: var(--color-chart-3);
+  --chart-4: var(--color-chart-4);
+  --chart-5: var(--color-chart-5);
+  --radius: 0.5rem;
+  --sidebar: var(--color-ink);
+  --sidebar-foreground: var(--color-ink-text);
+  --sidebar-primary: var(--color-brand);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--color-ink-3);
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: var(--color-ink-line);
+  --sidebar-ring: var(--color-signal-bright);
 }
 
 @theme inline {
@@ -100,15 +323,6 @@
   --color-input-background: var(--input-background);
   --color-switch-background: var(--switch-background);
   --color-ring: var(--ring);
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -119,63 +333,288 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+/* ─────────────── 3. Base ─────────────── */
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
   }
-
-  body {
-    @apply bg-background text-foreground;
-  }
-
-  /**
-  * Default typography styles for HTML elements (h1-h4, p, label, button, input).
-  * These are in @layer base, so Tailwind utility classes (like text-sm, text-lg) automatically override them.
-  */
 
   html {
     font-size: var(--font-size);
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
   }
 
+  body {
+    @apply bg-canvas text-text antialiased;
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01";
+    font-optical-sizing: auto;
+  }
+
+  /* Escala tipográfica: títulos compactos y con tracking negativo; el cuerpo del producto es de 14 px (text-sm) */
   h1 {
-    font-size: var(--text-2xl);
-    font-weight: var(--font-weight-medium);
-    line-height: 1.5;
+    font-size: 1.5rem;
+    font-weight: 650;
+    line-height: 1.25;
+    letter-spacing: -0.02em;
+    color: var(--color-text);
   }
-
   h2 {
-    font-size: var(--text-xl);
-    font-weight: var(--font-weight-medium);
-    line-height: 1.5;
+    font-size: 1.25rem;
+    font-weight: 620;
+    line-height: 1.3;
+    letter-spacing: -0.015em;
   }
-
   h3 {
-    font-size: var(--text-lg);
-    font-weight: var(--font-weight-medium);
-    line-height: 1.5;
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.4;
+    letter-spacing: -0.01em;
   }
-
   h4 {
-    font-size: var(--text-base);
-    font-weight: var(--font-weight-medium);
-    line-height: 1.5;
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.4;
   }
-
   label {
-    font-size: var(--text-base);
-    font-weight: var(--font-weight-medium);
-    line-height: 1.5;
+    font-weight: 500;
   }
-
   button {
-    font-size: var(--text-base);
-    font-weight: var(--font-weight-medium);
-    line-height: 1.5;
+    font-weight: 500;
   }
 
-  input {
-    font-size: var(--text-base);
-    font-weight: var(--font-weight-normal);
-    line-height: 1.5;
+  /* Números alineados en columnas, KPIs y tablas */
+  .tabular,
+  table,
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: var(--color-blue-200);
+    color: var(--color-blue-950);
+  }
+
+  /* Foco visible y coherente en todo el producto (teclado) */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+  .on-ink :focus-visible {
+    outline-color: var(--color-signal-bright);
+  }
+
+  /* Cursor coherente en controles */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [role="tab"],
+  summary {
+    cursor: pointer;
+  }
+
+  /* Barras de desplazamiento discretas */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-gray-300) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-gray-300);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--color-gray-400);
+    background-clip: content-box;
+    border: 3px solid transparent;
+  }
+
+  input[type="date"] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Movimiento: se respeta la preferencia del sistema */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* ─────────────── Componentes de sistema (clases reutilizables) ─────────────── */
+@layer components {
+  /* Panel: superficie estándar del producto */
+  .ds-panel {
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-xs);
+  }
+  .ds-panel-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.875rem 1.125rem;
+    border-bottom: 1px solid var(--color-line);
+  }
+  .ds-panel-body {
+    padding: 1.125rem;
+  }
+
+  /* Tabla de datos densa */
+  .ds-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .ds-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--color-surface-2);
+    color: var(--color-text-subtle);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--color-line);
+    white-space: nowrap;
+  }
+  .ds-table tbody td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--color-line);
+    vertical-align: middle;
+  }
+  .ds-table tbody tr:hover td {
+    background: var(--color-surface-2);
+  }
+  .ds-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  /* Filas de grupo (colSpan) con botón: no aportan ancho intrínseco, así la tabla no se ensancha en móvil */
+  .ds-table td[colspan] > button {
+    contain: inline-size;
+  }
+
+  /* Móvil: celdas más compactas para que las tablas quepan sin desplazamiento innecesario */
+  @media (max-width: 40rem) {
+    .ds-table thead th,
+    .ds-table tbody td {
+      padding-left: 0.5rem;
+      padding-right: 0.5rem;
+    }
+  }
+
+  /* Campo de formulario */
+  .ds-input {
+    width: 100%;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line-strong);
+    border-radius: var(--radius-md);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    color: var(--color-text);
+    transition: border-color 120ms, box-shadow 120ms;
+  }
+  .ds-input::placeholder {
+    color: var(--color-gray-400);
+  }
+  .ds-input:hover {
+    border-color: var(--color-gray-400);
+  }
+  .ds-input:focus {
+    outline: none;
+    border-color: var(--color-brand);
+    box-shadow: 0 0 0 3px rgb(46 79 224 / 0.16);
+  }
+
+  /* Botones */
+  .ds-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    min-height: 2.25rem;
+    padding: 0.375rem 0.875rem;
+    border-radius: var(--radius-md);
+    font-size: 0.875rem;
+    font-weight: 550;
+    line-height: 1.25rem;
+    border: 1px solid transparent;
+    transition: background-color 120ms, border-color 120ms, color 120ms, box-shadow 120ms;
+    white-space: nowrap;
+  }
+  .ds-btn:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  .ds-btn-primary {
+    background: var(--color-brand);
+    color: #fff;
+  }
+  .ds-btn-primary:hover {
+    background: var(--color-brand-strong);
+  }
+  .ds-btn-secondary {
+    background: var(--color-surface);
+    color: var(--color-text);
+    border-color: var(--color-line-strong);
+  }
+  .ds-btn-secondary:hover {
+    background: var(--color-surface-2);
+    border-color: var(--color-gray-400);
+  }
+  .ds-btn-ghost {
+    color: var(--color-text-muted);
+  }
+  .ds-btn-ghost:hover {
+    background: var(--color-gray-100);
+    color: var(--color-text);
+  }
+  .ds-btn-danger {
+    background: var(--color-red-600);
+    color: #fff;
+  }
+  .ds-btn-danger:hover {
+    background: var(--color-red-700);
+  }
+  .ds-btn-success {
+    background: var(--color-emerald-600);
+    color: #fff;
+  }
+  .ds-btn-success:hover {
+    background: var(--color-emerald-700);
+  }
+  .ds-btn-sm {
+    min-height: 1.875rem;
+    padding: 0.25rem 0.625rem;
+    font-size: 0.8125rem;
+  }
+
+  /* Etiqueta de campo */
+  .ds-label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 550;
+    color: var(--color-text-muted);
+    margin-bottom: 0.375rem;
   }
 }

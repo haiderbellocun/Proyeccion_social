@@ -1,50 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import {
-  TrendingUp,
-  CheckCircle2,
-  Clock,
-  FolderOpen,
-  Plus,
-  ArrowRight,
-  Calendar,
-  TableProperties,
-  AlertCircle,
-  MessageSquareWarning,
-  Send,
-} from "lucide-react";
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from "recharts";
-import {
-  estadoEntregableConfig,
-  etiquetaSemana,
-  semaforoConfig,
-  type EstadoEntregable,
-  type IndicadoresSeguimiento,
-  type SemanaActual,
-} from "../data/matrizConstants";
+import { AlertCircle, ArrowRight, CalendarDays, CheckCircle2, Clock, FileText, MessageSquareWarning, Plus, Search, Send, TableProperties } from "lucide-react";
+import { Area, AreaChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { estadoEntregableConfig, etiquetaSemana, semaforoConfig, type EstadoEntregable, type IndicadoresSeguimiento, type SemanaActual } from "../data/matrizConstants";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
 import { formatDateOnly } from "../lib/date";
+import { EmptyState, InlineAlert, Kpi, Page, PageHeader, Panel, ProgressBar, Segmented, StatusPill, TONE_ESTADO, type Tone } from "../components/ds/primitives";
+import { axisTick, ChartLegend, ChartTooltip, useChartColors } from "../components/ds/chart";
 
 const API_BASE_URL = API_BASE;
-const MONTH_COLOR_CLASSES = [
-  "bg-violet-600",
-  "bg-[#1e3a8a]",
-  "bg-teal-600",
-  "bg-emerald-600",
-  "bg-amber-600",
-  "bg-rose-600",
-];
 
 type DashboardStats = {
   total: number;
@@ -103,15 +69,7 @@ type ActivityRow = {
   vencido?: boolean;
 };
 
-const EMPTY_STATS: DashboardStats = {
-  total: 0,
-  completed: 0,
-  pct: 0,
-  expectedPct: 0,
-  compliancePct: 100,
-  due: 0,
-  gap: 0,
-};
+const EMPTY_STATS: DashboardStats = { total: 0, completed: 0, pct: 0, expectedPct: 0, compliancePct: 100, due: 0, gap: 0 };
 
 const formatDate = (value: string | null) => formatDateOnly(value);
 
@@ -120,24 +78,18 @@ function EstadoChip({ estado, vencido }: { estado?: EstadoEntregable; vencido?: 
   const cfg = estadoEntregableConfig[estado ?? "no_iniciado"];
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
-      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs ${cfg.badge}`} style={{ fontWeight: 500 }}>
-        <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
-        {cfg.label}
-      </span>
-      {vencido && (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-700" style={{ fontWeight: 500 }}>
-          Vencido
-        </span>
-      )}
+      <StatusPill tone={TONE_ESTADO[estado ?? "no_iniciado"] ?? "neutral"}>{cfg.label}</StatusPill>
+      {vencido && <StatusPill tone="danger" dot={false}>Vencido</StatusPill>}
     </span>
   );
 }
 
+type Filtro = "todos" | "pendientes" | "observados" | "vencidos" | "aprobados";
+
 export default function TeacherDashboard() {
   const navigate = useNavigate();
   const currentUser = useCurrentUser();
-  const [docenteId, setDocenteId] = useState<number | null>(null);
-  const [projectsCount, setProjectsCount] = useState<number | null>(null);
+  const C = useChartColors();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [byMonth, setByMonth] = useState<StatsByMonth[]>([]);
   const [byWeek, setByWeek] = useState<StatsByWeek[]>([]);
@@ -149,521 +101,287 @@ export default function TeacherDashboard() {
   const [proximo, setProximo] = useState<UpcomingItem | null>(null);
   const [observados, setObservados] = useState<UpcomingItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [recarga, setRecarga] = useState(0);
+  const [filtro, setFiltro] = useState<Filtro>("todos");
+  const [busqueda, setBusqueda] = useState("");
 
   useEffect(() => {
     const id = currentUser?.id ?? null;
-    setDocenteId(id);
-
     if (!id) {
-      setProjectsCount(0);
       setStats(EMPTY_STATS);
-      setByMonth([]);
-      setByWeek([]);
-      setUpcoming([]);
-      setActivities([]);
-      setIndicadores(null);
-      setSemana(null);
-      setProximo(null);
-      setObservados([]);
       setLoading(false);
       return;
     }
-
-    const load = async () => {
+    let cancelado = false;
+    (async () => {
       try {
-        const [resDashboard, resStats] = await Promise.all([
-          fetch(`${API_BASE_URL}/docente/${id}/dashboard`),
-          fetch(`${API_BASE_URL}/docente/${id}/dashboard-stats`),
-        ]);
-
-        if (resDashboard.ok) {
-          const data = await resDashboard.json();
-          const proyectos = (data.proyectos || []) as any[];
-          setProjectsCount(proyectos.length);
-        } else {
-          setProjectsCount(0);
-        }
-
-        if (resStats.ok) {
-          const data = await resStats.json();
-          setStats({ ...EMPTY_STATS, ...(data.stats || {}) });
-          setByMonth(Array.isArray(data.byMonth) ? data.byMonth : []);
-          setByWeek(Array.isArray(data.byWeek) ? data.byWeek : []);
-          setUpcoming(Array.isArray(data.upcoming) ? data.upcoming : []);
-          setActivities(Array.isArray(data.activities) ? data.activities : []);
-          setIndicadores(data.indicadores ?? null);
-          setSemana(data.semana_actual ?? null);
-          setConteos(data.conteos ?? { pendientes: 0, observados: 0, vencidos: 0, en_revision: 0 });
-          setProximo(data.proximo_entregable ?? null);
-          setObservados(Array.isArray(data.observados) ? data.observados : []);
-        } else {
-          setStats(EMPTY_STATS);
-          setByMonth([]);
-          setByWeek([]);
-          setUpcoming([]);
-          setActivities([]);
-        }
+        setLoading(true);
+        setError(null);
+        const resStats = await fetch(`${API_BASE_URL}/docente/${id}/dashboard-stats`);
+        if (!resStats.ok) throw new Error("dashboard-stats");
+        const data = await resStats.json();
+        if (cancelado) return;
+        setStats({ ...EMPTY_STATS, ...(data.stats || {}) });
+        setByMonth(Array.isArray(data.byMonth) ? data.byMonth : []);
+        setByWeek(Array.isArray(data.byWeek) ? data.byWeek : []);
+        setUpcoming(Array.isArray(data.upcoming) ? data.upcoming : []);
+        setActivities(Array.isArray(data.activities) ? data.activities : []);
+        setIndicadores(data.indicadores ?? null);
+        setSemana(data.semana_actual ?? null);
+        setConteos(data.conteos ?? { pendientes: 0, observados: 0, vencidos: 0, en_revision: 0 });
+        setProximo(data.proximo_entregable ?? null);
+        setObservados(Array.isArray(data.observados) ? data.observados : []);
       } catch (err) {
         console.error(err);
-        notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
-        setProjectsCount(0);
-        setStats(EMPTY_STATS);
-        setByMonth([]);
-        setByWeek([]);
-        setUpcoming([]);
-        setActivities([]);
+        if (!cancelado) {
+          setError("No se pudo cargar tu panel. Revisa la conexión e intenta de nuevo.");
+          notify.error("No se pudo cargar la información.");
+          setStats(EMPTY_STATS);
+        }
       } finally {
-        setLoading(false);
+        if (!cancelado) setLoading(false);
       }
+    })();
+    return () => {
+      cancelado = true;
     };
+  }, [currentUser?.id, recarga]);
 
-    load();
-  }, [currentUser?.id]);
-
-  const safeStats = stats ?? EMPTY_STATS;
-  const complianceColor =
-    safeStats.compliancePct >= 100
-      ? "#10b981"
-      : safeStats.compliancePct >= 90
-      ? "#1d4ed8"
-      : safeStats.compliancePct >= 75
-      ? "#f59e0b"
-      : "#ef4444";
-
+  const s = stats ?? EMPTY_STATS;
   const ind = indicadores;
   const semaforo = ind ? semaforoConfig[ind.semaforo] : null;
+  const tonoSemaforo: Tone = ind?.semaforo === "verde" ? "success" : ind?.semaforo === "amarillo" ? "warning" : ind?.semaforo === "rojo" ? "danger" : "neutral";
+  const nombre = currentUser?.nombre || "docente";
+  const hayVencidos = conteos.vencidos > 0;
 
-  // Serie semanal real del backend: acumulado reportado, aprobado y esperado.
-  const weeklyData = byWeek.map((row) => ({
-    semana: `S${row.semana}`,
-    avance: row.pct,
-    aprobado: row.pct_aprobado ?? 0,
-    esperado: row.expectedPct,
-  }));
+  const semanal = byWeek.map((r) => ({ semana: r.semana, avance: r.pct, aprobado: r.pct_aprobado ?? 0, esperado: r.expectedPct }));
+  const semanaHoy = semana?.estado === "en_curso" ? semana.numero : null;
 
-  const statCards = [
-    {
-      label: "Avance reportado",
-      value: `${safeStats.pct}%`,
-      sub: `${safeStats.completed} de ${safeStats.total} enviados a revisión o aprobados`,
-      icon: Send,
-      iconBg: "bg-[#1d4ed8]",
-    },
-    {
-      label: "Avance aprobado",
-      value: ind ? `${ind.pct_aprobado}%` : "—",
-      sub: ind ? `${ind.aprobados} de ${ind.total} aprobados por el administrador` : "Sin matriz asignada",
-      icon: CheckCircle2,
-      iconBg: "bg-emerald-500",
-    },
-    {
-      label: "Avance esperado",
-      value: `${safeStats.expectedPct}%`,
-      sub: `${safeStats.due} entregables exigibles a hoy · brecha ${ind ? (ind.brecha_entregables > 0 ? "+" : "") + ind.brecha_entregables : 0} (aprobados − esperados)`,
-      icon: Clock,
-      iconBg: "bg-amber-500",
-    },
-    {
-      label: "Semana actual",
-      value: semana?.numero != null ? `S${semana.numero}` : "—",
-      sub:
-        semana?.estado === "en_curso"
-          ? `${etiquetaSemana(semana)} · ${formatDate(semana.fecha_inicio_semana ?? null)} – ${formatDate(semana.fecha_fin_semana ?? null)}`
-          : etiquetaSemana(semana),
-      icon: Calendar,
-      iconBg: "bg-purple-500",
-    },
-  ];
-
-  const contadores = [
-    { label: "Pendientes", value: conteos.pendientes, tone: "text-gray-800", icon: Clock },
-    { label: "Observados", value: conteos.observados, tone: "text-amber-700", icon: MessageSquareWarning },
-    { label: "Vencidos", value: conteos.vencidos, tone: "text-red-700", icon: AlertCircle },
-    { label: "En revisión", value: conteos.en_revision, tone: "text-blue-700", icon: Send },
-  ];
-
-  const hasVencidos = conteos.vencidos > 0;
+  const filas = useMemo(() => {
+    const t = busqueda.trim().toLowerCase();
+    return activities.filter((r) => {
+      if (filtro === "pendientes" && !(r.estado === "no_iniciado" || r.estado === "borrador")) return false;
+      if (filtro === "observados" && r.estado !== "observado") return false;
+      if (filtro === "vencidos" && !r.vencido) return false;
+      if (filtro === "aprobados" && r.estado !== "aprobado") return false;
+      if (t && !`${r.deliverable} ${r.initiative} ${r.category}`.toLowerCase().includes(t)) return false;
+      return true;
+    });
+  }, [activities, filtro, busqueda]);
+  const cuenta = (f: (r: ActivityRow) => boolean) => activities.filter(f).length;
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-gray-900">Mi Dashboard</h1>
-          <p className="text-gray-500 text-sm flex items-center gap-1.5 mt-0.5">
-            <Calendar className="w-3.5 h-3.5" />
-            {loading ? "Cargando..." : `${etiquetaSemana(semana)} · avance según tu matriz de seguimiento`}
-            {semaforo && !loading && (
-              <span className={`ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${semaforo.badge}`} style={{ fontWeight: 600 }}>
-                <span className={`w-1.5 h-1.5 rounded-full ${semaforo.dot}`} />
-                {semaforo.label}
-              </span>
-            )}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => navigate("/docente/matriz")}
-            className="flex items-center gap-2 border border-[#1e3a8a] text-[#1e3a8a] hover:bg-blue-50 px-3 py-2 rounded-lg text-sm transition-colors hidden sm:flex"
-            style={{ fontWeight: 500 }}
-          >
-            <TableProperties className="w-4 h-4" />
-            Ver Matriz
-          </button>
-          <button
-            onClick={() => navigate("/docente/reportar")}
-            className="flex items-center gap-2 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white px-4 py-2 rounded-lg text-sm transition-colors shadow-sm"
-            style={{ fontWeight: 600 }}
-          >
-            <Plus className="w-4 h-4" />
-            Reportar entregable
-          </button>
-        </div>
-      </div>
-
-      {/* Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {statCards.map((card) => (
-          <div key={card.label} className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-gray-500 text-sm">{card.label}</p>
-                <p className="text-gray-900 mt-1" style={{ fontSize: 28, fontWeight: 700 }}>
-                  {card.value}
-                </p>
-                <p className="text-gray-400 text-xs mt-1">{card.sub}</p>
-              </div>
-              <div className={`w-10 h-10 ${card.iconBg} rounded-lg flex items-center justify-center`}>
-                <card.icon className="w-5 h-5 text-white" />
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Estado de la gestión */}
-      <div className="grid grid-cols-2 xl:grid-cols-5 gap-4">
-        {contadores.map((c) => (
-          <div key={c.label} className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm flex items-center gap-3">
-            <c.icon className={`w-5 h-5 ${c.tone}`} />
-            <div>
-              <p className={`text-xl ${c.tone}`} style={{ fontWeight: 700 }}>{c.value}</p>
-              <p className="text-xs text-gray-500">{c.label}</p>
-            </div>
-          </div>
-        ))}
-        <div className="col-span-2 xl:col-span-1 bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-          <p className="text-xs text-gray-500">Próxima entrega</p>
-          {proximo ? (
-            <>
-              <p className="text-sm text-gray-800 line-clamp-2 mt-0.5" style={{ fontWeight: 600 }}>
-                {proximo.entregable}
-              </p>
-              <p className="text-xs text-gray-400 mt-1">
-                S{proximo.semana} · {formatDate(proximo.fechaFin)}
-              </p>
-            </>
-          ) : (
-            <p className="text-sm text-gray-400 mt-0.5">Sin entregas próximas</p>
-          )}
-        </div>
-      </div>
-
-      {/* Evidencias pendientes de corrección */}
-      {observados.length > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-3">
-            <MessageSquareWarning className="w-4 h-4 text-amber-700" />
-            <h3 className="text-amber-900">Evidencias pendientes de corrección</h3>
-          </div>
-          <div className="space-y-2">
-            {observados.slice(0, 5).map((o) => (
-              <div
-                key={`${o.entregable_id ?? "p"}-${o.id}`}
-                className="bg-white rounded-lg border border-amber-100 p-3 cursor-pointer hover:bg-amber-50/40"
-                onClick={() => navigate(`/docente/matriz?plantilla=${o.id}`)}
-              >
-                <p className="text-sm text-gray-800" style={{ fontWeight: 600 }}>{o.entregable}</p>
-                {o.comentario_revision && (
-                  <p className="text-xs text-amber-800 mt-1">Observación: {o.comentario_revision}</p>
-                )}
-                <p className="text-xs text-gray-400 mt-1">
-                  Semana {o.semana} · límite {formatDate(o.fechaFin)}
-                  {o.vencido ? " · vencido" : ""}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Avance por mes */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="text-gray-800">Avance por mes</h3>
-            <p className="text-gray-500 text-xs mt-0.5">Entregables reportados y aprobados según la matriz de seguimiento</p>
-          </div>
-          <button
-            onClick={() => navigate("/docente/matriz")}
-            className="text-sm text-[#1d4ed8] hover:underline flex items-center gap-1"
-          >
-            Ver matriz <ArrowRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {byMonth.map((m, index) => {
-            const isDone = m.pct === 100 && m.total > 0;
-            const isActive = m.active;
-            const colorClass = MONTH_COLOR_CLASSES[index % MONTH_COLOR_CLASSES.length];
-            return (
-              <div
-                key={m.month}
-                className={`rounded-xl p-4 border-2 transition-all cursor-pointer ${
-                  isActive ? "border-[#1e3a8a] bg-blue-50/40" : isDone ? "border-emerald-200 bg-emerald-50/40" : "border-gray-100"
-                }`}
-                onClick={() => navigate("/docente/matriz")}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <span className={`text-xs px-2 py-0.5 rounded-full text-white ${colorClass}`} style={{ fontWeight: 600 }}>
-                    {m.month}
-                  </span>
-                  {isActive && m.total > 0 && (
-                    <span className="text-xs text-[#1e3a8a] bg-blue-100 px-1.5 py-0.5 rounded" style={{ fontWeight: 500 }}>
-                      En curso
-                    </span>
-                  )}
-                  {isDone && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
-                </div>
-                <div className="mt-2">
-                  <p className="text-gray-900" style={{ fontSize: 22, fontWeight: 800 }}>
-                    {m.pct}%
-                  </p>
-                  <p className="text-gray-400 text-xs mt-0.5">
-                    {m.done}/{m.total} reportados · {m.aprobados ?? 0} aprobados
-                  </p>
-                  <p className="text-gray-500 text-[11px] mt-1">
-                    Esperado a hoy: {Math.round(m.expectedPct)}%
-                  </p>
-                </div>
-                <div className="mt-3 w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all"
-                    style={{
-                      width: `${m.pct}%`,
-                      backgroundColor: isDone ? "#10b981" : isActive ? "#1d4ed8" : m.pct > 0 ? "#f59e0b" : "#e5e7eb",
-                    }}
-                  />
-                </div>
-              </div>
-            );
-          })}
-          {!loading && byMonth.length === 0 && (
-            <p className="col-span-full text-sm text-gray-400 text-center py-6">
-              No hay entregables calendarizados para mostrar.
-            </p>
-          )}
-        </div>
-
-        <div className="mt-5 pt-4 border-t border-gray-100">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-sm text-gray-700" style={{ fontWeight: 500 }}>
-              Avance real frente al esperado
-            </p>
-            <div className="flex items-center gap-3 text-xs font-semibold">
-              <span className="text-[#1d4ed8]">Reportado {safeStats.pct}%</span>
-              <span className="text-emerald-600">Aprobado {ind?.pct_aprobado ?? 0}%</span>
-              <span className="text-amber-600">Esperado {safeStats.expectedPct}%</span>
-            </div>
-          </div>
-          <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{ width: `${safeStats.pct}%`, backgroundColor: complianceColor }}
-            />
-          </div>
-          {byMonth.length > 0 && (
-            <div className="flex justify-between gap-2 text-xs text-gray-400 mt-1">
-              {byMonth.map((m) => <span key={m.month}>{m.month}</span>)}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Chart + Upcoming */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <div className="xl:col-span-2 bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="text-gray-800">Progreso Semanal</h3>
-              <p className="text-gray-500 text-xs mt-0.5">Acumulado por semana: reportado, aprobado y esperado</p>
-            </div>
-            <span className={`text-xs px-2.5 py-1 rounded-full ${hasVencidos ? "text-red-600 bg-red-50" : "text-emerald-600 bg-emerald-50"}`} style={{ fontWeight: 500 }}>
-              {hasVencidos ? "Con vencimientos" : "Sin vencimientos"}
-            </span>
-          </div>
-          {weeklyData.length > 0 ? <ResponsiveContainer width="100%" height={200}>
-            <AreaChart data={weeklyData}>
-              <defs>
-                <linearGradient id="tdColorAvance" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#1d4ed8" stopOpacity={0.2} />
-                  <stop offset="95%" stopColor="#1d4ed8" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="semana" tick={{ fontSize: 12, fill: "#9ca3af" }} />
-              <YAxis tick={{ fontSize: 12, fill: "#9ca3af" }} unit="%" />
-              <Tooltip formatter={(v, name) => [`${v}%`, String(name)]} contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 12 }} />
-              <Area
-                type="monotone"
-                dataKey="esperado"
-                name="Avance esperado"
-                stroke="#d97706"
-                strokeWidth={2}
-                strokeDasharray="5 4"
-                fill="transparent"
-              />
-              <Area
-                type="monotone"
-                dataKey="avance"
-                name="Avance reportado"
-                stroke="#1d4ed8"
-                strokeWidth={2}
-                fill="url(#tdColorAvance)"
-              />
-              <Area
-                type="monotone"
-                dataKey="aprobado"
-                name="Avance aprobado"
-                stroke="#10b981"
-                strokeWidth={2}
-                fill="transparent"
-              />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-            </AreaChart>
-          </ResponsiveContainer> : (
-            <div className="h-[200px] flex items-center justify-center text-sm text-gray-400">
-              No hay avance semanal registrado.
-            </div>
-          )}
-        </div>
-
-        <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-gray-800">Próximas entregas</h3>
-            <button onClick={() => navigate("/docente/matriz")} className="text-xs text-[#1d4ed8] hover:underline">
-              Ver matriz
+    <Page>
+      <PageHeader
+        title={`Hola, ${nombre}`}
+        description={loading ? "Cargando tu seguimiento…" : `${etiquetaSemana(semana)} · avance según tu matriz de seguimiento`}
+        meta={semaforo && !loading ? <StatusPill tone={tonoSemaforo}>{semaforo.label}</StatusPill> : undefined}
+        actions={
+          <>
+            <button type="button" className="ds-btn ds-btn-secondary" onClick={() => navigate("/docente/matriz")}>
+              <TableProperties className="h-4 w-4" /> Ver matriz
             </button>
-          </div>
-          <div className="space-y-2.5">
-            {upcoming.length === 0 && !loading && (
-              <p className="text-xs text-gray-400">No hay entregas próximas cargadas.</p>
-            )}
-            {upcoming.slice(0, 5).map((d) => {
-              return (
-                <div
-                  key={`${d.entregable_id ?? "p"}-${d.id}`}
-                  className="p-3 rounded-lg border border-gray-100 hover:bg-gray-50 transition-colors cursor-pointer"
-                  onClick={() => navigate("/docente/matriz")}
-                >
-                  <div className="flex items-start gap-2 mb-1.5">
-                    <span className="text-xs text-gray-500">S{d.semana}</span>
-                  </div>
-                  <p className="text-gray-700 text-xs leading-snug line-clamp-2" style={{ fontWeight: 500 }}>
-                    {d.entregable}
-                  </p>
-                  <p className="text-gray-400 text-[11px] mt-1 line-clamp-1">
-                    {d.iniciativa}
-                  </p>
-                  <div className="flex items-center justify-between mt-2">
-                    <span className="text-xs text-gray-400 flex items-center gap-1">
-                      <Calendar className="w-3 h-3" />
-                      {formatDate(d.fechaInicio)} – {formatDate(d.fechaFin)}
-                    </span>
-                    <EstadoChip estado={d.estado} vencido={d.vencido} />
+            <button type="button" className="ds-btn ds-btn-primary" onClick={() => navigate("/docente/reportar")}>
+              <Plus className="h-4 w-4" /> Reportar entregable
+            </button>
+          </>
+        }
+      />
+
+      {error && <InlineAlert action={<button type="button" className="ds-btn ds-btn-secondary ds-btn-sm" onClick={() => setRecarga((n) => n + 1)}>Reintentar</button>}>{error}</InlineAlert>}
+
+      <section aria-label="Tu avance" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Kpi label="Avance reportado" icon={Send} tone="brand" value={`${s.pct}%`} progress={s.pct} marker={s.expectedPct} hint={`${s.completed} de ${s.total} enviados a revisión o aprobados`} />
+        <Kpi label="Avance aprobado" icon={CheckCircle2} tone="success" value={ind ? `${ind.pct_aprobado}%` : "—"} progress={ind?.pct_aprobado ?? 0} marker={s.expectedPct} hint={ind ? `${ind.aprobados} de ${ind.total} aprobados por coordinación` : "Sin matriz asignada"} />
+        <Kpi label="Avance esperado a hoy" icon={Clock} tone="warning" value={`${s.expectedPct}%`} hint={`${s.due} exigibles · brecha ${ind ? (ind.brecha_entregables > 0 ? "+" : "") + ind.brecha_entregables : 0} (aprobados − esperados)`} />
+        <Kpi label="Semana actual" icon={CalendarDays} tone="signal" value={semana?.numero != null ? `S${semana.numero}` : "—"} hint={semana?.estado === "en_curso" ? `${formatDate(semana.fecha_inicio_semana ?? null)} – ${formatDate(semana.fecha_fin_semana ?? null)}` : etiquetaSemana(semana)} />
+      </section>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <div className="space-y-4 xl:col-span-2">
+          <Panel title="Requiere tu atención" description="Lo que coordinación te devolvió y lo que vence pronto" bodyClassName="">
+            <div className="grid grid-cols-2 divide-x divide-line border-b border-line sm:grid-cols-4">
+              {[
+                { l: "Pendientes", v: conteos.pendientes, icon: Clock, tone: "text-text" },
+                { l: "En revisión", v: conteos.en_revision, icon: Send, tone: "text-purple-700" },
+                { l: "Observados", v: conteos.observados, icon: MessageSquareWarning, tone: "text-amber-700" },
+                { l: "Vencidos", v: conteos.vencidos, icon: AlertCircle, tone: hayVencidos ? "text-red-700" : "text-text" },
+              ].map((c) => (
+                <div key={c.l} className="flex items-center gap-3 px-4 py-3">
+                  <c.icon className={`h-4 w-4 ${c.tone}`} aria-hidden />
+                  <div className="leading-tight">
+                    <p className={`text-lg tabular-nums ${c.tone}`} style={{ fontWeight: 650 }}>{c.v}</p>
+                    <p className="text-xs text-text-subtle">{c.l}</p>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-          {hasVencidos && (
-            <div className="mt-3 p-3 bg-red-50 rounded-lg flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-xs text-red-700" style={{ fontWeight: 600 }}>Entregas vencidas</p>
-                <p className="text-xs text-red-600 mt-0.5">
-                  {conteos.vencidos} entregable(s) con fecha límite vencida sin presentar o corregir
-                </p>
-              </div>
+              ))}
             </div>
-          )}
+
+            {observados.length > 0 ? (
+              <ul className="divide-y divide-line">
+                {observados.slice(0, 5).map((o) => (
+                  <li key={`${o.entregable_id ?? "p"}-${o.id}`}>
+                    <button type="button" onClick={() => navigate(`/docente/evidencias?entregable=${o.id}`)} className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-2">
+                      <MessageSquareWarning className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm text-text" style={{ fontWeight: 600 }}>{o.entregable}</span>
+                        {o.comentario_revision && <span className="mt-0.5 block text-xs text-amber-800">Observación: {o.comentario_revision}</span>}
+                        <span className="mt-0.5 block text-xs text-text-subtle">Semana {o.semana} · límite {formatDate(o.fechaFin)}{o.vencido ? " · vencido" : ""}</span>
+                      </span>
+                      <span className="ds-btn ds-btn-secondary ds-btn-sm shrink-0">Corregir</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <EmptyState icon={CheckCircle2} title="No tienes evidencias por corregir">Cuando coordinación observe un entregable, aparecerá aquí con su comentario.</EmptyState>
+            )}
+          </Panel>
+
+          <Panel title="Próximas entregas" action={proximo ? <StatusPill tone="signal" dot={false}>Siguiente: S{proximo.semana} · {formatDate(proximo.fechaFin)}</StatusPill> : undefined} bodyClassName="">
+            {upcoming.length === 0 && !loading ? (
+              <EmptyState icon={CalendarDays} title="Sin entregas próximas">No hay entregables cargados para las próximas semanas.</EmptyState>
+            ) : (
+              <ul className="divide-y divide-line">
+                {upcoming.slice(0, 5).map((d) => (
+                  <li key={`${d.entregable_id ?? "p"}-${d.id}`}>
+                    <button type="button" onClick={() => navigate(`/docente/matriz?plantilla=${d.id}`)} className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-surface-2">
+                      <span className="flex h-9 w-9 shrink-0 flex-col items-center justify-center rounded-lg bg-gray-100 leading-none text-text-muted">
+                        <span className="text-[0.625rem]">Sem</span>
+                        <span className="text-sm tabular-nums" style={{ fontWeight: 650 }}>{d.semana}</span>
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm text-text" style={{ fontWeight: 550 }}>{d.entregable}</span>
+                        <span className="block truncate text-xs text-text-subtle">{d.iniciativa} · {formatDate(d.fechaInicio)} – {formatDate(d.fechaFin)}</span>
+                      </span>
+                      <EstadoChip estado={d.estado} vencido={d.vencido} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Panel>
         </div>
+
+        <Panel title="Avance por mes" description="Reportado frente a lo esperado a hoy" action={<button type="button" onClick={() => navigate("/docente/matriz")} className="ds-btn ds-btn-ghost ds-btn-sm !text-brand">Ver matriz</button>}>
+          {byMonth.length === 0 && !loading ? (
+            <EmptyState title="Sin entregables calendarizados">Tu matriz aún no tiene entregables con fecha.</EmptyState>
+          ) : (
+            <ul className="space-y-4">
+              {byMonth.map((m) => {
+                const completo = m.pct === 100 && m.total > 0;
+                return (
+                  <li key={m.month}>
+                    <div className="mb-1.5 flex items-baseline justify-between gap-2">
+                      <p className="flex items-center gap-2 text-sm text-text" style={{ fontWeight: 600 }}>
+                        {m.month}
+                        {m.active && m.total > 0 && <StatusPill tone="signal" dot={false}>En curso</StatusPill>}
+                        {completo && <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-label="Mes completo" />}
+                      </p>
+                      <p className="text-sm tabular-nums text-text" style={{ fontWeight: 650 }}>{m.pct}%</p>
+                    </div>
+                    <ProgressBar value={m.pct} marker={m.expectedPct} tone={completo ? "success" : m.active ? "brand" : m.pct > 0 ? "warning" : "neutral"} label={`${m.month}: ${m.pct}% reportado`} />
+                    <p className="mt-1 text-xs text-text-subtle">{m.done}/{m.total} reportados · {m.aprobados ?? 0} aprobados · esperado {Math.round(m.expectedPct)}%</p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Panel>
       </div>
 
-      {/* Listado cronológico de entregables */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <div>
-            <h3 className="text-gray-800">Entregables programados</h3>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Listado cronológico de proyectos, actividades y convenios
-            </p>
+      <Panel
+        title="Progreso semanal"
+        description="Acumulado por semana: reportado, aprobado y esperado"
+        action={<ChartLegend items={[{ label: "Reportado", color: C.reportado }, { label: "Aprobado", color: C.aprobado }, { label: "Esperado", color: C.esperado, dashed: true }]} />}
+      >
+        {semanal.length > 0 ? (
+          <div role="img" aria-label="Avance semanal acumulado: reportado, aprobado y esperado">
+            <ResponsiveContainer width="100%" height={230}>
+              <AreaChart data={semanal} margin={{ top: 8, right: 8, left: -14, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="tdAvance" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={C.reportado} stopOpacity={0.18} />
+                    <stop offset="100%" stopColor={C.reportado} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke={C.grid} vertical={false} />
+                <XAxis dataKey="semana" tickFormatter={(v) => `S${v}`} tick={axisTick(C)} axisLine={false} tickLine={false} />
+                <YAxis tick={axisTick(C)} unit="%" domain={[0, 100]} axisLine={false} tickLine={false} />
+                <Tooltip content={<ChartTooltip unit="%" labelPrefix="Semana " />} cursor={{ stroke: C.grid }} />
+                {semanaHoy != null && <ReferenceLine x={semanaHoy} stroke={C.signal} strokeDasharray="4 3" label={{ value: "Hoy", position: "insideTopRight", fontSize: 11, fill: C.signal }} />}
+                <Area type="monotone" dataKey="esperado" name="Esperado" stroke={C.esperado} strokeWidth={2} strokeDasharray="5 4" fill="none" dot={false} />
+                <Area type="monotone" dataKey="avance" name="Reportado" stroke={C.reportado} strokeWidth={2} fill="url(#tdAvance)" dot={false} activeDot={{ r: 4 }} />
+                <Area type="monotone" dataKey="aprobado" name="Aprobado" stroke={C.aprobado} strokeWidth={2} fill="none" dot={false} activeDot={{ r: 4 }} />
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
-          <button
-            onClick={() => navigate("/docente/matriz")}
-            className="text-sm text-[#1d4ed8] hover:underline flex items-center gap-1"
-          >
-            Ver todas <ArrowRight className="w-3.5 h-3.5" />
-          </button>
+        ) : (
+          <EmptyState icon={FileText} title="Aún no hay avance semanal">Se mostrará cuando envíes tus primeros entregables.</EmptyState>
+        )}
+      </Panel>
+
+      <Panel
+        title="Entregables programados"
+        description={`${filas.length} de ${activities.length} · proyectos, actividades y convenios`}
+        bodyClassName=""
+        action={<button type="button" onClick={() => navigate("/docente/matriz")} className="ds-btn ds-btn-ghost ds-btn-sm !text-brand">Abrir la matriz completa <ArrowRight className="h-3.5 w-3.5" /></button>}
+      >
+        <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
+          <Segmented<Filtro>
+            label="Filtrar entregables"
+            value={filtro}
+            onChange={setFiltro}
+            items={[
+              { id: "todos", label: "Todos", count: activities.length },
+              { id: "pendientes", label: "Pendientes", count: cuenta((r) => r.estado === "no_iniciado" || r.estado === "borrador") },
+              { id: "observados", label: "Observados", count: cuenta((r) => r.estado === "observado"), tone: "warning" },
+              { id: "vencidos", label: "Vencidos", count: cuenta((r) => r.vencido === true), tone: "danger" },
+              { id: "aprobados", label: "Aprobados", count: cuenta((r) => r.estado === "aprobado"), tone: "success" },
+            ]}
+          />
+          <div className="relative ml-auto w-full sm:w-64">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden />
+            <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar entregable o iniciativa" aria-label="Buscar entregable" className="ds-input !pl-9" />
+          </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="max-h-[560px] overflow-auto">
+          <table className="ds-table min-w-[820px]">
             <thead>
-              <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                <th className="text-left px-6 py-3">Categoría</th>
-                <th className="text-left px-6 py-3">Entregable</th>
-                <th className="text-left px-6 py-3">Iniciativa</th>
-                <th className="text-left px-6 py-3">Periodo de entrega</th>
-                <th className="text-left px-6 py-3">Estado</th>
-                <th className="text-left px-6 py-3">Acción</th>
+              <tr>
+                <th>Entregable</th>
+                <th>Iniciativa</th>
+                <th>Periodo de entrega</th>
+                <th>Estado</th>
+                <th className="text-right"><span className="sr-only">Acción</span></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-50">
-              {activities.length === 0 && !loading && (
+            <tbody>
+              {filas.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-gray-400 text-sm">
-                    No hay entregables programados para tu grupo matriz.
+                  <td colSpan={5}>
+                    <EmptyState icon={FileText} title={loading ? "Cargando entregables…" : "Sin entregables para mostrar"}>{loading ? undefined : activities.length === 0 ? "No hay entregables programados para tu grupo de matriz." : "Prueba con otro filtro o con otra búsqueda."}</EmptyState>
                   </td>
                 </tr>
               )}
-              {activities.map((row, i) => (
-                <tr key={`${i}-${row.entregableId ?? "p"}-${row.id}`} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-4 text-gray-800" style={{ fontWeight: 500 }}>
-                    <div className="max-w-[150px] capitalize">{row.category.replaceAll("_", " ")}</div>
+              {filas.map((row, i) => (
+                <tr key={`${i}-${row.entregableId ?? "p"}-${row.id}`}>
+                  <td className="max-w-[360px]">
+                    <p className="line-clamp-2 text-text" style={{ fontWeight: 550 }}>{row.deliverable}</p>
+                    <p className="text-xs capitalize text-text-subtle">{row.category.replaceAll("_", " ")}</p>
                   </td>
-                  <td className="px-6 py-4 text-gray-600">
-                    <div className="max-w-xs line-clamp-2">{row.deliverable}</div>
+                  <td className="max-w-[260px]">
+                    <p className="line-clamp-2 text-text-muted">{row.initiative}</p>
+                    <p className="text-xs capitalize text-text-subtle">{row.initiativeType}</p>
                   </td>
-                  <td className="px-6 py-4 text-gray-700">
-                    <div className="max-w-xs line-clamp-2 font-medium">{row.initiative}</div>
-                    <span className="text-[11px] text-gray-400 capitalize">
-                      {row.initiativeType}
-                    </span>
+                  <td className="whitespace-nowrap text-text-muted">
+                    {formatDate(row.startDate)} <span className="text-text-subtle">→</span> {formatDate(row.deadline)}
                   </td>
-                  <td className="px-6 py-4 text-gray-500 whitespace-nowrap">
-                    <div>{formatDate(row.startDate)}</div>
-                    <div className="text-xs text-gray-400">hasta {formatDate(row.deadline)}</div>
-                  </td>
-                  <td className="px-6 py-4">
-                      <EstadoChip estado={row.estado} vencido={row.vencido} />
-                  </td>
-                  <td className="px-6 py-4">
-                    <button
-                      onClick={() => navigate(`/docente/matriz?plantilla=${row.id}`)}
-                      className="text-[#1d4ed8] hover:underline text-xs"
-                      style={{ fontWeight: 500 }}
-                    >
-                      {row.estado === "observado" ? "Corregir" : row.estado === "aprobado" || row.estado === "enviado" ? "Ver entregable" : "Reportar"}
+                  <td><EstadoChip estado={row.estado} vencido={row.vencido} /></td>
+                  <td className="text-right">
+                    <button type="button" onClick={() => navigate(`/docente/matriz?plantilla=${row.id}`)} className="ds-btn ds-btn-secondary ds-btn-sm">
+                      {row.estado === "observado" ? "Corregir" : row.estado === "aprobado" || row.estado === "enviado" ? "Ver" : "Reportar"}
                     </button>
                   </td>
                 </tr>
@@ -671,7 +389,7 @@ export default function TeacherDashboard() {
             </tbody>
           </table>
         </div>
-      </div>
-    </div>
+      </Panel>
+    </Page>
   );
 }

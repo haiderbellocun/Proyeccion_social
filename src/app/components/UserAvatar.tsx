@@ -76,7 +76,7 @@ export function UserAvatar({ user, className = "" }: UserAvatarProps) {
 
   return (
     <div
-      className={`relative overflow-hidden rounded-full bg-[#1e3a8a] text-white ${className}`}
+      className={`relative overflow-hidden rounded-full bg-brand text-white ${className}`}
       aria-label={`Foto de perfil de ${displayName || "usuario"}`}
     >
       <span className="absolute inset-0 flex items-center justify-center">

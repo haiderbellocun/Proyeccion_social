@@ -17,6 +17,7 @@ import {
 import { AppSelect } from "../components/AppSelect";
 import { AvisoAcceso, EnlaceEvidencia, esHttp, type EvidenciaEnlace } from "../components/EnlaceEvidencia";
 import { HistorialEntregable } from "../components/HistorialEntregable";
+import { EmptyState, InlineAlert, Page, PageHeader, PageLoading, Segmented, StatusPill, type Tone } from "../components/ds/primitives";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
@@ -80,6 +81,15 @@ const SITUACION: Record<Situacion, { etiqueta: string; clase: string; ayuda: str
   en_revision: { etiqueta: "En revisión", clase: "bg-purple-100 text-purple-700", ayuda: "Esperando la revisión de coordinación" },
   aprobada: { etiqueta: "Aprobada", clase: "bg-emerald-100 text-emerald-700", ayuda: "Aprobada por coordinación" },
   sin_requisito: { etiqueta: "No requiere evidencia", clase: "bg-gray-50 text-gray-500", ayuda: "Este entregable no exige cargue" },
+};
+
+const TONO_SITUACION: Record<Situacion, Tone> = {
+  sin_evidencia: "neutral",
+  borrador: "brand",
+  observada: "warning",
+  en_revision: "violet",
+  aprobada: "success",
+  sin_requisito: "neutral",
 };
 
 const FILTROS: { id: Situacion | "todas" | "vencidas"; etiqueta: string }[] = [
@@ -255,59 +265,48 @@ export default function Evidences() {
   };
 
   return (
-    <div className="p-4 sm:p-6 space-y-5">
-      <div>
-        <h1 className="text-gray-900">Mis Evidencias</h1>
-        <p className="text-gray-500 text-sm mt-0.5">
-          Qué evidencia necesita cada entregable, en qué estado está y qué te pidió el revisor
-          {centro?.semestre ? ` · semestre ${centro.semestre}` : ""}
-        </p>
-      </div>
+    <Page>
+      <PageHeader
+        title="Mis evidencias"
+        description={`Qué evidencia necesita cada entregable, en qué estado está y qué te pidió el revisor${centro?.semestre ? ` · semestre ${centro.semestre}` : ""}`}
+        actions={
+          <Link to="/docente/matriz" className="ds-btn ds-btn-secondary">
+            Ir a la matriz
+          </Link>
+        }
+      />
 
-      {cargando && !centro && (
-        <div className="flex items-center justify-center min-h-[30vh]" role="status" aria-label="Cargando evidencias">
-          <Loader2 className="w-8 h-8 animate-spin text-[#1d4ed8]" />
-        </div>
-      )}
+      {cargando && !centro && <PageLoading label="Cargando tus evidencias…" />}
 
       {error && (
-        <div className="flex flex-wrap items-center gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm" role="alert">
-          <AlertTriangle className="w-4 h-4 shrink-0" />
-          <span className="flex-1 min-w-[12rem]">{error}</span>
-          <button type="button" onClick={() => void cargar()} className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-white border border-red-200 hover:bg-red-100">
-            <RefreshCw className="w-3.5 h-3.5" /> Reintentar
-          </button>
-        </div>
+        <InlineAlert action={<button type="button" onClick={() => void cargar()} className="ds-btn ds-btn-secondary ds-btn-sm"><RefreshCw className="h-3.5 w-3.5" /> Reintentar</button>}>
+          {error}
+        </InlineAlert>
       )}
 
       {centro && (
         <>
-          <div className="flex flex-wrap gap-2" role="tablist" aria-label="Filtrar por situación">
-            {FILTROS.map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                role="tab"
-                aria-selected={filtro === f.id}
-                onClick={() => setFiltro(f.id)}
-                className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
-                  filtro === f.id ? "bg-[#1e3a8a] border-[#1e3a8a] text-white" : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
-                }`}
-              >
-                {f.etiqueta} <span className={filtro === f.id ? "text-blue-100" : "text-gray-400"}>({conteo(f.id)})</span>
-              </button>
-            ))}
-          </div>
+          <Segmented<(typeof FILTROS)[number]["id"]>
+            label="Filtrar por situación"
+            value={filtro}
+            onChange={setFiltro}
+            items={FILTROS.map((x) => ({
+              id: x.id,
+              label: x.etiqueta,
+              count: conteo(x.id),
+              tone: x.id === "todas" ? undefined : x.id === "vencidas" ? "danger" : TONO_SITUACION[x.id],
+            }))}
+          />
 
           <div className="flex flex-wrap gap-3 items-center">
             <div className="relative flex-1 min-w-[14rem] max-w-md">
-              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden />
               <input
                 value={busqueda}
                 onChange={(e) => setBusqueda(e.target.value)}
                 placeholder="Buscar entregable o iniciativa"
                 aria-label="Buscar"
-                className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+                className="ds-input !pl-9"
               />
             </div>
             {centro.iniciativas.length > 1 && (
@@ -322,10 +321,10 @@ export default function Evidences() {
           </div>
 
           {visibles.length === 0 && (
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-sm text-gray-600">
-              {centro.items.length === 0
-                ? "Aún no tienes una matriz de seguimiento asignada. Cuando coordinación la asigne, tus entregables aparecerán aquí."
-                : "Ningún entregable coincide con los filtros."}
+            <div className="ds-panel">
+              <EmptyState icon={Search} title={centro.items.length === 0 ? "Aún no tienes una matriz asignada" : "Ningún entregable coincide con los filtros"}>
+                {centro.items.length === 0 ? "Cuando coordinación la asigne, tus entregables aparecerán aquí." : "Prueba con otra situación, iniciativa o búsqueda."}
+              </EmptyState>
             </div>
           )}
 
@@ -339,7 +338,7 @@ export default function Evidences() {
                 <article
                   key={item.plantilla_id}
                   id={`ev-${item.plantilla_id}`}
-                  className={`bg-white rounded-xl border shadow-sm p-4 space-y-3 ${destacado === item.plantilla_id ? "border-[#1d4ed8] ring-2 ring-blue-100" : "border-gray-100"}`}
+                  className={`ds-panel space-y-3 p-4 ${destacado === item.plantilla_id ? "!border-brand ring-2 ring-blue-100" : ""}`}
                 >
                   <div className="flex flex-wrap items-start gap-2 justify-between">
                     <div className="min-w-0 flex-1">
@@ -352,21 +351,21 @@ export default function Evidences() {
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-1.5 items-center">
-                      <span className={`px-2.5 py-0.5 rounded-full text-xs ${s.clase}`} title={s.ayuda} style={{ fontWeight: 600 }}>{s.etiqueta}</span>
+                      <StatusPill tone={TONO_SITUACION[item.situacion]} title={s.ayuda}>{s.etiqueta}</StatusPill>
                       {item.vencido && item.situacion !== "aprobada" && item.situacion !== "en_revision" && (
-                        <span className="px-2.5 py-0.5 rounded-full text-xs bg-red-100 text-red-700" style={{ fontWeight: 600 }}>Vencido</span>
+                        <StatusPill tone="danger" dot={false}>Vencido</StatusPill>
                       )}
-                      {item.entrega_tardia && <span className="px-2.5 py-0.5 rounded-full text-xs bg-orange-100 text-orange-700">Entrega tardía</span>}
+                      {item.entrega_tardia && <StatusPill tone="warning" dot={false}>Entrega tardía</StatusPill>}
                     </div>
                   </div>
 
-                  <div className="text-xs text-gray-600 bg-gray-50 rounded-lg px-3 py-2">
+                  <div className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 [overflow-wrap:anywhere]">
                     <span className="text-gray-500">Evidencia requerida: </span>
                     {item.requiere_evidencia
                       ? item.descripcion_evidencia || (item.tipo_evidencia === "drive" ? "Enlace de Google Drive" : item.tipo_evidencia === "formulario" ? "Enlace del formulario institucional" : "Enlace a la evidencia")
                       : "No se requiere cargue para este entregable."}
                     {item.enlace_referencia && esHttp(item.enlace_referencia) && (
-                      <a href={item.enlace_referencia} target="_blank" rel="noopener noreferrer" className="ml-2 text-[#1d4ed8] hover:underline inline-flex items-center gap-1">
+                      <a href={item.enlace_referencia} target="_blank" rel="noopener noreferrer" className="ml-2 text-brand hover:underline inline-flex items-center gap-1">
                         Ver referencia <ExternalLink className="w-3 h-3" />
                       </a>
                     )}
@@ -406,28 +405,28 @@ export default function Evidences() {
 
                   <div className="flex flex-wrap gap-2 pt-1">
                     {editable && (
-                      <button type="button" onClick={() => abrirEditor(item)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-[#1e3a8a] text-white hover:bg-[#1d4ed8]">
+                      <button type="button" onClick={() => abrirEditor(item)} className="ds-btn ds-btn-primary ds-btn-sm">
                         {abierto ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                         {item.situacion === "observada" ? "Corregir y reenviar" : item.evidencias.length ? "Editar evidencia" : "Adjuntar evidencia"}
                       </button>
                     )}
                     {item.situacion === "en_revision" && (
-                      <button type="button" onClick={() => void retirar(item)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border border-gray-200 text-gray-700 hover:bg-gray-50">
+                      <button type="button" onClick={() => void retirar(item)} className="ds-btn ds-btn-secondary ds-btn-sm">
                         Retirar envío para corregir
                       </button>
                     )}
                     {item.entregable_id && (
-                      <button type="button" onClick={() => verHistorial(item)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border border-gray-200 text-gray-700 hover:bg-gray-50">
+                      <button type="button" onClick={() => verHistorial(item)} className="ds-btn ds-btn-secondary ds-btn-sm">
                         <History className="w-4 h-4" /> Historial
                       </button>
                     )}
-                    <Link to="/docente/matriz" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-600 hover:underline">
+                    <Link to="/docente/matriz" className="ds-btn ds-btn-ghost ds-btn-sm">
                       Ver en la matriz
                     </Link>
                   </div>
 
                   {abierto && d && editable && (
-                    <div className="border border-gray-200 rounded-lg p-3 space-y-3 bg-gray-50/60">
+                    <div className="space-y-3 rounded-lg border border-line bg-surface-2 p-3.5">
                       <fieldset className="space-y-2" disabled={d.guardando || d.sinEvidencia}>
                         <legend className="text-xs text-gray-600">Enlaces de la evidencia (puedes agregar varios)</legend>
                         {d.urls.map((u, idx) => (
@@ -446,7 +445,7 @@ export default function Evidences() {
                             )}
                           </div>
                         ))}
-                        <button type="button" onClick={() => editar(item.plantilla_id, { urls: [...d.urls, ""] })} className="inline-flex items-center gap-1 text-sm text-[#1d4ed8] hover:underline">
+                        <button type="button" onClick={() => editar(item.plantilla_id, { urls: [...d.urls, ""] })} className="inline-flex items-center gap-1 text-sm text-brand hover:underline">
                           <Plus className="w-4 h-4" /> Agregar otro enlace
                         </button>
                       </fieldset>
@@ -464,7 +463,7 @@ export default function Evidences() {
                           rows={2}
                           placeholder="Explica por qué no aplica evidencia (mínimo 10 caracteres)"
                           aria-label="Justificación"
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+                          className="ds-input"
                         />
                       )}
 
@@ -484,10 +483,10 @@ export default function Evidences() {
                       )}
 
                       <div className="flex flex-wrap gap-2">
-                        <button type="button" disabled={d.guardando} onClick={() => void guardar(item, false)} className="px-3 py-1.5 rounded-lg text-sm border border-gray-300 bg-white text-gray-800 hover:bg-gray-50 disabled:opacity-50">
+                        <button type="button" disabled={d.guardando} onClick={() => void guardar(item, false)} className="ds-btn ds-btn-secondary ds-btn-sm">
                           {d.guardando ? "Guardando…" : "Guardar borrador"}
                         </button>
-                        <button type="button" disabled={d.guardando} onClick={() => void guardar(item, true)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">
+                        <button type="button" disabled={d.guardando} onClick={() => void guardar(item, true)} className="ds-btn ds-btn-success ds-btn-sm">
                           <CheckCircle2 className="w-4 h-4" /> {item.situacion === "observada" ? "Reenviar a revisión" : "Enviar a revisión"}
                         </button>
                       </div>
@@ -505,6 +504,6 @@ export default function Evidences() {
           </div>
         </>
       )}
-    </div>
+    </Page>
   );
 }

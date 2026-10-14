@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { API_BASE, apiFetch } from "../config/api";
 import { AppSelect } from "../components/AppSelect";
+import { Page, PageHeader } from "../components/ds/primitives";
+import { Stepper } from "../components/ds/Stepper";
 import { notify } from "../lib/notify";
 import { formatDateOnly, formatDateTimeBogota } from "../lib/date";
 
@@ -407,40 +409,19 @@ export default function ImportarMatriz() {
     false,
   ][paso];
 
-  const campoClase = "w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1d4ed8]";
+  const campoClase = "ds-input";
 
   return (
-    <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-gray-900 flex items-center gap-2">
-          <FileSpreadsheet className="w-6 h-6 text-[#1e3a8a]" /> Importar matriz Excel
-        </h1>
-        <p className="text-gray-500 text-sm mt-0.5">
-          Convierte una matriz de seguimiento de Excel en una plantilla de ProySocial. Nada se guarda hasta el paso «Confirmar».
-        </p>
-      </div>
+    <Page>
+      <PageHeader
+        title="Importar matriz Excel"
+        description="Convierte una matriz de seguimiento de Excel en una plantilla de ProySocial. Nada se guarda hasta el paso «Confirmar»."
+      />
 
-      <nav aria-label="Pasos de la importación" className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-        <ol className="flex flex-wrap gap-2">
-          {PASOS.map((p, i) => (
-            <li
-              key={p}
-              aria-current={i === paso ? "step" : undefined}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs ${
-                i === paso ? "bg-[#1e3a8a] text-white" : i < paso ? "bg-emerald-50 text-emerald-700" : "bg-gray-100 text-gray-500"
-              }`}
-            >
-              <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center">
-                {i < paso ? <Check className="w-3 h-3" /> : i + 1}
-              </span>
-              {p}
-            </li>
-          ))}
-        </ol>
-      </nav>
+      <Stepper steps={PASOS} current={paso} label="Pasos de la importación" />
 
       {archivo && paso < 6 && (
-        <div className="flex flex-wrap items-center justify-between gap-2 bg-white rounded-xl border border-gray-100 shadow-sm px-4 py-2.5 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 ds-panel px-4 py-2.5 text-sm">
           <span className="flex items-center gap-2 text-gray-700 min-w-0">
             <FileSpreadsheet className="w-4 h-4 text-emerald-600 shrink-0" />
             <strong className="truncate">{archivo.nombre}</strong>
@@ -448,7 +429,7 @@ export default function ImportarMatriz() {
             {hojaIdx != null && estructura && <span className="text-gray-500 hidden sm:inline">· hoja «{hojas.find((h) => h.indice === hojaIdx)?.nombre.trim()}»</span>}
           </span>
           <span className="flex gap-3 text-xs">
-            <button type="button" onClick={() => { reiniciar(); window.setTimeout(() => inputRef.current?.click(), 50); }} className="text-[#1d4ed8] hover:underline" disabled={cargando}>
+            <button type="button" onClick={() => { reiniciar(); window.setTimeout(() => inputRef.current?.click(), 50); }} className="text-brand hover:underline" disabled={cargando}>
               Cambiar archivo
             </button>
             <button type="button" onClick={cancelar} className="text-red-600 hover:underline" disabled={cargando}>
@@ -472,7 +453,7 @@ export default function ImportarMatriz() {
         </div>
       )}
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-5">
+      <div className="ds-panel p-5 space-y-5">
         {/* 1 */}
         {paso === 0 && (
           <div className="space-y-4">
@@ -487,7 +468,7 @@ export default function ImportarMatriz() {
             >
               <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
               <p className="text-sm text-gray-600">Arrastra aquí un archivo .xlsx o</p>
-              <label className="inline-block mt-2 px-4 py-2 bg-[#1e3a8a] text-white rounded-lg text-sm cursor-pointer hover:bg-[#1d4ed8]">
+              <label className="inline-block mt-2 px-4 py-2 bg-brand text-white rounded-lg text-sm cursor-pointer hover:bg-brand-strong">
                 Seleccionar archivo
                 <input
                   ref={inputRef}
@@ -522,7 +503,7 @@ export default function ImportarMatriz() {
                   disabled={!hojaSoportada(h) || cargando}
                   onClick={() => void elegirHoja(h)}
                   className={`text-left border rounded-lg px-3 py-2 text-sm ${
-                    hojaIdx === h.indice ? "border-[#1e3a8a] bg-blue-50" : "border-gray-200"
+                    hojaIdx === h.indice ? "border-brand bg-blue-50" : "border-gray-200"
                   } ${hojaSoportada(h) ? "hover:bg-gray-50" : "opacity-50 cursor-not-allowed"}`}
                 >
                   <span className="font-medium text-gray-800">{h.nombre.trim() || `Hoja ${h.indice + 1}`}</span>
@@ -695,7 +676,7 @@ export default function ImportarMatriz() {
               type="button"
               disabled={!destinoCompleto || cargando}
               onClick={() => void validar(decisiones)}
-              className="px-4 py-2 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white rounded-lg text-sm disabled:opacity-50 flex items-center gap-2"
+              className="px-4 py-2 bg-brand hover:bg-brand-strong text-white rounded-lg text-sm disabled:opacity-50 flex items-center gap-2"
             >
               {cargando && <Loader2 className="w-4 h-4 animate-spin" />} Validar (sin guardar)
             </button>
@@ -714,7 +695,7 @@ export default function ImportarMatriz() {
                     {decisionesTomadas.map(({ id, valor, d }) => (
                       <p key={id} className="text-xs text-gray-700 flex flex-wrap gap-2 items-center">
                         <span className="flex-1 min-w-[12rem]">{d!.opciones.find((o) => o.valor === valor)?.texto ?? valor}</span>
-                        <button type="button" disabled={cargando} onClick={() => void cambiarDecision(id)} className="text-[#1d4ed8] hover:underline">Cambiar</button>
+                        <button type="button" disabled={cargando} onClick={() => void cambiarDecision(id)} className="text-brand hover:underline">Cambiar</button>
                       </p>
                     ))}
                   </div>
@@ -772,7 +753,7 @@ export default function ImportarMatriz() {
             </p>
             <div className="flex flex-wrap gap-2">
               {[["todas", "Todas"], ["valida", "Válidas"], ["advertencia", "Advertencias"], ["error", "Errores"], ["pendiente", "Pendientes"], ["duplicadas", `Duplicadas (${nDuplicadas})`]].map(([v, t]) => (
-                <button key={v} type="button" onClick={() => setFiltro(v)} className={`px-3 py-1 rounded-full text-xs ${filtro === v ? "bg-[#1e3a8a] text-white" : "bg-gray-100 text-gray-600"}`}>
+                <button key={v} type="button" onClick={() => setFiltro(v)} className={`px-3 py-1 rounded-full text-xs ${filtro === v ? "bg-brand text-white" : "bg-gray-100 text-gray-600"}`}>
                   {t}
                 </button>
               ))}
@@ -887,7 +868,7 @@ export default function ImportarMatriz() {
                   <button
                     type="button"
                     onClick={() => navigate(`/admin/sistema?tab=plantillas&semestre=${encodeURIComponent(semestre)}&grupo=${resultado.grupo_id}`)}
-                    className="px-4 py-2 bg-[#1e3a8a] text-white rounded-lg text-sm hover:bg-[#1d4ed8]"
+                    className="px-4 py-2 bg-brand text-white rounded-lg text-sm hover:bg-brand-strong"
                   >
                     Ver matriz del grupo
                   </button>
@@ -895,7 +876,7 @@ export default function ImportarMatriz() {
                     <button
                       type="button"
                       onClick={() => navigate(`/admin/docentes/${asignado ?? resultado.resumen.docente_asignado_id}/matriz`)}
-                      className="px-4 py-2 border border-[#1e3a8a] text-[#1e3a8a] rounded-lg text-sm hover:bg-blue-50"
+                      className="px-4 py-2 border border-brand text-brand rounded-lg text-sm hover:bg-blue-50"
                     >
                       Abrir matriz del docente
                     </button>
@@ -931,7 +912,7 @@ export default function ImportarMatriz() {
                 type="button"
                 disabled={!puedeAvanzar || cargando}
                 onClick={() => setPaso(paso + 1)}
-                className="px-4 py-2 bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white rounded-lg text-sm disabled:opacity-50"
+                className="px-4 py-2 bg-brand hover:bg-brand-strong text-white rounded-lg text-sm disabled:opacity-50"
               >
                 Siguiente
               </button>
@@ -940,7 +921,7 @@ export default function ImportarMatriz() {
         )}
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
+      <div className="ds-panel">
         <h3 className="text-gray-800 px-5 py-4 border-b border-gray-100">Historial de importaciones</h3>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -970,6 +951,6 @@ export default function ImportarMatriz() {
           </table>
         </div>
       </div>
-    </div>
+    </Page>
   );
 }

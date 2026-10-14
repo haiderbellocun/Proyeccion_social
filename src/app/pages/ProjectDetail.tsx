@@ -7,8 +7,9 @@ import {
   Link2,
   Clock,
   ExternalLink,
+  FolderOpen,
 } from "lucide-react";
-import { Badge } from "../components/Badge";
+import { EmptyState, Page, PageHeader, PageLoading, Panel, ProgressBar, Spinner, StatusPill, type Tone } from "../components/ds/primitives";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
@@ -155,26 +156,29 @@ export default function ProjectDetail() {
 
   if (loading) {
     return (
-      <div className="p-6 flex items-center justify-center min-h-[60vh]">
-        <div className="w-10 h-10 border-4 border-gray-200 border-t-[#1d4ed8] rounded-full animate-spin" />
-      </div>
+      <Page>
+        <PageLoading label="Cargando iniciativa…" />
+      </Page>
     );
   }
 
   if (!initiative) {
     return (
-      <div className="p-6 flex items-center justify-center min-h-[60vh]">
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-center max-w-md">
-          <p className="text-gray-700 mb-4">No se encontró la iniciativa.</p>
-          <button
-            onClick={() => navigate("/docente/proyectos")}
-            className="bg-[#1e3a8a] hover:bg-[#1d4ed8] text-white px-4 py-2 rounded-lg text-sm transition-colors"
-            style={{ fontWeight: 600 }}
+      <Page>
+        <Panel>
+          <EmptyState
+            icon={FolderOpen}
+            title="No se encontró la iniciativa"
+            action={
+              <button type="button" onClick={() => navigate("/docente/proyectos")} className="ds-btn ds-btn-primary">
+                Volver a mis iniciativas
+              </button>
+            }
           >
-            Volver a Mis Iniciativas
-          </button>
-        </div>
-      </div>
+            Puede que no esté asignada a tu usuario o que ya no exista.
+          </EmptyState>
+        </Panel>
+      </Page>
     );
   }
 
@@ -185,172 +189,167 @@ export default function ProjectDetail() {
   const doneEnt = allEntregables.filter((e) => e.completado).length;
   const pct = totalEnt > 0 ? Math.round((doneEnt / totalEnt) * 100) : 0;
 
+  const tipoKey = (initiative.tipo || "").toLowerCase();
+  const tipo: { label: string; tone: Tone } =
+    tipoKey === "convenio"
+      ? { label: "Convenio", tone: "warning" }
+      : tipoKey === "actividad"
+      ? { label: "Actividad", tone: "signal" }
+      : { label: "Iniciativa", tone: "violet" };
+  const estadoKey = (initiative.estado || "").toLowerCase();
+  const estado: { label: string; tone: Tone } =
+    estadoKey === "en_ejecucion" || estadoKey === "active"
+      ? { label: "En ejecución", tone: "success" }
+      : estadoKey === "finalizado"
+      ? { label: "Finalizado", tone: "brand" }
+      : estadoKey === "delayed" || estadoKey === "retrasado"
+      ? { label: "Retrasado", tone: "danger" }
+      : estadoKey === "suspendido"
+      ? { label: "Suspendido", tone: "warning" }
+      : { label: initiative.estado || "Sin estado", tone: "neutral" };
+
   return (
-    <div className="p-6 space-y-6">
+    <Page>
       <div>
         <button
+          type="button"
           onClick={() => navigate("/docente/proyectos")}
-          className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 mb-4 transition-colors"
+          className="mb-3 inline-flex items-center gap-1.5 text-sm text-text-muted transition-colors hover:text-text"
         >
-          <ArrowLeft className="w-4 h-4" /> Volver a Mis Iniciativas
+          <ArrowLeft className="h-4 w-4" aria-hidden /> Volver a mis iniciativas
         </button>
-
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <Badge variant={initiative.tipo as any} />
-              <Badge variant={initiative.estado as any} />
-            </div>
-            <h1 className="text-gray-900">{initiative.titulo}</h1>
-            <p className="text-gray-500 text-sm mt-1">
-              {initiative.programa} • {initiative.horasTotales ?? "—"} hrs •{" "}
-              {initiative.coordinador}
-            </p>
-            <p className="text-gray-500 text-sm mt-1">
-              Inicio: {formatDate(initiative.fechaInicio)} | Fin estimado:{" "}
-              {formatDate(initiative.fechaFin)}
-            </p>
-          </div>
-        </div>
+        <PageHeader
+          title={initiative.titulo}
+          description={`${initiative.programa} · ${initiative.horasTotales ?? "—"} h · ${initiative.coordinador}`}
+          meta={
+            <>
+              <StatusPill tone={tipo.tone} dot={false}>{tipo.label}</StatusPill>
+              <StatusPill tone={estado.tone}>{estado.label}</StatusPill>
+              <span className="text-xs text-text-subtle">
+                Inicio {formatDate(initiative.fechaInicio)} · Fin estimado {formatDate(initiative.fechaFin)}
+              </span>
+            </>
+          }
+        />
       </div>
 
-      {/* Progreso general */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-sm text-gray-800" style={{ fontWeight: 600 }}>
-            Progreso
-          </p>
-          <p className="text-xs text-gray-500">
-            {doneEnt} de {totalEnt} entregables completados
+      <Panel>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm text-text" style={{ fontWeight: 600 }}>Progreso</p>
+          <p className="text-xs tabular-nums text-text-subtle">
+            {doneEnt} de {totalEnt} entregables completados · {pct}%
           </p>
         </div>
-        <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-emerald-500 rounded-full transition-all"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-      </div>
+        <ProgressBar value={pct} tone="success" label="Progreso de entregables" />
+      </Panel>
 
-      {/* Semanas */}
-      <div>
+      {initiative.semanasDetalle.length === 0 && (
+        <Panel>
+          <EmptyState icon={Clock} title="Sin entregables programados">
+            Esta iniciativa todavía no tiene semanas con entregables.
+          </EmptyState>
+        </Panel>
+      )}
+
+      <div className="space-y-4">
         {initiative.semanasDetalle.map((semana) => {
           const totalW = semana.entregables.length;
           const doneW = semana.entregables.filter((e) => e.completado).length;
           return (
-            <div
+            <Panel
               key={semana.id}
-              className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 mb-4"
-            >
-              <div className="flex items-start justify-between gap-3 mb-2">
-                <div>
-                  <p className="text-gray-800" style={{ fontWeight: 600 }}>
-                    Semana {semana.numero}
-                  </p>
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    {formatDate(semana.fecha_inicio)} —{" "}
-                    {formatDate(semana.fecha_fin)}
-                  </p>
-                </div>
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] bg-gray-100 text-gray-600">
+              title={`Semana ${semana.numero}`}
+              description={`${formatDate(semana.fecha_inicio)} — ${formatDate(semana.fecha_fin)}`}
+              action={
+                <StatusPill tone={totalW > 0 && doneW === totalW ? "success" : "neutral"}>
                   {doneW}/{totalW} completados
-                </span>
-              </div>
-
-              <div className="divide-y divide-gray-50">
+                </StatusPill>
+              }
+              bodyClassName=""
+            >
+              <ul className="divide-y divide-line">
                 {semana.entregables.map((e) => (
-                  <div key={e.id} className="py-3">
-                    <div className="flex items-start gap-3">
-                      <input
-                        type="checkbox"
-                        checked={e.completado}
-                        onChange={() => handleSaveEntregable(e, !e.completado)}
-                        className="w-4 h-4 text-emerald-500 rounded mt-0.5"
-                      />
-                      <div className="flex-1">
-                        <div className="flex items-start justify-between gap-3">
-                          <p
-                            className={`text-sm ${
-                              e.completado
-                                ? "text-gray-400 line-through"
-                                : "text-gray-700"
-                            }`}
-                          >
-                            {e.descripcion}
-                          </p>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {e.horas != null && (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] bg-gray-100 text-gray-600">
-                                {e.horas}h
-                              </span>
-                            )}
-                            {saving === e.id && (
-                              <div className="w-4 h-4 border-2 border-gray-200 border-t-emerald-500 rounded-full animate-spin" />
-                            )}
+                  <li key={e.id} className="flex items-start gap-3 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      id={`ent-${e.id}`}
+                      checked={e.completado}
+                      onChange={() => handleSaveEntregable(e, !e.completado)}
+                      className="mt-0.5 h-4 w-4 shrink-0 rounded accent-brand"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-3">
+                        <label
+                          htmlFor={`ent-${e.id}`}
+                          className={`text-sm ${e.completado ? "text-text-subtle line-through" : "text-text"}`}
+                        >
+                          {e.descripcion}
+                        </label>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {e.horas != null && <StatusPill dot={false}>{e.horas} h</StatusPill>}
+                          {saving === e.id && <Spinner className="h-4 w-4" />}
+                        </div>
+                      </div>
+
+                      <div className="mt-2">
+                        <label htmlFor={`url-${e.id}`} className="ds-label">
+                          Enlace de evidencia (Drive o Forms)
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <div className="relative flex-1">
+                            <Link2 className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-subtle" aria-hidden />
+                            <input
+                              id={`url-${e.id}`}
+                              type="url"
+                              value={evidenceInputs[e.id] || ""}
+                              onChange={(ev) =>
+                                setEvidenceInputs((prev) => ({
+                                  ...prev,
+                                  [e.id]: ev.target.value,
+                                }))
+                              }
+                              placeholder="https://drive.google.com/…"
+                              className="ds-input pl-8 text-[0.8125rem]"
+                              onBlur={() => handleSaveEntregable(e, e.completado)}
+                            />
                           </div>
+                          {evidenceInputs[e.id]?.trim() && (
+                            <a
+                              href={evidenceInputs[e.id]}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="ds-btn ds-btn-ghost ds-btn-sm text-brand"
+                              title="Abrir evidencia"
+                              aria-label="Abrir evidencia en una pestaña nueva"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
+                          )}
                         </div>
 
-                        <div className="mt-2">
-                          <p className="text-[11px] text-gray-500 mb-1">
-                            Enlace de evidencia (Drive/Forms):
-                          </p>
-                          <div className="flex items-center gap-2">
-                            <div className="relative flex-1">
-                              <Link2 className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-                              <input
-                                type="url"
-                                value={evidenceInputs[e.id] || ""}
-                                onChange={(ev) =>
-                                  setEvidenceInputs((prev) => ({
-                                    ...prev,
-                                    [e.id]: ev.target.value,
-                                  }))
-                                }
-                                placeholder="https://drive.google.com/..."
-                                className="flex-1 text-xs px-2 py-1.5 pl-8 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] bg-gray-50 w-full"
-                                onBlur={() => handleSaveEntregable(e, e.completado)}
-                              />
-                            </div>
-                            {evidenceInputs[e.id]?.trim() && (
-                              <a
-                                href={evidenceInputs[e.id]}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-[#1d4ed8] hover:text-[#1e3a8a] transition-colors"
-                                title="Abrir evidencia"
-                              >
-                                <ExternalLink className="w-4 h-4" />
-                              </a>
-                            )}
-                          </div>
-
-                          <div className="mt-1 flex items-center gap-2 text-[11px] text-gray-400">
-                            {e.completado ? (
-                              <span className="inline-flex items-center gap-1">
-                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                                Completado
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1">
-                                <Circle className="w-3.5 h-3.5 text-gray-300" />
-                                Pendiente
-                              </span>
-                            )}
-                            <span className="inline-flex items-center gap-1">
-                              <Clock className="w-3.5 h-3.5 text-gray-400" />
-                              Entrega real: {formatDate(e.fecha_real_entrega)}
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-subtle">
+                          {e.completado ? (
+                            <span className="inline-flex items-center gap-1 text-emerald-700">
+                              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Completado
                             </span>
-                          </div>
+                          ) : (
+                            <span className="inline-flex items-center gap-1">
+                              <Circle className="h-3.5 w-3.5" aria-hidden /> Pendiente
+                            </span>
+                          )}
+                          <span className="inline-flex items-center gap-1">
+                            <Clock className="h-3.5 w-3.5" aria-hidden /> Entrega real: {formatDate(e.fecha_real_entrega)}
+                          </span>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </li>
                 ))}
-              </div>
-            </div>
+              </ul>
+            </Panel>
           );
         })}
       </div>
-    </div>
+    </Page>
   );
 }

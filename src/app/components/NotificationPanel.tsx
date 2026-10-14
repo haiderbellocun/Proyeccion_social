@@ -180,19 +180,19 @@ export function NotificationPanel({
 
   return (
     <div
-      className="absolute right-0 top-full mt-2 w-[320px] bg-white rounded-xl shadow-lg border border-gray-200 z-50 flex flex-col"
+      className="absolute right-0 top-full z-50 mt-2 flex w-[min(360px,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-lg"
       role="dialog"
       aria-label="Notificaciones"
     >
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 shrink-0">
-        <h3 className="text-sm font-semibold text-gray-800">Notificaciones</h3>
+      <div className="flex shrink-0 items-center justify-between border-b border-line px-4 py-3">
+        <h3 className="text-sm text-text" style={{ fontWeight: 650 }}>Notificaciones</h3>
         <div className="flex items-center gap-1">
           {!loading && items.length > 0 && (
             <button
               type="button"
               onClick={() => void handleMarkAll()}
               disabled={processingKey != null}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+              className="ds-btn ds-btn-ghost ds-btn-sm !text-brand disabled:opacity-50"
             >
               <CheckCheck className="h-3.5 w-3.5" />
               Marcar todas
@@ -201,7 +201,7 @@ export function NotificationPanel({
           <button
             type="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-50"
+            className="rounded-lg p-1.5 text-text-subtle hover:bg-gray-100 hover:text-text"
             aria-label="Cerrar"
           >
             <X className="w-4 h-4" />
@@ -216,27 +216,27 @@ export function NotificationPanel({
             <span className="text-sm">Cargando…</span>
           </div>
         ) : items.length === 0 ? (
-          <p className="text-sm text-gray-400 text-center px-4 py-10">
+          <p className="px-4 py-10 text-center text-sm text-text-subtle">
             No tienes notificaciones pendientes
           </p>
         ) : (
-          <ul className="divide-y divide-gray-50">
+          <ul className="divide-y divide-line">
             {items.map((n) => (
               <li key={n.clave}>
                 <button
                   type="button"
                   onClick={() => void handleNotificationClick(n)}
                   disabled={processingKey != null}
-                  className="flex w-full gap-3 px-4 py-3 text-left transition-colors hover:bg-blue-50/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600 disabled:cursor-wait disabled:opacity-60"
+                  className="flex w-full gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand disabled:cursor-wait disabled:opacity-60"
                   aria-label={`${n.mensaje}. ${
                     n.destino ? "Abrir detalle" : "Marcar como leída"
                   }`}
                 >
                   <div className="pt-0.5">{iconForTipo(n.tipo)}</div>
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm text-gray-800 leading-snug">{n.mensaje}</p>
+                    <p className="text-sm leading-snug text-text">{n.mensaje}</p>
                     <p className="text-xs text-gray-400 mt-1">{formatFecha(n.fecha)}</p>
-                    <p className="mt-1 text-[11px] font-medium text-blue-700">
+                    <p className="mt-1 text-[11px] text-brand" style={{ fontWeight: 550 }}>
                       {n.destino ? "Abrir detalle" : "Marcar como leída"}
                     </p>
                   </div>
