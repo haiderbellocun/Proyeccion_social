@@ -1,7 +1,7 @@
-import { AppShell } from "./shell/AppShell";
-import { ADMIN_SHELL } from "./shell/navigation";
+import { B2Shell } from "./b2/B2Shell";
 
-/** Layout del perfil administrador: la estructura vive en shell/AppShell (compartida con el docente). */
+/** Layout del perfil administrador: shell del diseño B2 (cabecera morada, riel lateral y barra de contexto).
+ *  Para volver al diseño anterior basta con renderizar <AppShell config={ADMIN_SHELL} />. */
 export function AdminLayout() {
-  return <AppShell config={ADMIN_SHELL} />;
+  return <B2Shell />;
 }
