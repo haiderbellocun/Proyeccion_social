@@ -14,6 +14,7 @@ import {
   transicionReapertura,
   validarEnvio,
 } from "./matrizService.js";
+import { analizarEnlace, instantanea, instantaneaDeEntregable, sincronizarEvidencias } from "./evidenciaService.js";
 
 const ES_DUENO = (alias = "p", docente = "$1") => `(
   ${alias}.docente_responsable_id = ${docente}
@@ -40,12 +41,12 @@ async function conTransaccion(pool, fn) {
   return null;
 }
 
-async function registrarEvento(client, { entregableId, docenteId, plantillaId, tipo, anterior, nuevo, actorId, comentario }) {
+async function registrarEvento(client, { entregableId, docenteId, plantillaId, tipo, anterior, nuevo, actorId, comentario, detalle = null }) {
   await client.query(
     `INSERT INTO entregable_eventos
-       (entregable_id, docente_id, plantilla_id, tipo, estado_anterior, estado_nuevo, actor_id, comentario)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [entregableId, docenteId ?? null, plantillaId ?? null, tipo, anterior ?? null, nuevo ?? null, actorId ?? null, comentario ?? null]
+       (entregable_id, docente_id, plantilla_id, tipo, estado_anterior, estado_nuevo, actor_id, comentario, detalle)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [entregableId, docenteId ?? null, plantillaId ?? null, tipo, anterior ?? null, nuevo ?? null, actorId ?? null, comentario ?? null, detalle ? JSON.stringify(detalle) : null]
   );
 }
 
@@ -133,7 +134,13 @@ async function accionDocenteTx(client, { docenteId, actorId = docenteId, entrega
   if (datos.porcentaje_avance != null && !Number.isNaN(Number(datos.porcentaje_avance))) {
     add("porcentaje_avance", Math.max(0, Math.min(100, Math.round(Number(datos.porcentaje_avance)))));
   }
-  if (tieneUrls) add("url_evidencia", serializarUrls(datos.url_evidencia));
+  if (tieneUrls) {
+    // Solo enlaces http(s) válidos, también en borradores (el envío además valida el tipo exigido).
+    for (const u of parseEvidencias(datos.url_evidencia)) {
+      if (!analizarEnlace(u)) throw new ErrorNegocio(422, "EVIDENCIA_INVALIDA", `"${u}" no es un enlace válido (debe iniciar con http:// o https://)`);
+    }
+    add("url_evidencia", serializarUrls(datos.url_evidencia));
+  }
   if (fila.docente_id == null) add("docente_id", docenteId); // reportes históricos: la pertenencia queda explícita
 
   const limpiarEnvio = () =>
@@ -166,7 +173,7 @@ async function accionDocenteTx(client, { docenteId, actorId = docenteId, entrega
       add("completado", true);
       add("fecha_completado", hoy);
       add("fecha_real_entrega", hoy);
-      set.push("comentario_revision = NULL", "revisado_en = NULL");
+      set.push("comentario_revision = NULL", "revisado_en = NULL", "problema_acceso_en = NULL");
       set.push("fecha_cargue_evidencia = NOW()", "fecha_primer_envio = COALESCE(fecha_primer_envio, NOW())");
       set.push("num_envios = COALESCE(num_envios, 0) + 1");
     }
@@ -175,6 +182,22 @@ async function accionDocenteTx(client, { docenteId, actorId = docenteId, entrega
   if (set.length > 0) {
     params.push(entregableId);
     await client.query(`UPDATE proyecto_entregables SET ${set.join(", ")} WHERE id = $${params.length}`, params);
+  }
+  // Evidencias por enlace (versiones): se alinean con los enlaces vigentes; al enviar se asocian a la ronda de envío.
+  let vigentes = null;
+  if (accion === "retirar" && !tieneUrls) {
+    vigentes = await instantaneaDeEntregable(client, entregableId);
+  } else {
+    const urlsVigentes = tieneUrls ? datos.url_evidencia : fila.url_evidencia;
+    const enviaAhora = accion === "enviar" && !t.sinCambios;
+    const sync = await sincronizarEvidencias(client, {
+      entregableId,
+      docenteId,
+      actorId,
+      urls: urlsVigentes,
+      envioNumero: enviaAhora ? Number(fila.num_envios || 0) + 1 : null,
+    });
+    vigentes = instantanea(sync.vigentes);
   }
   if (t.evento) {
     await registrarEvento(client, {
@@ -185,6 +208,7 @@ async function accionDocenteTx(client, { docenteId, actorId = docenteId, entrega
       anterior: estadoActual,
       nuevo: t.estado,
       actorId,
+      detalle: { envio_numero: accion === "enviar" ? Number(fila.num_envios || 0) + 1 : Number(fila.num_envios || 0), evidencias: vigentes },
     });
   }
   return { id: Number(entregableId), estado: t.estado, estado_anterior: estadoActual, sin_cambios: Boolean(t.sinCambios) };
@@ -269,28 +293,45 @@ export function registrarDesdeMatriz(pool, { docenteId, actorId = docenteId, pla
 }
 
 /** Decisión del administrador (aprobar / observar) sobre un entregable enviado. */
-export function aplicarRevisionAdmin(pool, { entregableId, estadoNuevo, comentario, actorId = null }) {
+export const MENSAJE_SIN_ACCESO =
+  "No tengo acceso a la evidencia. Revisa los permisos del enlace y compártelo con las cuentas de coordinación; luego vuelve a enviar el entregable.";
+
+/**
+ * Decisión del administrador. `motivo: 'sin_acceso'` = «No tengo acceso a la evidencia»: el entregable pasa a
+ * observado (sin perder datos ni versiones) para que el docente corrija los permisos del enlace.
+ */
+export function aplicarRevisionAdmin(pool, { entregableId, estadoNuevo, comentario, actorId = null, motivo = null, evidenciasAfectadas = [] }) {
   return conTransaccion(pool, async (client) => {
     const sel = await client.query(`SELECT * FROM proyecto_entregables WHERE id = $1 FOR UPDATE`, [entregableId]);
     if (sel.rowCount === 0) throw new ErrorNegocio(404, "NO_ENCONTRADO", "Entregable no encontrado");
     const fila = sel.rows[0];
     const estadoActual = estadoDeFila(fila);
-    const t = transicionAdmin(estadoActual, estadoNuevo, { comentario });
+    const sinAcceso = motivo === "sin_acceso";
+    if (sinAcceso && estadoNuevo !== "observado") throw new ErrorNegocio(400, "ESTADO_INVALIDO", "«No tengo acceso a la evidencia» devuelve el entregable como observado");
+    const comentarioFinal = sinAcceso && !String(comentario ?? "").trim() ? MENSAJE_SIN_ACCESO : comentario;
+    const t = transicionAdmin(estadoActual, estadoNuevo, { comentario: comentarioFinal });
     if (!t.ok) throw new ErrorNegocio(t.codigo === "NO_ENVIADO" || t.codigo === "ESTADO_BLOQUEADO" ? 409 : 400, t.codigo, t.error);
     if (t.sinCambios) return { ok: true, estado: t.estado, sin_cambios: true };
 
-    const nota = String(comentario ?? "").trim() || null;
+    const nota = String(comentarioFinal ?? "").trim() || null;
     await client.query(
       `UPDATE proyecto_entregables
        SET estado_revision = $1, comentario_revision = $2, revisado_en = NOW(),
            aprobado_en = CASE WHEN $1 = 'aprobado' THEN NOW() ELSE NULL END,
+           problema_acceso_en = CASE WHEN $4::boolean THEN NOW() ELSE NULL END,
            completado = true
        WHERE id = $3`,
-      [t.estado, nota, entregableId]
+      [t.estado, nota, entregableId, sinAcceso]
     );
+    const afectadas = Array.isArray(evidenciasAfectadas) ? evidenciasAfectadas.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
     await registrarEvento(client, {
       entregableId, docenteId: fila.docente_id, plantillaId: fila.plantilla_id,
-      tipo: t.evento, anterior: estadoActual, nuevo: t.estado, actorId, comentario: nota,
+      tipo: sinAcceso ? "sin_acceso" : t.evento, anterior: estadoActual, nuevo: t.estado, actorId, comentario: nota,
+      detalle: {
+        envio_numero: Number(fila.num_envios || 0),
+        evidencias: await instantaneaDeEntregable(client, entregableId),
+        ...(sinAcceso ? { motivo: "sin_acceso", evidencias_afectadas: afectadas } : {}),
+      },
     });
     return { ok: true, estado: t.estado, sin_cambios: false };
   });
@@ -316,6 +357,7 @@ export function reabrirEntregable(pool, { entregableId, actorId, motivo, destino
     await registrarEvento(client, {
       entregableId, docenteId: fila.docente_id, plantillaId: fila.plantilla_id,
       tipo: t.evento, anterior: estadoActual, nuevo: t.estado, actorId, comentario: String(motivo).trim(),
+      detalle: { envio_numero: Number(fila.num_envios || 0), evidencias: await instantaneaDeEntregable(client, entregableId) },
     });
     return { ok: true, estado: t.estado };
   });

@@ -24,6 +24,7 @@ import {
   type SemanaActual,
 } from "../data/matrizConstants";
 import { CategoryTag } from "../components/CategoryTag";
+import { AvisoAcceso } from "../components/EnlaceEvidencia";
 import { AppSelect } from "../components/AppSelect";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
@@ -1383,6 +1384,16 @@ export default function MatrizSeguimiento() {
                                               </p>
                                             )}
 
+                                            <button
+                                              type="button"
+                                              onClick={(ev) => {
+                                                ev.stopPropagation();
+                                                navigate(`/docente/evidencias?entregable=${e.id}`);
+                                              }}
+                                              className="text-xs text-[#1d4ed8] hover:underline mb-2"
+                                            >
+                                              Ver estado, historial y versiones en Mis Evidencias
+                                            </button>
                                             {bloqueado ? (
                                               <p className="text-xs text-green-700">
                                                 Entregable aprobado: no puede modificarse. Si hay un error, solicita su reapertura al administrador.
@@ -1468,6 +1479,7 @@ export default function MatrizSeguimiento() {
                                                     </select>
                                                   </div>
                                                 )}
+                                                {e.requiere_evidencia && <AvisoAcceso />}
                                                 {avisos[e.id] && (
                                                   <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
                                                     {avisos[e.id]}

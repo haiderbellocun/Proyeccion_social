@@ -10,6 +10,7 @@ import {
   loadMatrixForDocentes,
   mesDeFecha,
   normalizarCalendario,
+  resolverRequisitoEvidencia,
   responderError,
   round1,
   semanaActual,
@@ -17,6 +18,7 @@ import {
   toDateOnlyISO,
 } from "../services/matrizService.js";
 import { aplicarRevisionAdmin, reabrirEntregable } from "../services/entregableWorkflowService.js";
+import { evidenciasDeEntregables, historialDeEntregable } from "../services/evidenciaService.js";
 import { markNotificationsAsRead } from "../services/notificationService.js";
 import {
   emailConfiguration,
@@ -645,10 +647,13 @@ router.get("/metricas", async (_req, res) => {
   }
 });
 
-// Listado para revisión admin de avances enviados por docentes
+// Bandeja de revisión de entregables (coordinación). Por defecto lista los enviados pendientes, como antes;
+// con `estado` también observados, aprobados, con problema de acceso o todos. Filtros en el servidor:
+// escuela, programa, docente (nombre o docente_id), semestre, iniciativa (q) y rango de fechas de envío.
+const ESTADOS_BANDEJA = ["enviado", "observado", "aprobado", "sin_acceso", "todos"];
 router.get("/reportes-revision", async (req, res) => {
   const page = Math.max(1, Number.parseInt(String(req.query.page || "1"), 10) || 1);
-  const limit = Math.max(1, Number.parseInt(String(req.query.limit || "20"), 10) || 20);
+  const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || "20"), 10) || 20));
   const requestedReportId =
     req.query.reporte == null
       ? null
@@ -659,25 +664,65 @@ router.get("/reportes-revision", async (req, res) => {
   ) {
     return res.status(400).json({ error: "reporte inválido" });
   }
-  const offset = (page - 1) * limit;
-  const client = await pool.connect();
-  try {
-    const countResult = await client.query(
-      `
-      SELECT COUNT(*)::int AS total
+  const estado = String(req.query.estado || "enviado");
+  if (!ESTADOS_BANDEJA.includes(estado)) return res.status(400).json({ error: "estado inválido" });
+  const texto = (k) => {
+    const v = String(req.query[k] ?? "").trim();
+    return v ? v.slice(0, 120) : null;
+  };
+  const fecha = (k) => {
+    const v = String(req.query[k] ?? "").trim();
+    if (!v) return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined;
+    return v;
+  };
+  const desde = fecha("desde");
+  const hasta = fecha("hasta");
+  if (desde === undefined || hasta === undefined) return res.status(400).json({ error: "las fechas deben tener formato AAAA-MM-DD" });
+  const docenteId = req.query.docente_id == null ? null : Number.parseInt(String(req.query.docente_id), 10);
+  if (docenteId != null && (!Number.isInteger(docenteId) || docenteId <= 0)) return res.status(400).json({ error: "docente_id inválido" });
+
+  const filtros = ["COALESCE(e.completado, false) = true"];
+  const params = [];
+  const add = (sql, valor) => {
+    params.push(valor);
+    filtros.push(sql.replaceAll("?", `$${params.length}`));
+  };
+  if (estado === "sin_acceso") filtros.push("e.problema_acceso_en IS NOT NULL AND COALESCE(e.estado_revision, 'enviado') = 'observado'");
+  else if (estado === "todos") filtros.push("COALESCE(e.estado_revision, 'enviado') IN ('enviado', 'observado', 'aprobado')");
+  else add("COALESCE(e.estado_revision, 'enviado') = ?", estado);
+  if (requestedReportId != null) add("e.id = ?", requestedReportId);
+  if (docenteId != null) add("u.id = ?", docenteId);
+  if (texto("docente")) add("TRIM(COALESCE(u.nombre, '') || ' ' || COALESCE(u.apellido, '')) = ?", texto("docente"));
+  if (texto("programa")) add("prog.nombre = ?", texto("programa"));
+  if (texto("escuela")) add("COALESCE(esc.nombre, 'Sin escuela') = ?", texto("escuela"));
+  if (texto("semestre")) add("g.semestre = ?", texto("semestre"));
+  if (texto("q")) add("(COALESCE(e.actividad_reportada, e.descripcion) ILIKE '%' || ? || '%' OR e.descripcion ILIKE '%' || ? || '%' OR p.titulo ILIKE '%' || ? || '%')", texto("q"));
+  if (desde) add("(e.fecha_cargue_evidencia AT TIME ZONE 'America/Bogota')::date >= ?::date", desde);
+  if (hasta) add("(e.fecha_cargue_evidencia AT TIME ZONE 'America/Bogota')::date <= ?::date", hasta);
+  const donde = filtros.join(" AND ");
+  const desdeSql = `
       FROM proyecto_entregables e
-      WHERE COALESCE(e.completado, false) = true
-        AND COALESCE(e.estado_revision, 'enviado') = 'enviado'
-        AND ($1::integer IS NULL OR e.id = $1)
-      `,
-      [requestedReportId]
-    );
-    const result = await client.query(
+      JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
+      JOIN proyectos p ON p.id = s.proyecto_id
+      LEFT JOIN programas prog ON prog.id = p.programa_id
+      LEFT JOIN escuelas esc ON esc.id = prog.escuela_id
+      LEFT JOIN usuarios u ON u.id = COALESCE(e.docente_id, p.docente_responsable_id)
+      LEFT JOIN plantilla_entregables t ON t.id = e.plantilla_id
+      LEFT JOIN grupos_matriz g ON g.id = t.grupo_id
+      LEFT JOIN docente_entregable_excepciones dex ON dex.plantilla_id = t.id AND dex.docente_id = u.id
+      WHERE ${donde}`;
+  const offset = (page - 1) * limit;
+  try {
+    const countResult = await pool.query(`SELECT COUNT(*)::int AS total ${desdeSql}`, params);
+    const result = await pool.query(
       `
       SELECT
         e.id,
         COALESCE(e.estado_revision, 'enviado') AS estado_revision,
         e.comentario_revision,
+        e.revisado_en,
+        e.problema_acceso_en,
         e.fecha_real_entrega,
         e.fecha_completado,
         e.fecha_cargue_evidencia,
@@ -693,21 +738,17 @@ router.get("/reportes-revision", async (req, res) => {
         s.numero AS semana_numero,
         p.id AS proyecto_id,
         p.titulo AS proyecto_titulo,
+        p.tipo AS proyecto_tipo,
+        g.semestre,
+        t.tipo_evidencia, t.requiere_evidencia,
+        COALESCE(dex.descripcion_evidencia_override, t.descripcion_evidencia) AS descripcion_evidencia,
         prog.nombre AS programa_nombre,
         COALESCE(esc.nombre, 'Sin escuela') AS escuela_nombre,
         u.id AS docente_id,
         u.nombre,
         u.apellido,
         u.correo
-      FROM proyecto_entregables e
-      JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id
-      JOIN proyectos p ON p.id = s.proyecto_id
-      LEFT JOIN programas prog ON prog.id = p.programa_id
-      LEFT JOIN escuelas esc ON esc.id = prog.escuela_id
-      LEFT JOIN usuarios u ON u.id = COALESCE(e.docente_id, p.docente_responsable_id)
-      WHERE COALESCE(e.completado, false) = true
-        AND COALESCE(e.estado_revision, 'enviado') = 'enviado'
-        AND ($1::integer IS NULL OR e.id = $1)
+      ${desdeSql}
       ORDER BY
         CASE COALESCE(e.estado_revision, 'enviado')
           WHEN 'enviado' THEN 0
@@ -715,40 +756,56 @@ router.get("/reportes-revision", async (req, res) => {
           WHEN 'aprobado' THEN 2
           ELSE 3
         END,
-        COALESCE(e.fecha_real_entrega, e.fecha_completado) DESC NULLS LAST,
-        e.id DESC
-      LIMIT $2 OFFSET $3
-      `
-      ,
-      [requestedReportId, limit, offset]
+        e.fecha_cargue_evidencia ASC NULLS LAST,
+        e.id ASC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `,
+      [...params, limit, offset]
     );
 
-    const reportes = (result.rows || []).map((r) => ({
-      id: r.id,
-      estado_revision: r.estado_revision,
-      comentario_revision: r.comentario_revision || "",
-      fecha_real_entrega: r.fecha_real_entrega,
-      fecha_completado: r.fecha_completado,
-      fecha_cargue_evidencia: r.fecha_cargue_evidencia,
-      fecha_primer_envio: r.fecha_primer_envio ? fechaBogota(r.fecha_primer_envio) : null,
-      num_envios: r.num_envios,
-      es_reenvio: r.num_envios > 1,
-      evidencia_exenta: r.evidencia_exenta === true,
-      justificacion_exencion: r.justificacion_exencion || "",
-      url_evidencia: r.url_evidencia || "",
-      actividad_reportada: r.actividad_reportada || "Entregable",
-      descripcion_reporte: r.descripcion_reporte || "",
-      porcentaje_avance: Number(r.porcentaje_avance ?? 100),
-      horas: Number(r.horas || 0),
-      semana_numero: Number(r.semana_numero || 0),
-      proyecto_id: r.proyecto_id,
-      proyecto_titulo: r.proyecto_titulo || "Iniciativa",
-      programa_nombre: r.programa_nombre || "Sin programa",
-      escuela_nombre: r.escuela_nombre || "Sin escuela",
-      docente_id: r.docente_id,
-      docente_nombre: [r.nombre, r.apellido].filter(Boolean).join(" "),
-      docente_correo: r.correo || "",
-    }));
+    const ids = result.rows.map((r) => r.id);
+    const evidencias = await evidenciasDeEntregables(pool, ids);
+    const hoy = hoyBogota();
+    const reportes = (result.rows || []).map((r) => {
+      const todas = evidencias.get(r.id) ?? [];
+      const requisito = resolverRequisitoEvidencia({ tipo_evidencia: r.tipo_evidencia, requiere_evidencia: r.requiere_evidencia, descripcion_evidencia: r.descripcion_evidencia });
+      const envio = r.fecha_cargue_evidencia ? fechaBogota(r.fecha_cargue_evidencia) : null;
+      return {
+        id: r.id,
+        estado_revision: r.estado_revision,
+        comentario_revision: r.comentario_revision || "",
+        revisado_en: r.revisado_en,
+        problema_acceso: r.problema_acceso_en != null && r.estado_revision === "observado",
+        problema_acceso_en: r.problema_acceso_en,
+        fecha_real_entrega: r.fecha_real_entrega,
+        fecha_completado: r.fecha_completado,
+        fecha_cargue_evidencia: r.fecha_cargue_evidencia,
+        fecha_primer_envio: r.fecha_primer_envio ? fechaBogota(r.fecha_primer_envio) : null,
+        dias_en_espera: r.estado_revision === "enviado" && envio ? Math.max(0, Math.round((Date.parse(`${hoy}T00:00:00Z`) - Date.parse(`${envio}T00:00:00Z`)) / 86400000)) : null,
+        num_envios: r.num_envios,
+        es_reenvio: r.num_envios > 1,
+        evidencia_exenta: r.evidencia_exenta === true,
+        justificacion_exencion: r.justificacion_exencion || "",
+        url_evidencia: r.url_evidencia || "",
+        evidencias: todas.filter((x) => x.estado === "vigente"),
+        versiones_anteriores: todas.filter((x) => x.estado !== "vigente"),
+        requisito_evidencia: { requiere: requisito.requiere, tipo: requisito.tipo, descripcion: r.descripcion_evidencia || "" },
+        actividad_reportada: r.actividad_reportada || "Entregable",
+        descripcion_reporte: r.descripcion_reporte || "",
+        porcentaje_avance: Number(r.porcentaje_avance ?? 100),
+        horas: Number(r.horas || 0),
+        semana_numero: Number(r.semana_numero || 0),
+        semestre: r.semestre || null,
+        proyecto_id: r.proyecto_id,
+        proyecto_titulo: r.proyecto_titulo || "Iniciativa",
+        proyecto_tipo: r.proyecto_tipo || null,
+        programa_nombre: r.programa_nombre || "Sin programa",
+        escuela_nombre: r.escuela_nombre || "Sin escuela",
+        docente_id: r.docente_id,
+        docente_nombre: [r.nombre, r.apellido].filter(Boolean).join(" "),
+        docente_correo: r.correo || "",
+      };
+    });
 
     res.json({
       reportes,
@@ -762,8 +819,17 @@ router.get("/reportes-revision", async (req, res) => {
   } catch (error) {
     console.error("Error en /admin/reportes-revision", error);
     res.status(500).json({ error: "Error interno" });
-  } finally {
-    client.release();
+  }
+});
+
+// Historial completo de un entregable (versiones de evidencias y eventos con responsable).
+router.get("/reportes-revision/:id/historial", async (req, res) => {
+  const entregableId = Number(req.params.id);
+  if (!Number.isInteger(entregableId) || entregableId <= 0) return res.status(400).json({ error: "id inválido" });
+  try {
+    res.json(await historialDeEntregable(pool, entregableId));
+  } catch (error) {
+    responderError(res, error, "Error en GET /admin/reportes-revision/:id/historial");
   }
 });
 
@@ -771,7 +837,8 @@ router.get("/reportes-revision", async (req, res) => {
 // Solo aprobar u observar un entregable enviado; un aprobado no cambia por esta vía (ver /reabrir).
 router.put("/reportes-revision/:id", async (req, res) => {
   const entregableId = Number(req.params.id);
-  const { estado_revision, comentario_revision } = req.body || {};
+  const { estado_revision, comentario_revision, motivo, evidencias_afectadas } = req.body || {};
+  if (motivo != null && motivo !== "sin_acceso") return res.status(400).json({ error: "motivo inválido" });
   if (!entregableId) {
     return res.status(400).json({ error: "id inválido" });
   }
@@ -786,6 +853,8 @@ router.put("/reportes-revision/:id", async (req, res) => {
       estadoNuevo: estado_revision,
       comentario: comentario_revision,
       actorId: Number(req.user?.id) || null,
+      motivo: motivo ?? null,
+      evidenciasAfectadas: evidencias_afectadas,
     });
     res.json(out);
   } catch (error) {

@@ -4,12 +4,14 @@ import {
   buildMatrixStats,
   hoyBogota,
   itemParaApi,
+  loadAssignedInitiatives,
   loadMatrixForDocentes,
   responderError,
   calcularMetricas,
   toDateOnlyISO,
 } from "../services/matrizService.js";
 import { aplicarAccionDocente, registrarDesdeMatriz } from "../services/entregableWorkflowService.js";
+import { armarCentroEvidencias, evidenciasDeEntregables, historialDeEntregable, iniciativasDeEntregables } from "../services/evidenciaService.js";
 import { markNotificationsAsRead } from "../services/notificationService.js";
 
 const router = express.Router();
@@ -720,6 +722,43 @@ router.get("/:docenteId/matriz", async (req, res) => {
   }
 });
 
+// Centro de evidencias: todos los entregables del docente con su evidencia, estado, observaciones y versiones.
+// La pertenencia la garantiza router.param("docenteId"): un docente solo consulta lo suyo; el administrador, el de cualquiera.
+router.get("/:docenteId/evidencias", async (req, res) => {
+  const docenteId = Number(req.params.docenteId);
+  if (!docenteId) return res.status(400).json({ error: "id de docente inválido" });
+  try {
+    const vista = await loadDocenteMatrix(docenteId);
+    if (!vista) return res.status(404).json({ error: "docente no encontrado" });
+    const items = vista.items.map(itemParaApi);
+    const ids = items.map((i) => i.entregable_id).filter(Boolean);
+    const mapa = await evidenciasDeEntregables(pool, ids);
+    const centro = armarCentroEvidencias(items, mapa, await iniciativasDeEntregables(pool, ids));
+    // Iniciativas del docente: a una de ellas se asocia cada evidencia al reportar (si hay varias posibles el servidor pide elegir).
+    const iniciativas = (await loadAssignedInitiatives(docenteId, pool)).map((i) => ({ id: i.id, titulo: i.titulo, tipo: i.tipo }));
+    res.json({
+      docente: vista.docente ?? null,
+      semestre: vista.calendario?.codigo ?? vista.docente?.semestre ?? null,
+      hoy: vista.hoy,
+      iniciativas,
+      ...centro,
+    });
+  } catch (error) {
+    responderError(res, error, "Error en GET /docente/:docenteId/evidencias");
+  }
+});
+
+// Historial de un entregable (eventos con responsable, fecha, estados, comentarios y referencia a las evidencias).
+router.get("/entregables/:entregableId/historial", async (req, res) => {
+  const entregableId = Number(req.params.entregableId);
+  if (!entregableId) return res.status(400).json({ error: "id de entregable inválido" });
+  try {
+    res.json(await historialDeEntregable(pool, entregableId));
+  } catch (error) {
+    responderError(res, error, "Error en GET /docente/entregables/:entregableId/historial");
+  }
+});
+
 // Enviar / retirar un entregable desde la matriz (crea el reporte vinculado a la plantilla si no existe).
 // Las validaciones (evidencia, estados, iniciativa, duplicados) las aplica entregableWorkflowService.
 router.post("/:docenteId/matriz/:plantillaId/completar", async (req, res) => {
@@ -974,6 +1013,26 @@ router.patch("/entregables/:entregableId/borrador", async (req, res) => {
     res.json(out);
   } catch (error) {
     responderError(res, error, "Error en PATCH /docente/entregables/:id/borrador");
+  }
+});
+
+// Guarda SOLO los enlaces de evidencia (y la justificación de excepción) de un entregable, sin tocar el resto del reporte.
+// Un entregable observado conserva su estado hasta que se reenvíe; uno aprobado no se modifica (409).
+router.put("/entregables/:entregableId/evidencias", async (req, res) => {
+  const entregableId = Number(req.params.entregableId);
+  if (!entregableId) return res.status(400).json({ error: "id de entregable inválido" });
+  const b = req.body || {};
+  if (!Array.isArray(b.urls_evidencia) || b.urls_evidencia.length > 20 || b.urls_evidencia.some((u) => typeof u !== "string" || u.length > 2000)) {
+    return res.status(400).json({ error: "urls_evidencia debe ser una lista de hasta 20 enlaces" });
+  }
+  const datos = { url_evidencia: b.urls_evidencia };
+  if (b.justificacion_exencion !== undefined) datos.exencion = b.justificacion_exencion;
+  try {
+    const docenteId = await docenteDelEntregable(req, entregableId);
+    if (!docenteId) return res.status(400).json({ error: "docente_id es obligatorio" });
+    res.json(await aplicarAccionDocente(pool, { docenteId, actorId: Number(req.user.id), entregableId, accion: "guardar_borrador", datos }));
+  } catch (error) {
+    responderError(res, error, "Error en PUT /docente/entregables/:id/evidencias");
   }
 });
 

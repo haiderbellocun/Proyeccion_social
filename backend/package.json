@@ -18,7 +18,8 @@
     "test:integration": "node --test \"test/integration/*.test.js\"",
     "dev:setup": "node scripts/dev-setup.js",
     "dev:local": "node --env-file=.env.dev src/index.js",
-    "ejemplo:excel": "node scripts/generar-excel-ejemplo.js"
+    "ejemplo:excel": "node scripts/generar-excel-ejemplo.js",
+    "evidencias:backfill": "node scripts/backfill-evidencias.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

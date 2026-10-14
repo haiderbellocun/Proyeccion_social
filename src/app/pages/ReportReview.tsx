@@ -7,11 +7,15 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
+  History,
   Link2,
   Send,
+  ShieldAlert,
   User,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
+import { EnlaceEvidencia, type EvidenciaEnlace } from "../components/EnlaceEvidencia";
+import { HistorialEntregable } from "../components/HistorialEntregable";
 import { AppSelect } from "../components/AppSelect";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
@@ -39,7 +43,24 @@ type ReportItem = {
   ultimoEnvio: string | null;
   evidenciaExenta: boolean;
   justificacionExencion: string;
+  semestre: string | null;
+  links: EvidenciaEnlace[];
+  oldVersions: EvidenciaEnlace[];
+  requisito: { requiere: boolean; tipo: string; descripcion: string };
+  problemaAcceso: boolean;
+  diasEnEspera: number | null;
+  comentarioRevision: string;
+  revisadoEn: string | null;
 };
+
+type EstadoFiltro = "enviado" | "observado" | "sin_acceso" | "aprobado" | "todos";
+const ESTADOS_BANDEJA: { id: EstadoFiltro; label: string }[] = [
+  { id: "enviado", label: "Pendientes de revisión" },
+  { id: "sin_acceso", label: "Problema de acceso" },
+  { id: "observado", label: "Observados" },
+  { id: "aprobado", label: "Aprobados" },
+  { id: "todos", label: "Todos" },
+];
 
 // url_evidencia: enlace simple (histórico) o JSON con varios enlaces.
 function parseEvidencias(raw: unknown): string[] {
@@ -83,6 +104,16 @@ export default function ReportReview() {
   const [selectedSchool, setSelectedSchool] = useState<string>("Todas");
   const [selectedProgram, setSelectedProgram] = useState<string>("Todos");
   const [selectedTeacher, setSelectedTeacher] = useState<string>("Todos");
+  const [estadoFiltro, setEstadoFiltro] = useState<EstadoFiltro>("enviado");
+  const [selectedSemester, setSelectedSemester] = useState("Todos");
+  const [semesters, setSemesters] = useState<string[]>([]);
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  const [busqueda, setBusqueda] = useState("");
+  const [busquedaAplicada, setBusquedaAplicada] = useState("");
+  const [verHistorial, setVerHistorial] = useState(false);
+  const [errorCarga, setErrorCarga] = useState<string | null>(null);
+  const [recarga, setRecarga] = useState(0);
 
   const [catalogSchools, setCatalogSchools] = useState<
     { name: string; programs: { id: number; name: string; code: string; teachers: { id: number; fullName: string }[] }[] }[]
@@ -125,17 +156,24 @@ export default function ReportReview() {
   }, [loadMetricas]);
 
   useEffect(() => {
+    let cancelado = false;
     const loadReports = async () => {
       try {
         setLoadingReports(true);
-        const reportFilter = notificationReportId
-          ? `&reporte=${notificationReportId}`
-          : "";
-        const res = await fetch(
-          `${API_BASE_URL}/admin/reportes-revision?page=${page}&limit=${limit}${reportFilter}`
-        );
+        setErrorCarga(null);
+        const q = new URLSearchParams({ page: String(page), limit: String(limit), estado: notificationReportId ? "todos" : estadoFiltro });
+        if (notificationReportId) q.set("reporte", String(notificationReportId));
+        if (selectedSchool !== "Todas") q.set("escuela", selectedSchool);
+        if (selectedProgram !== "Todos") q.set("programa", selectedProgram);
+        if (selectedTeacher !== "Todos") q.set("docente", selectedTeacher);
+        if (selectedSemester !== "Todos") q.set("semestre", selectedSemester);
+        if (desde) q.set("desde", desde);
+        if (hasta) q.set("hasta", hasta);
+        if (busquedaAplicada) q.set("q", busquedaAplicada);
+        const res = await fetch(`${API_BASE_URL}/admin/reportes-revision?${q.toString()}`);
         if (!res.ok) throw new Error("Error al cargar reportes de revisión");
         const data = await res.json();
+        if (cancelado) return;
         const rows = (data.reportes || data.data || []) as any[];
         setTotal(Number(data.pagination?.total ?? rows.length));
         const mapped: ReportItem[] = rows.map((r: any) => {
@@ -171,10 +209,17 @@ export default function ReportReview() {
             ultimoEnvio: r.fecha_cargue_evidencia ?? null,
             evidenciaExenta: r.evidencia_exenta === true,
             justificacionExencion: String(r.justificacion_exencion ?? ""),
+            semestre: r.semestre ?? null,
+            links: (r.evidencias ?? []) as EvidenciaEnlace[],
+            oldVersions: (r.versiones_anteriores ?? []) as EvidenciaEnlace[],
+            requisito: r.requisito_evidencia ?? { requiere: true, tipo: "enlace", descripcion: "" },
+            problemaAcceso: r.problema_acceso === true,
+            diasEnEspera: r.dias_en_espera != null ? Number(r.dias_en_espera) : null,
+            comentarioRevision: String(r.comentario_revision ?? ""),
+            revisadoEn: r.revisado_en ?? null,
           };
         });
-        // Con backend corregido solo deberían llegar 'enviado'. Si llegara algo 'observado', se oculta.
-        const visibleReports = mapped.filter((x) => x.status !== "review");
+        const visibleReports = mapped;
         setReports(visibleReports);
         if (notificationReportId) {
           const targetIndex = visibleReports.findIndex(
@@ -183,15 +228,41 @@ export default function ReportReview() {
           setCurrent(targetIndex >= 0 ? targetIndex : 0);
         }
       } catch (err) {
+        if (cancelado) return;
         console.error(err);
-        notify.error("No se pudo cargar la información. Intente de nuevo más tarde.");
+        setErrorCarga("No se pudo cargar la bandeja. Revisa la conexión e intenta de nuevo.");
         setReports([]);
       } finally {
-        setLoadingReports(false);
+        if (!cancelado) setLoadingReports(false);
       }
     };
     loadReports();
-  }, [page, limit, notificationReportId]);
+    return () => {
+      cancelado = true;
+    };
+  }, [page, limit, notificationReportId, estadoFiltro, selectedSchool, selectedProgram, selectedTeacher, selectedSemester, desde, hasta, busquedaAplicada, recarga]);
+
+  // Al cambiar cualquier filtro se vuelve a la primera página y al primer entregable
+  useEffect(() => {
+    setPage(1);
+    setCurrent(0);
+    setVerHistorial(false);
+    setReviewed({});
+  }, [estadoFiltro, selectedSchool, selectedProgram, selectedTeacher, selectedSemester, desde, hasta, busquedaAplicada]);
+
+  useEffect(() => {
+    setVerHistorial(false);
+  }, [current]);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/admin/semestres`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        const lista = Array.isArray(d) ? d : d?.semestres;
+        if (Array.isArray(lista)) setSemesters(lista.map((x: { codigo: string }) => x.codigo).filter(Boolean));
+      })
+      .catch(() => {});
+  }, []);
 
   const schools = catalogSchools.map((s) => s.name);
 
@@ -208,14 +279,8 @@ export default function ReportReview() {
     .filter((p) => (selectedProgram === "Todos" ? true : p.name === selectedProgram))
     .flatMap((p) => p.teachers.map((t) => t.fullName));
 
-  const filteredReports = reports.filter((r) => {
-    if (r.status === "approved") return false;
-    if (r.status === "review") return false;
-    if (selectedSchool !== "Todas" && r.school !== selectedSchool) return false;
-    if (selectedProgram !== "Todos" && r.program !== selectedProgram) return false;
-    if (selectedTeacher !== "Todos" && r.teacher !== selectedTeacher) return false;
-    return true;
-  });
+  // Los filtros se aplican en el servidor (sobre todas las páginas), no solo sobre la página cargada.
+  const filteredReports = reports;
 
   const resumen = metricas?.resumen ?? {};
   const pendientes = Number(resumen.pendientes ?? 0);
@@ -230,7 +295,7 @@ export default function ReportReview() {
     filteredReports.length > 0 ? Math.min(current, filteredReports.length - 1) : 0;
   const report = filteredReports.length > 0 ? filteredReports[safeIndex] : null;
 
-  const handleAction = async (action: "approve" | "adjust" | "reject") => {
+  const handleAction = async (action: "approve" | "adjust" | "reject" | "no_access") => {
     if (!report) return;
     const estado_revision =
       action === "approve"
@@ -238,7 +303,7 @@ export default function ReportReview() {
         : action === "adjust"
         ? "observado"
         : "observado";
-    if (action !== "approve" && !comment.trim()) {
+    if (action !== "approve" && action !== "no_access" && !comment.trim()) {
       notify.warning("Para solicitar ajustes o rechazar, debes ingresar un comentario.");
       return;
     }
@@ -247,7 +312,11 @@ export default function ReportReview() {
       const res = await fetch(`${API_BASE_URL}/admin/reportes-revision/${report.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ estado_revision, comentario_revision: comment || null }),
+        body: JSON.stringify({
+          estado_revision,
+          comentario_revision: comment || null,
+          ...(action === "no_access" ? { motivo: "sin_acceso", evidencias_afectadas: report.links.map((l) => l.id) } : {}),
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -258,6 +327,7 @@ export default function ReportReview() {
         approve: "Reporte aprobado",
         adjust: "Ajustes solicitados",
         reject: "Reporte rechazado",
+        no_access: "Se pidió al docente corregir los permisos del enlace",
       };
       notify.success(successMessages[action]);
       setReviewed({ ...reviewed, [report.id]: action });
@@ -273,6 +343,7 @@ export default function ReportReview() {
                     : action === "adjust"
                     ? "review"
                     : "review",
+                problemaAcceso: action === "no_access",
               }
             : r
         )
@@ -316,49 +387,18 @@ export default function ReportReview() {
     approve: { label: "Aprobado", color: "text-emerald-600" },
     adjust: { label: "Requiere ajustes", color: "text-amber-600" },
     reject: { label: "Rechazado", color: "text-red-600" },
+    no_access: { label: "Sin acceso: el docente debe corregir los permisos", color: "text-amber-600" },
   };
   const hasPrevPage = page > 1;
   const hasNextPage = page * limit < total;
 
-  if (loadingReports && !report) {
-    return (
-      <div className="p-6 space-y-6">
-        <div>
-          <h1 className="text-gray-900">Revisión de Reportes</h1>
-          <p className="text-gray-500 text-sm mt-0.5">Cargando avances enviados…</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!report && !loadingReports) {
-    return (
-      <div className="p-6 space-y-6">
-        <div>
-          <h1 className="text-gray-900">Revisión de Reportes</h1>
-          <p className="text-gray-500 text-sm mt-0.5">
-            No hay reportes pendientes de revisión.
-            Los reportes con ajustes solicitados reaparecerán aquí
-            cuando el docente los reenvíe.
-          </p>
-          {metricas && (
-            <p className="text-xs text-gray-400 mt-2">{headerBadge}</p>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  if (!report) return null;
-
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-4 sm:p-6 space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-gray-900">Revisión de Reportes</h1>
           <p className="text-gray-500 text-sm mt-0.5">
-            {filteredReports.length} reporte
-            {filteredReports.length !== 1 ? "s" : ""} pendientes de revisión
+            {total} entregable{total !== 1 ? "s" : ""} · {ESTADOS_BANDEJA.find((x) => x.id === estadoFiltro)?.label.toLowerCase()}
           </p>
           {metricas && (
             <p className="text-xs text-gray-400 mt-1">{headerBadge}</p>
@@ -366,7 +406,7 @@ export default function ReportReview() {
         </div>
 
         {/* Navegación entre reportes */}
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={!hasPrevPage}
@@ -409,6 +449,23 @@ export default function ReportReview() {
             <ChevronRight className="w-4 h-4" />
           </button>
         </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Estado de los entregables">
+        {ESTADOS_BANDEJA.map((e) => (
+          <button
+            key={e.id}
+            type="button"
+            role="tab"
+            aria-selected={estadoFiltro === e.id}
+            onClick={() => setEstadoFiltro(e.id)}
+            className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
+              estadoFiltro === e.id ? "bg-[#1e3a8a] border-[#1e3a8a] text-white" : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
+            }`}
+          >
+            {e.label}
+          </button>
+        ))}
       </div>
 
       {/* Filtros debajo del título */}
@@ -459,7 +516,47 @@ export default function ReportReview() {
             className="w-full"
           />
         </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-3">
+          <AppSelect
+            value={selectedSemester}
+            onValueChange={setSelectedSemester}
+            options={[{ value: "Todos", label: "Todos los semestres" }, ...semesters.map((x) => ({ value: x, label: x }))]}
+            className="w-full"
+          />
+          <label className="text-xs text-gray-500">
+            Enviado desde
+            <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" />
+          </label>
+          <label className="text-xs text-gray-500">
+            Enviado hasta
+            <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" />
+          </label>
+          <form
+            className="text-xs text-gray-500"
+            onSubmit={(e) => {
+              e.preventDefault();
+              setBusquedaAplicada(busqueda.trim());
+            }}
+          >
+            Entregable o iniciativa
+            <input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              onBlur={() => setBusquedaAplicada(busqueda.trim())}
+              placeholder="Buscar…"
+              className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+            />
+          </form>
+        </div>
       </div>
+
+      {errorCarga && (
+        <div className="flex flex-wrap items-center gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm" role="alert">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span className="flex-1 min-w-[12rem]">{errorCarga}</span>
+          <button type="button" onClick={() => setRecarga((n) => n + 1)} className="px-3 py-1 rounded-lg bg-white border border-red-200 hover:bg-red-100">Reintentar</button>
+        </div>
+      )}
 
       {/* Report list mini */}
       <div className="flex gap-2 flex-wrap">
@@ -485,6 +582,15 @@ export default function ReportReview() {
         ))}
       </div>
 
+      {!report ? (
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-sm text-gray-600" role="status">
+          {loadingReports
+            ? "Cargando entregables…"
+            : estadoFiltro === "enviado"
+            ? "No hay entregables pendientes de revisión con estos filtros. Los observados reaparecen aquí cuando el docente los reenvía."
+            : "No hay entregables con estos filtros."}
+        </div>
+      ) : (
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         {/* Main content */}
         <div className="xl:col-span-2 space-y-5">
@@ -525,6 +631,20 @@ export default function ReportReview() {
                       {report.progress}%
                     </p>
                   </div>
+                  <div>
+                    <p className="text-xs text-gray-400">Semestre</p>
+                    <p className="text-sm text-gray-700 mt-0.5">{report.semestre ?? "—"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-400">Escuela</p>
+                    <p className="text-sm text-gray-700 mt-0.5 line-clamp-2">{report.school}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-400">{report.diasEnEspera != null ? "Esperando revisión" : "Último envío"}</p>
+                    <p className="text-sm text-gray-700 mt-0.5">
+                      {report.diasEnEspera != null ? (report.diasEnEspera === 0 ? "Enviado hoy" : `${report.diasEnEspera} día${report.diasEnEspera !== 1 ? "s" : ""}`) : report.ultimoEnvio ? formatDateTimeBogota(report.ultimoEnvio) : "—"}
+                    </p>
+                  </div>
                 </div>
                 {report.docente_id != null && (
                   <button
@@ -562,24 +682,42 @@ export default function ReportReview() {
             {report.ultimoEnvio && (
               <p className="mb-3 text-xs text-gray-500">Último envío: {formatDateTimeBogota(report.ultimoEnvio)}</p>
             )}
-            <div className="space-y-2">
-              {report.evidences.map((ev, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
-                >
-                  {ev.type === "LINK" ? (
-                    <Link2 className="w-4 h-4 text-blue-500 shrink-0" />
-                  ) : (
-                    <FileText className="w-4 h-4 text-[#1d4ed8] shrink-0" />
-                  )}
-                  <span className="flex-1 text-sm text-gray-700 truncate">{ev.name}</span>
-                  <span className="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">
-                    {ev.type}
-                  </span>
-                </div>
-              ))}
-            </div>
+            <p className="mb-3 text-xs text-gray-600 bg-gray-50 rounded-lg px-3 py-2">
+              <span className="text-gray-500">Evidencia que solicita el entregable: </span>
+              {report.requisito.requiere
+                ? report.requisito.descripcion || "Enlace a la evidencia"
+                : "No se requiere cargue para este entregable."}
+            </p>
+            {report.links.length > 0 ? (
+              <div className="space-y-2">
+                {report.links.map((l) => <EnlaceEvidencia key={l.id} e={l} />)}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">
+                {report.evidenciaExenta ? "El docente no adjuntó enlaces (ver justificación)." : "Sin enlaces de evidencia registrados."}
+              </p>
+            )}
+            {report.oldVersions.length > 0 && (
+              <details className="mt-3 text-xs text-gray-600">
+                <summary className="cursor-pointer select-none">Versiones anteriores ({report.oldVersions.length})</summary>
+                <div className="space-y-2 mt-2">{report.oldVersions.map((l) => <EnlaceEvidencia key={l.id} e={l} anterior />)}</div>
+              </details>
+            )}
+            <p className="mt-3 text-xs text-gray-500">
+              Los enlaces pertenecen al Drive de cada docente: si no puedes abrir alguno, usa «No tengo acceso a la evidencia» y el docente corregirá los permisos.
+            </p>
+            <button
+              type="button"
+              onClick={() => setVerHistorial((v) => !v)}
+              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border border-gray-200 text-gray-700 hover:bg-gray-50"
+            >
+              <History className="w-4 h-4" /> {verHistorial ? "Ocultar historial" : "Ver historial y versiones"}
+            </button>
+            {verHistorial && (
+              <div className="mt-3 border-t border-gray-100 pt-3">
+                <HistorialEntregable key={`${report.id}-${report.status}-${report.numEnvios}`} ruta={`/admin/reportes-revision/${report.id}/historial`} />
+              </div>
+            )}
           </div>
         </div>
 
@@ -593,6 +731,22 @@ export default function ReportReview() {
               </p>
               <p className={`text-sm mt-1 ${actionLabels[reviewed[report.id] as keyof typeof actionLabels].color}`}>
                 {actionLabels[reviewed[report.id] as keyof typeof actionLabels].label}
+              </p>
+            </div>
+          ) : report.status !== "pending" ? (
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-2">
+              <h3 className="text-gray-800">{report.status === "approved" ? "Entregable aprobado" : "Devuelto al docente"}</h3>
+              {report.problemaAcceso && (
+                <p className="flex gap-2 text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" /> Se reportó que no se podía abrir la evidencia. Está a la espera de que el docente corrija los permisos y reenvíe.
+                </p>
+              )}
+              {report.comentarioRevision && <p className="text-sm text-gray-600">«{report.comentarioRevision}»</p>}
+              {report.revisadoEn && <p className="text-xs text-gray-400">Revisado el {formatDateTimeBogota(report.revisadoEn)}</p>}
+              <p className="text-xs text-gray-500">
+                {report.status === "approved"
+                  ? "Un entregable aprobado no se modifica; la reapertura es un procedimiento administrativo aparte."
+                  : "Volverá a aparecer entre los pendientes cuando el docente lo reenvíe."}
               </p>
             </div>
           ) : (
@@ -620,6 +774,15 @@ export default function ReportReview() {
                   style={{ fontWeight: 600 }}
                 >
                   <CheckCircle2 className="w-4 h-4" /> {savingDecision ? "Guardando..." : "Aprobar reporte"}
+                </button>
+                <button
+                  onClick={() => handleAction("no_access")}
+                  disabled={savingDecision}
+                  className="w-full flex items-center justify-center gap-2 border border-amber-400 text-amber-800 bg-amber-50 hover:bg-amber-100 py-2.5 rounded-lg text-sm transition-colors"
+                  style={{ fontWeight: 600 }}
+                  title="El docente deberá compartir el enlace con coordinación y reenviar; no se pierde ningún dato"
+                >
+                  <ShieldAlert className="w-4 h-4" /> No tengo acceso a la evidencia
                 </button>
                 <button
                   onClick={() => handleAction("adjust")}
@@ -663,6 +826,7 @@ export default function ReportReview() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
