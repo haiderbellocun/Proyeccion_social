@@ -1,0 +1,21 @@
+/* Avance consolidado B2: ajustes locales sobre el kit de gráficos */
+.b2-ana-av-graf { align-items: start; }
+.b2-ana-av-neg { font-weight: 800; }
+.b2-ana-av-pie { margin: 0; font-size: var(--fs-sm); color: var(--c-text-2); line-height: 1.5; }
+.b2-ana-av-pie b { color: var(--c-text); }
+.b2-ana-av-meses li { align-items: flex-start; padding-top: 6px; padding-bottom: 6px; }
+.b2-ana-av-mv { display: flex; flex-direction: column; align-items: flex-end; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.b2-ana-av-mv small { font-size: var(--fs-xs); color: var(--c-text-3); font-weight: 600; }
+.b2-ana .b2-adm-tabla .b2-bl { height: 16px; }
+/* La tira de indicadores ocupa el ancho disponible (el kit la deja en su ancho mínimo dentro de una columna flex) */
+.b2-ana .b2-ana-sec > .b2-ind { width: auto; align-self: stretch; }
+/* Columnas del gráfico mensual: más anchas para que las etiquetas de valor no se pisen */
+.b2-ana-av-graf .b2-cg-bar { max-width: 44px; }
+.b2-ana-av-graf .b2-cg-b { gap: 8px; }
+.b2-ana-av-graf .b2-cg-g { grid-template-columns: repeat(var(--n), minmax(84px, 1fr)); }
+/* móvil: los filtros se agrupan de a dos para no empujar el contenido */
+@media (max-width: 720px) {
+  .b2-ana-av-f .b2-adm-filtro { width: calc(50% - 4px); flex: 1 1 calc(50% - 4px); }
+  .b2-ana-av-f .b2-adm-buscar { flex: 1 1 100%; }
+}
+.b2-ana-av-graf .b2-cg { margin-top: 18px; }

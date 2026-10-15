@@ -1,0 +1,17 @@
+/* Reportes y métricas (B2) */
+.b2-ana-met-fecha::first-letter { text-transform: uppercase; }
+.b2-ana-met-fila { align-items: start; }
+.b2-ana-met-reg { grid-template-columns: minmax(100px, 160px) minmax(80px, 1fr) minmax(90px, 130px); }
+.b2-ana-met-vacios { margin: 0; padding: 0 4px; }
+.b2-ana-met-orden { display: none; }
+.b2-ana-met-orden .b2-sel { width: 100%; }
+@media (max-width: 720px) {
+  .b2-ana-met-orden { display: block; flex: 1 1 100%; }
+  .b2-ana-met-orden .b2-sel { height: 40px; }
+  .b2-ana-met-reg { grid-template-columns: minmax(0, 1fr) auto; }
+  .b2-ana-met-vacios { flex: 1 1 100%; min-height: 40px; }
+}
+/* La clase .b2-ind del kit choca con la sangría del Gantt (b2-matriz.css: width:0); se restablece aquí. */
+.b2-ana .b2-mx-stats.b2-ind { width: auto; }
+/* Espacio para la etiqueta de la barra más alta, que sobresale del eje */
+.b2-ana-met-fila .b2-cg { margin-top: 16px; }

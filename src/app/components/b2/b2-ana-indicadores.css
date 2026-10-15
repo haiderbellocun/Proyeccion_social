@@ -1,0 +1,9 @@
+/* Indicadores por grupo (B2) */
+.b2-ana-ind-tot { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin: 0; padding: 8px 14px; background: var(--c-surface); border: 1px solid var(--c-line); border-radius: 6px; font-size: var(--fs-sm); color: var(--c-text-2); font-variant-numeric: tabular-nums; }
+.b2-ana-ind-tot strong { color: var(--c-text); font-weight: 800; }
+.b2-ana-ind-tot b { color: var(--c-text); font-weight: 800; margin-left: 3px; }
+.b2-ana-ind-grid { align-items: start; }
+.b2-ana-ind-kpis dd { display: flex; align-items: baseline; gap: 4px; }
+.b2-ana-ind-kpis > div { min-width: 104px; }
+.b2-ana-ind-ancho { grid-column: 1 / -1; min-width: 0; }
+@media (max-width: 1100px) { .b2-ana-ind-ancho { grid-column: auto; } }

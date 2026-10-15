@@ -675,7 +675,7 @@ export default function PlantillaManagement({
             { k: "Semestre", v: <>{resumen.grupo.semestre}{resumen.grupo.numero_semanas ? <small>{resumen.grupo.numero_semanas} semanas</small> : null}</> },
             { k: "Docentes", v: resumen.docentes.length },
             { k: "Importadas", v: resumen.totales.importadas },
-            { k: "Con ajuste administrativo", v: resumen.totales.con_ajustes, alerta: resumen.totales.con_ajustes > 0 },
+            { k: "Con ajuste", v: resumen.totales.con_ajustes, alerta: resumen.totales.con_ajustes > 0 },
           ]} />
           <details className="b2-adm-pl-det" key={movil ? "m" : "d"} open={detallesAbiertos}>
             <summary>Origen, docentes y asignación{resumen.docentes.length > 0 ? ` · ${resumen.docentes.length} docente(s)` : ""}</summary>

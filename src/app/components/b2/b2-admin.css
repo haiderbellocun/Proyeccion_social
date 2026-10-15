@@ -108,6 +108,7 @@
   .b2-campo-f .b2-input, .b2-campo-f .b2-sel { height: 40px; }
   .b2-adm-dlg-acc .b2-btn { flex: 1; }
   .b2-form-pie .b2-btn { flex: 1; }
+  .b2-insp .b2-btn-sm, .b2-adm .b2-btn-sm { min-height: 40px; }
   .b2-adm-lista li { min-height: 44px; }
   .b2-radios label { min-height: 40px; }
 }

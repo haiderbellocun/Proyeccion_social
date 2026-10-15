@@ -14,7 +14,15 @@ const TABS = [["usuarios", "Usuarios"], ["semestres", "Semestres"], ["programas"
 /* ───────── utilidades de interfaz ───────── */
 const visible = "x.offsetParent!==null";
 /** Clic en el primer botón/enlace visible y habilitado con ese texto exacto (ámbito CSS opcional). Devuelve si lo encontró. */
-const clic = (p, txt, ambito = "document") => E(p, `const b=[...${ambito}.querySelectorAll('button,a')].find(x=>${visible}&&!x.disabled&&(x.getAttribute('aria-label')||x.textContent).trim()===${JSON.stringify(txt)}); if(!b) return false; b.click(); return true`);
+const clic = async (p, txt, ambito = "document", ms = 4000) => {
+  const t0 = Date.now();
+  do {
+    const hecho = await E(p, `const b=[...${ambito}.querySelectorAll('button,a,summary')].find(x=>${visible}&&!x.disabled&&(x.getAttribute('aria-label')||x.textContent).trim()===${JSON.stringify(txt)}); if(!b) return false; b.click(); return true`);
+    if (hecho) return true;
+    await pausa(250);
+  } while (Date.now() - t0 < ms);
+  return false;
+};
 const existeBtn = (p, txt, ambito = "document") => E(p, `return [...${ambito}.querySelectorAll('button,a')].some(x=>${visible}&&(x.getAttribute('aria-label')||x.textContent).trim()===${JSON.stringify(txt)})`);
 const btnDeshabilitado = (p, txt, ambito = "document") => E(p, `const b=[...${ambito}.querySelectorAll('button')].find(x=>${visible}&&x.textContent.trim()===${JSON.stringify(txt)}); return !!b&&b.disabled`);
 /** Escribe en un campo por el texto de su etiqueta (inputs, selects —por valor o texto de opción— y textareas). */
@@ -32,23 +40,30 @@ const campo = (p, etq, val) => E(p, `
 const valorCampo = (p, etq) => E(p, `const l=[...document.querySelectorAll('label')].filter(x=>${visible}).find(x=>x.textContent.replace(/\\s*\\*\\s*$/,'').trim().startsWith(${JSON.stringify(etq)})); if(!l) return null; const el=document.getElementById(l.htmlFor); return el?el.value:null`);
 /** Marca/desmarca un checkbox o radio por el texto de su etiqueta. */
 const marcar = (p, txt, estado = true) => E(p, `const l=[...document.querySelectorAll('label')].filter(x=>${visible}).find(x=>x.textContent.trim().startsWith(${JSON.stringify(txt)})); if(!l) throw new Error('sin casilla '+${JSON.stringify(txt)}); const i=l.querySelector('input'); if(i.checked!==${estado}) i.click(); return i.checked`);
-const guardar = (p) => E(p, `const b=document.querySelector('.b2-form-pie button[type=submit]'); if(!b||b.disabled) return false; b.click(); return true`);
+const guardar = (p) => E(p, `document.querySelectorAll('[data-sonner-toast]').forEach(t=>t.setAttribute('data-visto','1')); const b=document.querySelector('.b2-form-pie button[type=submit]'); if(!b||b.disabled) return false; b.click(); return true`);
 const erroresForm = (p) => E(p, `return [...document.querySelectorAll('.b2-campo-e')].map(e=>e.textContent.trim())`);
 const inspAbierto = (p) => E(p, "return !!document.querySelector('aside.b2-insp[data-open=\"true\"]')");
 const inspTexto = (p) => E(p, "return document.querySelector('aside.b2-insp[data-open=\"true\"]')?.innerText ?? ''");
-const toasts = (p) => E(p, "return [...document.querySelectorAll('[data-sonner-toast]')].map(t=>t.innerText.replace(/\\s+/g,' ').trim())");
+const toasts = (p) => E(p, "return [...document.querySelectorAll('[data-sonner-toast]:not([data-visto])')].map(t=>t.innerText.replace(/\\s+/g,' ').trim())");
 const esperarToast = async (p, re, ms = 6000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if ((await toasts(p)).some((t) => re.test(t))) return true; await pausa(200); } return false; };
 const dialogo = (p) => E(p, "const d=document.querySelector('dialog.b2-adm-dlg[open]'); return d?d.innerText.replace(/\\s+/g,' ').trim():null");
-const confirmar = (p, txt) => E(p, `const d=document.querySelector('dialog.b2-adm-dlg[open]'); const b=d&&[...d.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(txt)}); if(!b) return false; b.click(); return true`);
+const confirmar = (p, txt) => E(p, `document.querySelectorAll('[data-sonner-toast]').forEach(t=>t.setAttribute('data-visto','1')); const d=document.querySelector('dialog.b2-adm-dlg[open]'); const b=d&&[...d.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(txt)}); if(!b) return false; b.click(); return true`);
 const filas = (p) => E(p, "return document.querySelectorAll('.b2-tabla-r').length");
 const textoFilas = (p) => E(p, "return [...document.querySelectorAll('.b2-tabla-r')].map(r=>r.innerText.replace(/\\s+/g,' ').trim())");
 const clicFila = (p, txt) => E(p, `const r=[...document.querySelectorAll('.b2-tabla-r')].find(x=>x.innerText.includes(${JSON.stringify(txt)})); if(!r) return false; r.click(); return true`);
 const sinDesborde = (p) => E(p, "return document.documentElement.scrollWidth <= innerWidth + 2");
 const tecla = async (p, key, code, vk) => { await p.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code, windowsVirtualKeyCode: vk }); await p.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk }); };
+/** Espera hasta que una condición asíncrona (p. ej. una consulta a la BD) se cumpla. */
+const esperaBD = async (fn, ms = 6000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await fn()) return true; await pausa(250); } return false; };
 const esperar = (p, expr, etiqueta, ms = 8000) => p.esperar(expr, { ms, etiqueta }).then(() => true).catch(() => false);
 const marcaConsola = (p) => p.consola.length;
 const consolaDesde = (p, n) => p.consola.slice(n);
-const esperaCarga = async (p) => { await esperar(p, "!document.querySelector('.b2-skel') ", "fin de la carga", 10000); await pausa(300); };
+const esperaCarga = async (p) => {
+  await esperar(p, "!document.querySelector('.b2-skel')", "fin de la carga", 10000);
+  // Hay un instante entre la carga del semestre y la de los grupos/filas: espera contenido o estado vacío
+  await esperar(p, "document.querySelector('.b2-tabla-r, .b2-ml-i, .b2-adm-vacio-c, .b2-adm-vacio, .b2-alert')", "contenido de la pestaña", 6000);
+  await pausa(300);
+};
 const irAdm = async (p, tab, extra = "") => { await ir(p, `/admin/sistema?tab=${tab}${extra}`, 1500); await esperaCarga(p); };
 
 const cuenta = async (tabla, donde = "true", params = []) => Number((await q(`select count(*)::int n from ${tabla} where ${donde}`, params))[0].n);
@@ -103,6 +118,7 @@ async function residuos() {
 }
 
 let semActivoGlobal = "";
+let grupoSembrado = null;
 const p = await lanzar({ ancho: 1440, alto: 900 });
 let antes;
 const seccion = async (id, nombre, fn, esperados = []) => {
@@ -118,7 +134,7 @@ try {
   antes = await conteos();
   const semActivo = (await q("select codigo from semestres where activo"))[0].codigo;
   semActivoGlobal = semActivo;
-  const grupoSembrado = (await q(`select id, nombre from grupos_matriz where semestre=$1 order by id limit 1`, [semActivo]))[0];
+  grupoSembrado = (await q(`select id, nombre from grupos_matriz where semestre=$1 order by id limit 1`, [semActivo]))[0];
   await login(p, ADMIN);
 
   /* ───────── 1. Navegación ───────── */
@@ -440,18 +456,19 @@ async function escrituras() {
     // Correo duplicado: el backend rechaza y la interfaz muestra su mensaje
     await clic(p, "Agregar usuario"); await pausa(500);
     await campo(p, "Nombres", FX); await campo(p, "Apellidos", "Duplicado"); await campo(p, "Correo institucional", MAIL);
+    const dbg = await E(p, "return JSON.stringify([...document.querySelectorAll('aside.b2-insp input,aside.b2-insp select')].map(i=>i.value))");
     await guardar(p);
-    ok("usuario: correo duplicado → mensaje de error del backend y sin segundo registro", await esperarToast(p, /correo|existe|registrad|duplic|ya /i) && (await cuenta("usuarios", "correo=$1", [MAIL])) === 1, JSON.stringify(await toasts(p)));
+    ok("usuario: correo duplicado → mensaje de error del backend y sin segundo registro", await esperarToast(p, /Ya existe un usuario con ese correo/) && (await cuenta("usuarios", "correo=$1", [MAIL])) === 1, dbg + JSON.stringify(await toasts(p)));
     await cancelarForm(p);
     // Edición: inactivar y reactivar
     ok("usuario: clic en la fila abre el detalle con Editar y Eliminar", await abrirFila(p, MAIL) && await existeBtn(p, "Editar") && await existeBtn(p, "Eliminar"));
     await clic(p, "Editar"); await pausa(500);
     ok("usuario: el formulario de edición trae los datos actuales", (await valorCampo(p, "Regional")) === "Fixture" && (await valorCampo(p, "Estado")) === "activo");
     await campo(p, "Estado", "Inactivo"); await guardar(p);
-    ok("usuario: inactivar guarda (toast y BD)", await esperarToast(p, /Cambios guardados/) && (await cuenta("usuarios", "correo=$1 and estado='inactivo'", [MAIL])) === 1);
+    ok("usuario: inactivar guarda (toast y BD)", await esperarToast(p, /Cambios guardados/) && await esperaBD(async () => (await cuenta("usuarios", "correo=$1 and estado='inactivo'", [MAIL])) === 1));
     await pausa(700);
     await clic(p, "Editar"); await pausa(500); await campo(p, "Estado", "Activo"); await guardar(p);
-    ok("usuario: reactivar guarda (BD activo)", await esperarToast(p, /Cambios guardados/) && (await cuenta("usuarios", "correo=$1 and estado='activo'", [MAIL])) === 1);
+    ok("usuario: reactivar guarda (BD activo)", await esperarToast(p, /Cambios guardados/) && await esperaBD(async () => (await cuenta("usuarios", "correo=$1 and estado='activo'", [MAIL])) === 1));
   });
 
   await seccion("6b", "Semestre sintético", async () => {
@@ -515,5 +532,214 @@ async function escrituras() {
     await campo(p, "Título", `${FX} Iniciativa B`); await guardar(p);
     ok("iniciativa: edición guardada (toast y BD)", await esperarToast(p, /Iniciativa actualizada/) && (await cuenta("proyectos", "titulo=$1", [`${FX} Iniciativa B`])) === 1);
   });
+
+  await seccion("6e", "Tareas semanales", async () => {
+    await cargaCtx();
+    await irAdm(p, "tareas");
+    const g0 = await cuenta("grupos_matriz");
+    await clic(p, "Nuevo grupo"); await pausa(600);
+    await guardar(p); await pausa(500);
+    ok("grupo: guardar vacío → error del nombre y sin escritura", (await erroresForm(p)).length >= 1 && (await cuenta("grupos_matriz")) === g0, JSON.stringify(await erroresForm(p)));
+    await campo(p, "Nombre", `${FX} Grupo`); await campo(p, "Horas totales", "10");
+    await guardar(p);
+    ok("grupo: toast «Grupo creado»", await esperarToast(p, /Grupo creado/));
+    await cargaCtx();
+    const g = (await q(`select semestre, tipo_docente, horas_totales from grupos_matriz where id=$1`, [ctx.g26?.id ?? -1]))[0];
+    ok(`grupo: en BD dentro de ${semActivoGlobal}, tipo antiguo y 10 horas`, g?.semestre === semActivoGlobal && g.tipo_docente === "ANTIGUO" && Number(g.horas_totales) === 10, JSON.stringify(g));
+    await pausa(900);
+    ok("grupo: aparece en la tabla y el resumen cuenta uno más", (await textoFilas(p)).some((t) => t.includes(`${FX} Grupo`)));
+    await abrirFila(p, `${FX} Grupo`);
+    await clic(p, "Editar grupo"); await pausa(600);
+    ok("grupo: el formulario de edición trae los valores actuales", (await valorCampo(p, "Nombre")) === `${FX} Grupo`);
+    await campo(p, "Descripción", "Fixture de pruebas"); await guardar(p);
+    ok("grupo: edición guardada (toast y BD)", await esperarToast(p, /Cambios guardados/) && await esperaBD(async () => (await cuenta("grupos_matriz", "id=$1 and descripcion='Fixture de pruebas'", [ctx.g26.id])) === 1));
+    // Asignar el docente fixture, bloquear la eliminación y quitarlo con confirmación
+    await pausa(700);
+    await abrirFila(p, `${FX} Grupo`);
+    await clic(p, "Asignar docente"); await pausa(600);
+    await campo(p, "Docente", `${FX} Docente Fixture`); await guardar(p);
+    ok("grupo: asignar docente (toast y BD grupo_matriz_id)", await esperarToast(p, /Docente asignado/) && await esperaBD(async () => (await cuenta("usuarios", "correo=$1 and grupo_matriz_id=$2", [MAIL, ctx.g26.id])) === 1));
+    await pausa(900);
+    await abrirFila(p, `${FX} Grupo`);
+    ok("grupo: el inspector lista al docente asignado", /TSTA4C Docente Fixture/.test(await inspTexto(p)));
+    await clic(p, "Eliminar grupo"); await pausa(600);
+    ok("grupo con docentes: eliminar se rechaza con aviso y el grupo permanece", await esperarToast(p, /No puedes eliminar este grupo/) && !(await dialogo(p)) && (await cuenta("grupos_matriz", "id=$1", [ctx.g26.id])) === 1, JSON.stringify(await toasts(p)));
+    await clic(p, `Quitar a ${FX} Docente Fixture del grupo`); await pausa(500);
+    ok("grupo: quitar docente pide confirmación", /quedará sin grupo/i.test((await dialogo(p)) || ""), String(await dialogo(p)));
+    await confirmar(p, "Quitar del grupo");
+    ok("grupo: quitar docente (toast y BD)", await esperarToast(p, /Docente quitado del grupo/) && await esperaBD(async () => (await cuenta("usuarios", "correo=$1 and grupo_matriz_id is null", [MAIL])) === 1));
+    await pausa(900);
+    // Grupo en el semestre sintético 2098A (insumo de la clonación)
+    await campoSel(p, "Semestre", /2098A/); await pausa(1200); await esperaCarga(p);
+    await clic(p, "Nuevo grupo"); await pausa(600);
+    ok("grupo en 2098A: el formulario hereda el semestre elegido", (await valorCampo(p, "Semestre")) === "2098A");
+    await campo(p, "Nombre", `${FX} Grupo Clon`); await campo(p, "Horas totales", "8"); await guardar(p);
+    ok("grupo en 2098A: creado (toast y BD)", await esperarToast(p, /Grupo creado/) && await esperaBD(async () => (await cuenta("grupos_matriz", "nombre=$1 and semestre='2098A'", [`${FX} Grupo Clon`])) === 1));
+    await cargaCtx();
+  });
+
+  await seccion("6f", "Plantillas", async () => {
+    await cargaCtx();
+    const hashSembradas = async () => (await q(`select md5(coalesce(string_agg(p::text, '|' order by id),'')) h, count(*)::int n from plantilla_entregables p where grupo_id not in (select id from grupos_matriz where nombre like '${FX}%')`))[0];
+    const h0 = await hashSembradas();
+    await irAdm(p, "plantillas", `&semestre=${semActivoGlobal}&grupo=${ctx.g26.id}`); await pausa(1200);
+    ok("plantillas: grupo fixture vacío muestra «Este grupo no tiene plantillas»", await E(p, "return /no tiene plantillas/i.test(document.body.innerText)"));
+    const n0 = await cuenta("plantilla_entregables", "grupo_id=$1", [ctx.g26.id]);
+    await clic(p, "Nueva plantilla"); await pausa(600);
+    await guardar(p); await pausa(500);
+    ok("plantilla: guardar vacío → errores en línea y sin escritura", (await erroresForm(p)).length >= 4 && (await cuenta("plantilla_entregables", "grupo_id=$1", [ctx.g26.id])) === n0, JSON.stringify(await erroresForm(p)));
+    const llenar = async (ini, fin, entregable, sem = "1", mes = "agosto") => {
+      await campo(p, "Semana", sem); await campo(p, "Mes", mes); await campo(p, "Fecha exacta de inicio", ini); await campo(p, "Fecha límite exacta", fin);
+      await campo(p, "Número", "1"); await campo(p, "Horas", "2"); await campo(p, "Fase", `${FX} Fase`); await campo(p, "Categoría", `${FX} Cat`);
+      await campo(p, "Entregable", entregable); await campo(p, "Instrucciones de evidencia", "Instrucción fixture"); await campo(p, "Enlace o formulario de referencia", "https://example.org/tsta4c");
+    };
+    await llenar("2026-08-30", "2026-08-24", `${FX} Entregable único`);
+    await guardar(p); await pausa(600);
+    ok("plantilla: fecha límite anterior al inicio → error y sin escritura", (await erroresForm(p)).length >= 1 && (await cuenta("plantilla_entregables", "grupo_id=$1", [ctx.g26.id])) === n0, JSON.stringify(await erroresForm(p)));
+    await campo(p, "Fecha exacta de inicio", "2026-08-24"); await campo(p, "Fecha límite exacta", "2026-08-30"); await guardar(p);
+    ok("plantilla: toast «Plantilla creada»", await esperarToast(p, /Plantilla creada/));
+    const pl = (await q(`select id, horas, entregable, dias_inicio_desde_feb di, dias_fin_desde_feb df, enlace_referencia from plantilla_entregables where grupo_id=$1`, [ctx.g26.id]))[0];
+    ok("plantilla: en BD con horas, enlace y días calculados respecto al inicio del semestre", pl && Number(pl.horas) === 2 && pl.enlace_referencia === "https://example.org/tsta4c" && pl.di != null && pl.df != null, JSON.stringify(pl));
+    await pausa(900);
+    ok("plantilla: aparece en la tabla", (await textoFilas(p)).some((t) => t.includes(`${FX} Entregable único`)));
+    await abrirFila(p, `${FX} Entregable único`);
+    ok("plantilla: el inspector muestra instrucciones, enlace y origen", /Instrucción fixture/.test(await inspTexto(p)) && /example\.org\/tsta4c/.test(await inspTexto(p)) && /Origen/.test(await inspTexto(p)));
+    await clic(p, "Editar"); await pausa(600);
+    ok("plantilla: el formulario de edición trae los valores actuales", Number(await valorCampo(p, "Horas")) === 2 && (await valorCampo(p, "Entregable")) === `${FX} Entregable único`);
+    await campo(p, "Horas", "3"); await guardar(p);
+    ok("plantilla: edición guardada (toast y BD horas=3)", await esperarToast(p, /Cambios guardados/) && await esperaBD(async () => (await cuenta("plantilla_entregables", "id=$1 and horas=3", [pl.id])) === 1));
+    // Actualización masiva: el alcance es solo el grupo fixture porque el nombre del entregable es único
+    await pausa(700);
+    await abrirFila(p, `${FX} Entregable único`);
+    await clic(p, "Actualizar evidencia compartida"); await pausa(1200);
+    ok("masiva: la vista previa (solo lectura) cuenta 1 plantilla en 1 grupo", await E(p, "return /1 plantilla\\(s\\) en 1 grupo\\(s\\)/.test(document.querySelector('aside.b2-insp').innerText)"), (await inspTexto(p)).slice(0, 160));
+    ok("masiva: «Actualizar grupos» habilitado tras la vista previa", await E(p, "const b=document.querySelector('.b2-form-pie button[type=submit]'); return !!b&&!b.disabled"));
+    await campo(p, "Instrucción o evidencia documental compartida", "Instrucción compartida fixture"); await campo(p, "Enlace o formulario compartido", "https://example.org/tsta4c-2");
+    await guardar(p); await pausa(600);
+    ok("masiva: aplicar pide confirmación explícita con el alcance", /1 plantilla\(s\) de 1 grupo\(s\)/.test((await dialogo(p)) || ""), String(await dialogo(p)));
+    await confirmar(p, "Aplicar a todos");
+    ok("masiva: aplicada (toast y BD)", await esperarToast(p, /Evidencia actualizada en 1 grupo/) && await esperaBD(async () => (await cuenta("plantilla_entregables", "id=$1 and descripcion_evidencia='Instrucción compartida fixture'", [pl.id])) === 1));
+    ok("masiva: las plantillas sembradas no cambiaron (hash idéntico)", JSON.stringify(await hashSembradas()) === JSON.stringify(h0));
+    // Plantilla en el grupo de 2098A (para la clonación) y revisión de solo lectura de una plantilla sembrada
+    await irAdm(p, "plantillas", `&semestre=2098A&grupo=${ctx.g98.id}`); await pausa(1200);
+    await clic(p, "Nueva plantilla"); await pausa(600);
+    await llenar("2098-02-02", "2098-02-08", `${FX} Entregable clon`, "1", "febrero");
+    await guardar(p);
+    ok("plantilla en 2098A: creada (toast y BD)", await esperarToast(p, /Plantilla creada/) && await esperaBD(async () => (await cuenta("plantilla_entregables", "grupo_id=$1", [ctx.g98.id])) === 1));
+    await irAdm(p, "plantillas", `&semestre=${semActivoGlobal}&grupo=${grupoSembrado.id}`); await pausa(1500);
+    await E(p, "document.querySelectorAll('.b2-tabla-r')[1].click()"); await pausa(500);
+    await clic(p, "Editar"); await pausa(600);
+    ok("plantilla sembrada: se puede abrir el formulario sin guardar", await E(p, "return !!document.querySelector('.b2-form')"));
+    await cancelarForm(p);
+    ok("plantilla sembrada: sin cambios tras abrir y cancelar (hash idéntico)", JSON.stringify(await hashSembradas()) === JSON.stringify(h0));
+    // Eliminar la plantilla fixture de 2026B con confirmación
+    await irAdm(p, "plantillas", `&semestre=${semActivoGlobal}&grupo=${ctx.g26.id}`); await pausa(1200);
+    await abrirFila(p, `${FX} Entregable único`);
+    await clic(p, "Eliminar"); await pausa(500);
+    ok("plantilla: eliminar pide confirmación segura", /eliminar la plantilla/i.test((await dialogo(p)) || ""), String(await dialogo(p)));
+    await confirmar(p, "Cancelar"); await pausa(300);
+    ok("plantilla: cancelar conserva el registro", (await cuenta("plantilla_entregables", "id=$1", [pl.id])) === 1);
+    await clic(p, "Eliminar"); await pausa(500); await confirmar(p, "Eliminar");
+    ok("plantilla: confirmar elimina (toast y BD)", await esperarToast(p, /Plantilla eliminada/) && await esperaBD(async () => (await cuenta("plantilla_entregables", "id=$1", [pl.id])) === 0));
+    ok("plantillas sembradas intactas tras todo el flujo", JSON.stringify(await hashSembradas()) === JSON.stringify(h0));
+  });
+
+  await seccion("6g", "Clonar semestre", async () => {
+    await cargaCtx();
+    await irAdm(p, "tareas");
+    await campoSel(p, "Semestre", /2098A/); await pausa(1200); await esperaCarga(p);
+    const cl0 = await cuenta("grupos_matriz");
+    await clic(p, "Clonar semestre", "document.querySelector('.b2-mx-acc')"); await pausa(700);
+    ok("clonar: el formulario abre en el inspector con origen 2098A y vista previa de 1 grupo", (await valorCampo(p, "Semestre origen")) === "2098A" && /Se clonarán\s*1\s*grupo/.test(await inspTexto(p)), (await inspTexto(p)).slice(-160));
+    await guardar(p); await pausa(500);
+    ok("clonar: sin destino ni fechas → errores y sin escritura", (await erroresForm(p)).length >= 2 && (await cuenta("grupos_matriz")) === cl0, JSON.stringify(await erroresForm(p)));
+    await campo(p, "Semestre destino", "2098A"); await campo(p, "Fecha de inicio", "2097-02-03"); await campo(p, "Fecha de finalización", "2097-05-26"); await guardar(p); await pausa(500);
+    ok("clonar: destino igual al origen → error y sin escritura", (await erroresForm(p)).length >= 1 && (await cuenta("grupos_matriz")) === cl0, JSON.stringify(await erroresForm(p)));
+    await campo(p, "Semestre destino", "2097A"); await campo(p, "Número de semanas", "16"); await guardar(p);
+    ok("clonar: toast «Se crearon 1 grupos y 1 plantillas para 2097A»", await esperarToast(p, /Se crearon 1 grupos y 1 plantillas para 2097A/), JSON.stringify(await toasts(p)));
+    const gc = (await q(`select id, nombre from grupos_matriz where semestre='2097A'`));
+    ok("clonar: BD con el grupo y la plantilla copiados, semestre 2097A inactivo y el activo intacto", gc.length === 1 && gc[0].nombre === `${FX} Grupo Clon` && (await cuenta("plantilla_entregables", "grupo_id=$1", [gc[0].id])) === 1 && (await cuenta("semestres", "codigo='2097A' and not activo")) === 1 && (await q("select codigo from semestres where activo"))[0].codigo === semActivoGlobal, JSON.stringify(gc));
+  });
+
+  /* Limpieza guiada por la interfaz: ejercita las confirmaciones de borrado y deja la BD como estaba */
+  await seccion("6h", "Eliminaciones y confirmaciones", async () => {
+    await cargaCtx();
+    // Semestres sintéticos con datos: doble paso (409 → «Eliminar todo»)
+    await irAdm(p, "semestres");
+    for (const cod of ["2097A", "2098A"]) {
+      if (!(await abrirFila(p, cod))) { ok(`semestre ${cod}: existe para eliminar`, false); continue; }
+      await clic(p, "Eliminar semestre"); await pausa(500);
+      ok(`semestre ${cod}: eliminar pide confirmación`, /eliminar el semestre/i.test((await dialogo(p)) || ""), String(await dialogo(p)));
+      await confirmar(p, "Eliminar"); await pausa(900);
+      const d2 = (await dialogo(p)) || "";
+      ok(`semestre ${cod}: con datos aparece el segundo paso con el resumen`, /grupos/.test(d2) && /no se puede deshacer/i.test(d2), d2.slice(0, 200));
+      await confirmar(p, "Eliminar todo");
+      ok(`semestre ${cod}: eliminado (toast y BD)`, await esperarToast(p, /Semestre eliminado/) && await esperaBD(async () => (await cuenta("semestres", "codigo=$1", [cod])) === 0));
+      await pausa(900);
+    }
+    ok("semestre activo intacto tras eliminar los sintéticos", (await q("select codigo from semestres where activo"))[0].codigo === semActivoGlobal && (await cuenta("grupos_matriz", "semestre in ('2097A','2098A')")) === 0);
+    // Grupo fixture
+    await irAdm(p, "tareas");
+    await abrirFila(p, `${FX} Grupo`);
+    await clic(p, "Eliminar grupo"); await pausa(500); await confirmar(p, "Eliminar");
+    ok("grupo: eliminar con confirmación (toast y BD)", await esperarToast(p, /Grupo eliminado/) && await esperaBD(async () => (await cuenta("grupos_matriz", "nombre=$1", [`${FX} Grupo`])) === 0));
+    // Iniciativa
+    await irAdm(p, "proyectos");
+    await abrirFila(p, `${FX} Iniciativa B`);
+    await clic(p, "Eliminar"); await pausa(500);
+    ok("iniciativa: eliminar pide confirmación", /eliminar/i.test((await dialogo(p)) || ""), String(await dialogo(p)));
+    await confirmar(p, "Eliminar");
+    ok("iniciativa: eliminada (toast, BD y cronograma)", await esperarToast(p, /Iniciativa eliminada/) && await esperaBD(async () => (await cuenta("proyectos", "titulo like $1", [`${FX}%`])) === 0) && (await cuenta("proyecto_semanas", "proyecto_id=$1", [ctx.proy.id])) === 0);
+    // Usuario
+    await irAdm(p, "usuarios");
+    await abrirFila(p, MAIL);
+    await clic(p, "Eliminar"); await pausa(500);
+    ok("usuario: eliminar pide confirmación segura (foco en Cancelar)", /eliminar a/i.test((await dialogo(p)) || "") && await E(p, "return document.activeElement?.textContent.trim()==='Cancelar'"), String(await dialogo(p)));
+    await confirmar(p, "Eliminar");
+    ok("usuario: eliminado (toast y BD)", await esperarToast(p, /Usuario eliminado/) && await esperaBD(async () => (await cuenta("usuarios", "correo=$1", [MAIL])) === 0));
+    // Programa y escuela
+    await irAdm(p, "programas");
+    await E(p, `[...document.querySelectorAll('.b2-adm-lat-i')].find(i=>i.innerText.includes(${JSON.stringify(FX + " Escuela")})).click()`); await pausa(800);
+    await abrirFila(p, `${FX} Programa`);
+    await clic(p, "Eliminar programa"); await pausa(500); await confirmar(p, "Eliminar");
+    ok("programa: eliminado (toast y BD)", await esperarToast(p, /Programa eliminado/) && await esperaBD(async () => (await cuenta("programas", "nombre=$1", [`${FX} Programa`])) === 0));
+    await pausa(800);
+    await E(p, `[...document.querySelectorAll('.b2-adm-lat-i')].find(i=>i.innerText.includes(${JSON.stringify(FX + " Escuela")})).click()`); await pausa(800);
+    ok("escuela sin programas: «Eliminar escuela» habilitado", !(await btnDeshabilitado(p, "Eliminar escuela")));
+    await clic(p, "Eliminar escuela"); await pausa(500); await confirmar(p, "Eliminar");
+    ok("escuela: eliminada (toast y BD)", await esperarToast(p, /Escuela eliminada/) && await esperaBD(async () => (await cuenta("escuelas", "nombre=$1", [`${FX} Escuela`])) === 0));
+  });
 }
-async function responsive() { /* se completa en la siguiente iteración */ }
+async function responsive() {
+  const vis = "const vis=(s)=>[...document.querySelectorAll(s)].filter(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return c.display!=='none'&&c.visibility!=='hidden'&&r.width>0&&r.height>0}).length;";
+  for (const [w, h] of [[1440, 900], [1280, 800], [820, 1000], [390, 844]]) {
+    await p.tamano(w, h);
+    const movil = w <= 720, estrecho = w <= 900;
+    const c0 = marcaConsola(p);
+    for (const [id, nombre] of TABS) {
+      const extra = id === "plantillas" ? `&semestre=${semActivoGlobal}&grupo=${grupoSembrado.id}` : "";
+      await irAdm(p, id, extra); await pausa(1200);
+      const tag = `${w}px ${nombre}`;
+      ok(`${tag}: sin desborde horizontal de la página`, await sinDesborde(p));
+      const nav = await E(p, `${vis} return JSON.stringify({hd:vis('.b2-hd-nav'), side:vis('.b2-side'), bnav:vis('.b2-bnav'), enlaces:document.querySelectorAll('.b2-bnav a').length, h1:vis('h1')})`).then(JSON.parse);
+      ok(`${tag}: ${estrecho ? "barra inferior B2 y sin menú superior/riel duplicados" : "menú superior y riel sin barra inferior"}`, estrecho ? nav.bnav === 1 && nav.hd === 0 && nav.side === 0 && nav.enlaces === 5 : nav.bnav === 0 && nav.hd === 1 && nav.side === 1, JSON.stringify(nav));
+      ok(`${tag}: ${movil ? "lista (no tabla comprimida)" : "tabla"}`, movil ? await E(p, "return document.querySelectorAll('.b2-ml-i').length>0 && !document.querySelector('.b2-tabla')") : (await filas(p)) > 0);
+      // Inspector: se abre desde el primer elemento y se puede cerrar
+      await E(p, "(document.querySelector('.b2-ml-i')||document.querySelector('.b2-tabla-r')).click()"); await pausa(700);
+      const g = await E(p, `const a=document.querySelector('aside.b2-insp[data-open="true"]'); if(!a) return null; const r=a.getBoundingClientRect(); const bs=[...a.querySelectorAll('.b2-btn')].filter(b=>b.offsetParent).map(b=>Math.round(b.getBoundingClientRect().height)); return JSON.stringify({l:Math.round(r.left),r:Math.round(r.right),t:Math.round(r.top),b:Math.round(r.bottom),iw:innerWidth,ih:innerHeight,min:Math.min(...bs),sw:a.scrollWidth,cw:a.clientWidth})`).then((x) => x && JSON.parse(x));
+      ok(`${tag}: el inspector se abre dentro de la pantalla`, !!g && g.l >= -1 && g.r <= g.iw + 1 && g.b <= g.ih + 1 && g.sw <= g.cw + 2, JSON.stringify(g));
+      if (movil && g) ok(`${tag}: botones del inspector ≥ 40 px y hoja inferior`, g.min >= 39 && g.t > 40 && g.b >= g.ih - 2, JSON.stringify(g));
+      await clic(p, "Cerrar detalle"); await pausa(500);
+      ok(`${tag}: el inspector se cierra`, !(await inspAbierto(p)));
+    }
+    // Formulario de usuario cómodo y «Guardar» alcanzable
+    await irAdm(p, "usuarios"); await pausa(600);
+    await clic(p, "Agregar usuario"); await pausa(800);
+    const f = await E(p, `const a=document.querySelector('aside.b2-insp[data-open="true"]'); const b=document.querySelector('.b2-form-pie button[type=submit]'); if(!a||!b) return null; const rb=b.getBoundingClientRect(); const fuera=[...a.querySelectorAll('input,select,textarea')].filter(i=>i.offsetParent).some(i=>{const r=i.getBoundingClientRect(); return r.right>innerWidth+1||r.left<-1}); return JSON.stringify({bottom:Math.round(rb.bottom), ih:innerHeight, h:Math.round(rb.height), w:Math.round(rb.width), fuera})`).then((x) => x && JSON.parse(x));
+    ok(`${w}px formulario de usuario: «Guardar usuario» visible y alcanzable, campos dentro de la pantalla`, !!f && f.bottom <= f.ih + 1 && f.w > 0 && !f.fuera && (!movil || f.h >= 39), JSON.stringify(f));
+    await cancelarForm(p);
+    const errores = consolaDesde(p, c0);
+    ok(`${w}px: consola sin errores en las seis pestañas`, errores.length === 0, errores.slice(0, 2).join(" | ").slice(0, 240));
+  }
+  await p.tamano(1440, 900);
+}

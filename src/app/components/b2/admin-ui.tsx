@@ -4,7 +4,7 @@ import {
   useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type CSSProperties, type KeyboardEvent, type ReactNode,
 } from "react";
-import { IBuscar, IChevL, IChevR, ICerrar, IKebab } from "./icons";
+import { IAbajo, IArriba, IBuscar, IChevL, IChevR, ICerrar, IKebab } from "./icons";
 import { Inspector, Menu, enControl } from "./ui";
 import { useMedia } from "./matriz-util";
 import "./b2-admin.css";
@@ -168,6 +168,8 @@ export interface Col<T> {
   /** 1 = siempre; 2 = desde ~820 px de ancho útil; 3 = desde ~1080 px. */
   prioridad?: 1 | 2 | 3;
   num?: boolean;
+  /** Clave de orden: si se define, el encabezado es un botón que ordena (requiere `orden` y `onOrden` en la tabla). */
+  orden?: string;
   celda: (r: T) => ReactNode;
 }
 export interface FilaMovil {
@@ -191,7 +193,7 @@ function useAncho(ref: React.RefObject<HTMLElement | null>) {
 }
 
 export function DataTable<T>({
-  etiqueta, cols, rows, getKey, selId, onSelect, cargando, vacio, filaMovil, acciones, ocupado,
+  etiqueta, cols, rows, getKey, selId, onSelect, cargando, vacio, filaMovil, acciones, ocupado, orden, onOrden,
 }: {
   etiqueta: string;
   cols: Col<T>[];
@@ -205,6 +207,8 @@ export function DataTable<T>({
   /** Elementos del menú contextual de la fila (kebab). */
   acciones?: (r: T) => ({ label: string; onSelect: () => void; disabled?: boolean; danger?: boolean } | "sep")[];
   ocupado?: boolean;
+  orden?: { clave: string; dir: "asc" | "desc" };
+  onOrden?: (clave: string) => void;
 }) {
   const movil = useMedia("(max-width: 720px)");
   const ref = useRef<HTMLDivElement>(null);
@@ -254,7 +258,16 @@ export function DataTable<T>({
   return (
     <div ref={ref} className="b2-tabla b2-adm-tabla" role="table" aria-label={etiqueta} aria-busy={cargando} tabIndex={0} onKeyDown={teclas} style={{ "--cols": plantilla } as CSSProperties}>
       <div className="b2-tabla-h" role="row">
-        {visibles.map((c) => <span key={c.id} role="columnheader" className={c.num ? "b2-c-num" : undefined}>{c.titulo}</span>)}
+        {visibles.map((c) => (
+          <span key={c.id} role="columnheader" className={c.num ? "b2-c-num" : undefined} aria-sort={c.orden && orden ? (orden.clave === c.orden ? (orden.dir === "asc" ? "ascending" : "descending") : "none") : undefined}>
+            {c.orden && onOrden ? (
+              <button type="button" className="b2-th-btn" data-on={orden?.clave === c.orden || undefined} onClick={() => onOrden(c.orden!)} aria-label={`Ordenar por ${c.titulo}`}>
+                {c.titulo}
+                {orden?.clave === c.orden ? (orden.dir === "asc" ? <IArriba width={12} height={12} /> : <IAbajo width={12} height={12} />) : null}
+              </button>
+            ) : c.titulo}
+          </span>
+        ))}
         {acciones && <span role="columnheader" className="b2-sr-only">Acciones</span>}
       </div>
       {cargando && <div className="b2-skel-w" aria-hidden="true">{[90, 80, 86, 74, 82].map((w, i) => <span key={i} className="b2-skel" style={{ width: `${w}%` }} />)}</div>}
