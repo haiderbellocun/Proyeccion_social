@@ -67,14 +67,14 @@ button.b2-fb-f[data-sel] { background: var(--c-select); }
 .b2-cg { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 6px; }
 .b2-cg-y { height: var(--alto); display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end; font-size: 10.5px; color: var(--c-text-3); font-variant-numeric: tabular-nums; line-height: 1; }
 .b2-cg-sc { overflow-x: auto; padding-top: 14px; margin-top: -14px; }
-.b2-cg-g { position: relative; display: grid; grid-template-columns: repeat(var(--n), minmax(64px, 1fr)); gap: 6px; height: calc(var(--alto) + 46px); padding-bottom: 46px; min-width: min-content; }
-.b2-cg-l { position: absolute; left: 0; right: 0; height: 1px; background: var(--c-line); margin-bottom: 46px; pointer-events: none; }
+.b2-cg-g { --pie: 46px; position: relative; display: grid; grid-template-columns: repeat(var(--n), minmax(64px, 1fr)); gap: 6px; height: calc(var(--alto) + var(--pie)); padding-bottom: var(--pie); min-width: min-content; }
+.b2-cg-l { position: absolute; left: 0; right: 0; height: 1px; background: var(--c-line); margin-bottom: var(--pie); pointer-events: none; }
 .b2-cg-c { position: relative; display: flex; flex-direction: column; justify-content: flex-end; min-width: 0; border-radius: var(--r); outline-offset: 2px; }
 .b2-cg-b { height: var(--alto); display: flex; align-items: flex-end; justify-content: center; gap: 3px; }
 .b2-cg-bar { position: relative; flex: 1 1 0; max-width: 28px; min-height: 2px; border-radius: 2px 2px 0 0; transition: height 220ms var(--ease-out); }
 .b2-cg-bar[data-cero] { background: var(--c-line-2); box-shadow: none; background-image: none; }
 .b2-cg-bar em { position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); padding-bottom: 2px; font-style: normal; font-size: 10.5px; font-weight: 800; color: var(--c-text); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.b2-cg-e { position: absolute; left: 0; right: 0; bottom: -44px; display: flex; flex-direction: column; align-items: center; text-align: center; font-size: var(--fs-sm); font-weight: 700; line-height: 1.2; }
+.b2-cg-e { position: absolute; left: 0; right: 0; bottom: calc(2px - var(--pie)); display: flex; flex-direction: column; align-items: center; text-align: center; font-size: var(--fs-sm); font-weight: 700; line-height: 1.2; }
 .b2-cg-e small { font-size: 10.5px; font-weight: 600; color: var(--c-text-3); }
 .b2-cg-c[data-futuro] .b2-cg-b { opacity: 0.55; }
 .b2-cg-c[data-futuro] .b2-cg-e { color: var(--c-text-3); }
@@ -120,4 +120,28 @@ button.b2-fb-f[data-sel] { background: var(--c-select); }
   .b2-ana .b2-tb-search { height: 40px; }
   .b2-ana .b2-tb-search input { font-size: var(--fs-md); }
   .b2-ana .b2-btn-sm, .b2-ana .b2-chip { min-height: 40px; }
+}
+
+/* etiquetas de mes: completas en escritorio, cortas en móvil; valores bajo la columna en móvil */
+.b2-cg-cc, .b2-cg-vals { display: none; }
+@media (pointer: coarse) { .b2-cg-c:focus .b2-cg-t { display: flex; transform: translateX(-50%); } }
+@media (max-width: 720px) {
+  .b2-cg-g { --pie: 84px; grid-template-columns: repeat(var(--n), minmax(46px, 1fr)); gap: 4px; }
+  .b2-cg-lg { display: none; }
+  .b2-cg-cc { display: inline; }
+  .b2-cg-bar em { display: none; }
+  .b2-cg-bar { max-width: 20px; }
+  .b2-cg-vals { display: flex; flex-direction: column; gap: 1px; margin-top: 3px; font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--c-text); }
+  .b2-cg-vals > span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+  .b2-cg-vals .b2-sw { width: 7px; height: 7px; }
+  .b2-cg-e { font-size: 11.5px; }
+  .b2-cg-t { min-width: 140px; max-width: 70vw; }
+  /* indicadores: rejilla de dos columnas con etiquetas completas */
+  .b2-inds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
+  .b2-inds > div { min-width: 0; border-left: 0; border-top: 1px solid var(--c-line); }
+  .b2-inds > div:nth-child(-n+2) { border-top: 0; }
+  .b2-inds > div:nth-child(even) { border-left: 1px solid var(--c-line); }
+  .b2-inds > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .b2-inds dt { white-space: normal; }
+  .b2-inds dd { flex-wrap: wrap; white-space: normal; }
 }

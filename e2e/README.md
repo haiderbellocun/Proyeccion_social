@@ -51,3 +51,15 @@ No incluyas secretos, rutas personales ni datos institucionales reales.
 - `ADM_SOLO=6a,6c node e2e/suites/administracion.mjs` ejecuta solo algunas secciones al depurar (ids: `1` navegación, `2` identidad, `3a`–`3f` lectura, `4` permisos, `5` errores/carga, `6a`–`6h` escrituras, `7` responsive, `8` regresión). Algunas secciones de escritura dependen de fixtures creados por las anteriores (`6a` → `6c` → `6d`…); la limpieza final borra solo lo que lleva el prefijo `TSTA4C` y los semestres `2098A`/`2097A`.
 - Las reglas de seguridad se comprueban contra el backend real sin riesgo: se intenta eliminar/desactivar la propia cuenta administradora y eliminar el semestre activo (el backend responde 409 antes de escribir) y se verifica por BD que nada cambió. La activación de semestres solo se prueba hasta el diálogo de confirmación, que se cancela.
 - Al final compara los conteos de usuarios, escuelas, programas, proyectos, grupos, plantillas y semestres con los iniciales y barre residuos.
+
+
+## Recursos, limpieza y registro (ejecutor `run.mjs`)
+El ejecutor corre las suites **una a una** y cuida los recursos del equipo:
+- **Cierre garantizado de Chrome:** `lib/cdp.mjs` registra cada navegador lanzado y lo cierra (árbol completo de procesos + perfil temporal) al terminar la suite, ante errores no capturados, Ctrl+C o `SIGTERM`. `cerrar()` es idempotente y cada comando CDP tiene un tiempo máximo (`E2E_CDP_TIMEOUT_MS`, def. 60 s).
+- **Procesos huérfanos propios:** `lib/entorno.mjs` cierra únicamente los Chrome cuyo perfil lleva el prefijo `proysocial-e2e-chrome-` y cuyo proceso padre ya no existe, y borra esos perfiles temporales sin uso. Nunca toca otros Chrome ni otros programas. Se ejecuta al iniciar, tras cada suite y al terminar.
+- **Memoria:** antes de cada suite se exige `E2E_MIN_FREE_MB` (def. 700) de memoria disponible; si no se alcanza en 60 s, se detiene ordenadamente. Durante una suite, si baja de `E2E_ABORT_FREE_MB` (def. 450) se interrumpe esa suite y las restantes quedan «NO EJECUTADA (memoria)». Código de salida 4 y resultados parciales guardados.
+- **Tiempo máximo por suite:** `E2E_SUITE_TIMEOUT_MS` (def. 30 min); al agotarse se cierra el árbol del proceso y se marca «TIEMPO AGOTADO».
+- **Bloqueo:** `proysocial-e2e.lock` evita ejecuciones duplicadas; un bloqueo cuyo PID ya no existe se reemplaza solo.
+- **Registro:** `e2e/salida/resultados/<fecha>/<suite>.log` y `resumen.json`; `e2e/salida/ultimo-resumen.json` guarda el último estado por suite junto con una huella de las fuentes (`src/`, `backend/src/`, `e2e/`, sin `.md`).
+- **Reutilización segura:** `node e2e/run.mjs --reanudar` omite las suites que salieron OK en la última ejecución **solo si la huella de las fuentes no cambió**; si algo cambió, se vuelven a correr.
+- Códigos de salida: 0 todo bien · 1 falla real o suite rota · 4 interrumpido por memoria.

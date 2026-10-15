@@ -194,7 +194,14 @@ export function ColumnasAgrupadas({ categorias, max = 100, unidad = "%", etiquet
                   {c.valores.map((v) => <span key={v.label}><i className="b2-sw" data-s={v.s} aria-hidden="true" />{v.label}: <b>{v.valor == null ? "sin dato" : v.texto ?? fmt(v.valor)}</b></span>)}
                   {c.futuro && <span className="b2-cg-fut">Periodo futuro: aún no es exigible.</span>}
                 </div>
-                <span className="b2-cg-e">{c.label}{c.futuro && <small>futuro</small>}{c.sub && <small>{c.sub}</small>}</span>
+                <span className="b2-cg-e">
+                  <span className="b2-cg-lg">{c.label}</span>
+                  <span className="b2-cg-cc" aria-hidden="true">{c.label.slice(0, 3)}</span>
+                  {c.futuro && <small>futuro</small>}{c.sub && <small>{c.sub}</small>}
+                  <span className="b2-cg-vals" aria-hidden="true">
+                    {c.valores.map((v) => <span key={v.label}><i className="b2-sw" data-s={v.s} />{v.valor == null ? "—" : v.texto ?? fmt(v.valor)}</span>)}
+                  </span>
+                </span>
               </div>
             );
           })}

@@ -10,9 +10,11 @@
 /* La tira de indicadores ocupa el ancho disponible (el kit la deja en su ancho mínimo dentro de una columna flex) */
 .b2-ana .b2-ana-sec > .b2-ind { width: auto; align-self: stretch; }
 /* Columnas del gráfico mensual: más anchas para que las etiquetas de valor no se pisen */
-.b2-ana-av-graf .b2-cg-bar { max-width: 44px; }
-.b2-ana-av-graf .b2-cg-b { gap: 8px; }
-.b2-ana-av-graf .b2-cg-g { grid-template-columns: repeat(var(--n), minmax(84px, 1fr)); }
+@media (min-width: 721px) {
+  .b2-ana-av-graf .b2-cg-bar { max-width: 44px; }
+  .b2-ana-av-graf .b2-cg-b { gap: 8px; }
+  .b2-ana-av-graf .b2-cg-g { grid-template-columns: repeat(var(--n), minmax(84px, 1fr)); }
+}
 /* móvil: los filtros se agrupan de a dos para no empujar el contenido */
 @media (max-width: 720px) {
   .b2-ana-av-f .b2-adm-filtro { width: calc(50% - 4px); flex: 1 1 calc(50% - 4px); }
