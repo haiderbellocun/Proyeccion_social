@@ -6,3 +6,5 @@ build/
 gha-creds-*.json
 .env.dev
 backend/ejemplos/
+
+e2e/salida/

@@ -1,0 +1,23 @@
+/* Administración · Plantillas */
+.b2-adm-pl-col { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.b2-adm-pl-vacio { flex: 1; display: grid; place-items: center start; padding: 24px 16px; background: var(--c-surface); border: 1px solid var(--c-line); border-radius: 6px; }
+.b2-adm-pl-det { flex: none; background: var(--c-surface); border: 1px solid var(--c-line); border-radius: 6px; font-size: var(--fs-md); }
+.b2-adm-pl-det > summary { display: flex; align-items: center; min-height: 36px; padding: 0 12px; cursor: pointer; font-weight: 700; color: var(--c-primary); list-style: none; }
+.b2-adm-pl-det > summary::-webkit-details-marker { display: none; }
+.b2-adm-pl-det > summary::before { content: ""; width: 6px; height: 6px; margin-right: 8px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform var(--t-fast) var(--ease-out); }
+.b2-adm-pl-det[open] > summary::before { transform: rotate(45deg); }
+.b2-adm-pl-det-c { padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 12px; }
+.b2-adm-pl-det-c h3 { margin: 0 0 4px; font-size: var(--fs-xs); font-weight: 800; color: var(--c-text-3); }
+.b2-adm-pl-det-c p { margin: 0; color: var(--c-text-2); font-size: var(--fs-sm); }
+.b2-adm-pl-docs { display: flex; flex-wrap: wrap; gap: 6px; }
+.b2-adm-pl-asig { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; max-width: 520px; }
+.b2-adm-pl-asig > label { flex: 1 1 220px; min-width: 0; }
+.b2-adm-pl-link { color: var(--c-primary); font-weight: 700; overflow-wrap: anywhere; }
+.b2-adm-pl-texto { white-space: pre-line; overflow-wrap: anywhere; }
+.b2-adm-pl-tags { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 8px; }
+@media (max-width: 900px) {
+  .b2-adm-pl-col .b2-tabla, .b2-adm-pl-col .b2-adm-ml { flex: none; min-height: 340px; }
+}
+@media (max-width: 720px) {
+  .b2-adm-pl-docs .b2-btn, .b2-adm-pl-asig .b2-btn { flex: 1 1 100%; }
+}

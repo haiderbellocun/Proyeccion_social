@@ -1,7 +1,7 @@
 // Navegación del diseño B2 para el perfil administrador. Todas las rutas son las reales de la aplicación.
 import type { ComponentType, SVGProps } from "react";
 import {
-  ICalendario, IColumnas, ICarpeta, ICola, IDocentes, IImportar, IIndicadores, IMaletin, IPanel, IRevision, ISeguimiento, ITarea, IUsuario, IAdmin,
+  ICalendario, IColumnas, ICarpeta, ICola, IDocentes, IImportar, IIndicadores, IMaletin, IMas, IPanel, IRevision, ISeguimiento, ITarea, IUsuario, IAdmin,
 } from "./icons";
 
 export type Icono = ComponentType<SVGProps<SVGSVGElement>>;
@@ -28,6 +28,8 @@ export interface ItemLateral {
   to: string;
   label: string;
   icono: Icono;
+  /** Enlace externo (se abre en una pestaña nueva). */
+  externo?: boolean;
   /** true si coincide con la ruta (y el parámetro `tab`, cuando lo hay). */
   activo: (pathname: string, search: string) => boolean;
 }
@@ -49,8 +51,8 @@ const ruta = (to: string, label: string, icono: Icono, exacta = false): ItemLate
 export function lateralPara(pathname: string): ItemLateral[][] {
   if (pathname.startsWith("/admin/sistema")) {
     return [
-      [sistemaTab("usuarios", "Usuarios", IUsuario), sistemaTab("semestres", "Semestres", ICalendario), sistemaTab("programas", "Programas", IMaletin)],
-      [sistemaTab("proyectos", "Iniciativas", ICarpeta), sistemaTab("tareas", "Grupos y tareas", ITarea), sistemaTab("plantillas", "Plantillas de matriz", IColumnas)],
+      [sistemaTab("usuarios", "Usuarios", IUsuario), sistemaTab("semestres", "Semestres", ICalendario), sistemaTab("programas", "Escuelas y programas", IMaletin)],
+      [sistemaTab("proyectos", "Iniciativas", ICarpeta), sistemaTab("tareas", "Tareas semanales", ITarea), sistemaTab("plantillas", "Plantillas", IColumnas)],
       [ruta("/admin/importar-matriz", "Importar matriz", IImportar)],
     ];
   }
@@ -71,4 +73,21 @@ export function lateralPara(pathname: string): ItemLateral[][] {
     [ruta("/admin/revision", "Cola de revisión", ICola), ruta("/admin/avance", "Avance por docente", IDocentes)],
     [ruta("/admin/importar-matriz", "Importar matriz", IImportar), ruta("/admin/reportes", "Reportes y métricas", IColumnas)],
   ];
+}
+
+/* ───────── Perfil docente (misma arquitectura, configuración distinta) ───────── */
+export const MODULOS_DOCENTE: Modulo[] = [
+  { id: "panel", to: "/docente", label: "Mi panel", corto: "Panel", icono: IPanel, activo: (p) => p === "/docente" || p === "/docente/" },
+  { id: "matriz", to: "/docente/matriz", label: "Mi matriz", corto: "Matriz", icono: ISeguimiento, activo: (p) => p.startsWith("/docente/matriz") },
+  { id: "iniciativas", to: "/docente/proyectos", label: "Iniciativas", corto: "Iniciativas", icono: IMaletin, activo: (p) => p.startsWith("/docente/proyectos") },
+  { id: "evidencias", to: "/docente/evidencias", label: "Evidencias", corto: "Evidencias", icono: ICarpeta, activo: (p) => p.startsWith("/docente/evidencias") },
+  { id: "historial", to: "/docente/historial", label: "Historial", corto: "Historial", icono: ICalendario, activo: (p) => p.startsWith("/docente/historial") },
+];
+
+/** Accesos del riel del docente: no repiten el menú superior. «Reportar entregable», su carpeta de Drive y «Mi perfil» viven aquí. */
+export function lateralParaDocente(_pathname: string, driveUrl?: string | null): ItemLateral[][] {
+  const reportar = ruta("/docente/reportar", "Reportar entregable", IMas);
+  const perfil = ruta("/docente/perfil", "Mi perfil", IUsuario);
+  const drive: ItemLateral[] = driveUrl && /^https?:\/\//.test(driveUrl) ? [{ to: driveUrl, externo: true, label: "Mi carpeta de Drive", icono: ICarpeta, activo: () => false }] : [];
+  return [[reportar], ...(drive.length ? [drive] : []), [perfil]];
 }

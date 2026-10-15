@@ -6,7 +6,7 @@ import { useLocation, useNavigate } from "react-router";
 import { FileText, Loader2 } from "lucide-react";
 import { type EstadoEntregable, type IndicadoresSeguimiento, type SemanaActual } from "../data/matrizConstants";
 import { AvisoAcceso, esHttp } from "../components/EnlaceEvidencia";
-import { MatrizB2, type ItemMatrizB2 } from "../components/b2/MatrizB2";
+import { MatrizB2, type ItemMatrizB2, type PorMesRow } from "../components/b2/MatrizB2";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { API_BASE, apiFetch as fetch } from "../config/api";
 import { notify } from "../lib/notify";
@@ -91,6 +91,7 @@ export default function MatrizSeguimiento() {
   const [semana, setSemana] = useState<SemanaActual | null>(null);
   const [hoy, setHoy] = useState<string | null>(null);
   const [perfil, setPerfil] = useState<PerfilDocente | null>(null);
+  const [porMes, setPorMes] = useState<PorMesRow[] | null>(null);
   const [loadingMatrix, setLoadingMatrix] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [recarga, setRecarga] = useState(0);
@@ -114,9 +115,10 @@ export default function MatrizSeguimiento() {
     }
     try {
       setLoadError(null);
-      const [resPerfil, resMatriz] = await Promise.all([
+      const [resPerfil, resMatriz, resStats] = await Promise.all([
         fetch(`${API_BASE}/docente/${userId}/perfil`),
         fetch(`${API_BASE}/docente/${userId}/matriz`),
+        fetch(`${API_BASE}/docente/${userId}/matriz-stats`),
       ]);
       if (!resMatriz.ok) throw new Error("Error al cargar matriz");
       const data = await resMatriz.json();
@@ -124,6 +126,12 @@ export default function MatrizSeguimiento() {
       setResumen(data.resumen ?? null);
       setSemana(data.semana_actual ?? null);
       setHoy(typeof data.hoy === "string" ? data.hoy : null);
+      if (resStats.ok) {
+        const st = await resStats.json();
+        setPorMes(Array.isArray(st.por_mes) ? st.por_mes : null);
+      } else {
+        setPorMes(null);
+      }
       if (resPerfil.ok) {
         const p = await resPerfil.json();
         setPerfil({
@@ -368,12 +376,12 @@ export default function MatrizSeguimiento() {
   return (
     <MatrizB2
       rol="docente"
-      embebida
       titulo="Matriz de seguimiento"
       items={entregables as ItemMatrizB2[]}
       semana={semana}
       hoy={hoy}
       resumen={resumen}
+      porMes={porMes}
       cargando={loadingMatrix}
       error={loadError}
       onReintentar={() => setRecarga((n) => n + 1)}

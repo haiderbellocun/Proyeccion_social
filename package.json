@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "e2e": "node e2e/run.mjs",
+    "e2e:lista": "node e2e/run.mjs --lista"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",

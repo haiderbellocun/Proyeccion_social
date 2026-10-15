@@ -1,0 +1,48 @@
+/* Bandeja de revisión y centro de evidencias B2 */
+.b2-chips-flush { padding: 0; flex: none; }
+.b2-tabla { flex: 1; min-height: 0; overflow: auto; background: var(--c-surface); border: 1px solid var(--c-line); border-radius: 6px; position: relative; --cols: 170px minmax(240px, 1fr) 170px 150px 70px 66px 128px 92px; }
+.b2-tabla[data-compacto] { --cols: 150px minmax(200px, 1fr) 66px 124px 92px; }
+.b2-tabla:focus-visible { outline-offset: -2px; }
+.b2-tabla-h, .b2-tabla-r { display: grid; grid-template-columns: var(--cols); gap: 12px; align-items: center; padding: 0 14px; min-width: min-content; }
+.b2-tabla-h { position: sticky; top: 0; z-index: 3; height: 36px; background: var(--c-surface); border-bottom: 1px solid var(--c-line-2); font-size: var(--fs-xs); font-weight: 700; color: var(--c-text-3); }
+.b2-tabla-r { min-height: 48px; border-bottom: 1px solid var(--c-line); cursor: pointer; background: var(--c-surface); transition: background-color var(--t-fast) ease; }
+.b2-tabla-r[data-sel] { background: var(--c-select); box-shadow: inset 0 1px 0 var(--c-primary), inset 0 -1px 0 var(--c-primary); }
+.b2-tabla:focus-visible .b2-tabla-r[data-cur]:not([data-sel]) { box-shadow: inset 0 0 0 2px var(--c-primary); }
+@media (hover: hover) and (pointer: fine) { .b2-tabla-r:hover:not([data-sel]) { background: var(--c-hover); } }
+.b2-tabla .b2-c-num { text-align: right; font-variant-numeric: tabular-nums; }
+.b2-tabla .b2-c-num[data-alerta] { color: var(--c-danger); font-weight: 700; }
+.b2-fch { font-size: var(--fs-sm); color: var(--c-text-2); white-space: nowrap; }
+.b2-ev-n { color: var(--c-primary); font-weight: 700; font-size: var(--fs-sm); }
+.b2-pager { display: inline-flex; align-items: center; gap: 6px; }
+.b2-filtros-rev { display: flex; flex-direction: column; gap: 4px; min-width: min(320px, 92vw); }
+.b2-filtros-rev .b2-label { margin-top: 6px; }
+.b2-filtros-fechas { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.b2-decision { margin-top: 18px; padding: 12px; border: 1px solid var(--c-line-2); border-radius: 6px; background: var(--c-bg); }
+.b2-decision-t { display: block; font-size: var(--fs-md); font-weight: 800; }
+.b2-decision-n { margin-top: 4px; font-size: var(--fs-sm); color: var(--c-text-2); line-height: 1.4; }
+.b2-decision .b2-btn { flex: 0 1 auto; }
+@media (max-width: 720px) { .b2-decision .b2-btn { flex: 1 1 100%; } .b2-tb .b2-tb-search { flex: 1 1 100%; } }
+
+/* Centro de evidencias (docente) */
+.b2-ev-lista { display: flex; flex-direction: column; }
+.b2-ev-card { border-bottom: 1px solid var(--c-line); }
+.b2-ev-card:last-child { border-bottom: 0; }
+.b2-ev-fila { display: grid; grid-template-columns: minmax(0, 1fr) 150px 120px 120px; gap: 12px; align-items: center; min-height: 52px; padding: 6px 14px; cursor: pointer; background: var(--c-surface); width: 100%; text-align: left; border: 0; color: inherit; font: inherit; }
+.b2-ev-fila[data-sel] { background: var(--c-select); box-shadow: inset 0 1px 0 var(--c-primary), inset 0 -1px 0 var(--c-primary); }
+@media (hover: hover) and (pointer: fine) { .b2-ev-fila:hover:not([data-sel]) { background: var(--c-hover); } }
+.b2-ev-h { display: grid; grid-template-columns: minmax(0, 1fr) 150px 120px 120px; gap: 12px; padding: 0 14px; height: 36px; align-items: center; position: sticky; top: 0; z-index: 3; background: var(--c-surface); border-bottom: 1px solid var(--c-line-2); font-size: var(--fs-xs); font-weight: 700; color: var(--c-text-3); }
+.b2-ev-wrap { flex: 1; min-height: 0; overflow: auto; background: var(--c-surface); border: 1px solid var(--c-line); border-radius: 6px; }
+.b2-ev-urls { display: flex; flex-direction: column; gap: 8px; }
+.b2-ev-urlrow { display: flex; gap: 6px; align-items: center; }
+.b2-ev-urlrow .b2-input[aria-invalid="true"] { border-color: var(--c-danger); }
+.b2-ev-del { flex: none; }
+@media (max-width: 1100px) { .b2-ev-fila, .b2-ev-h { grid-template-columns: minmax(0, 1fr) 130px 110px; } .b2-ev-fila > :nth-child(3), .b2-ev-h > :nth-child(3) { display: none; } }
+@media (max-width: 720px) {
+  .b2-sel, .b2-input { height: 40px; }
+  textarea.b2-input { height: auto; }
+  .b2-chk { min-height: 40px; }
+  .b2-chip { min-height: 36px; }
+  .b2-link-btn { min-height: 36px; display: inline-flex; align-items: center; }
+  .b2-tb .b2-btn-sm { min-height: 36px; }
+  .b2-pager .b2-btn { min-width: 40px; }
+}

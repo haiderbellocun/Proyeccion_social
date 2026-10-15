@@ -100,8 +100,11 @@ export function Popover({
     const h = c.offsetHeight;
     const flip = r.bottom + 6 + h > window.innerHeight - 8 && r.top - 6 - h > 8;
     const top = flip ? r.top - 6 - h : r.bottom + 6;
-    if (align === "right") setPos({ top, right: Math.max(8, window.innerWidth - r.right), flip });
-    else setPos({ top, left: Math.max(8, Math.min(r.left, window.innerWidth - c.offsetWidth - 8)), flip });
+    const w = c.offsetWidth;
+    // Si no cabe hacia el lado preferido, se desplaza para quedar siempre dentro de la pantalla
+    if (align === "right" && r.right - w >= 8) setPos({ top, right: Math.max(8, window.innerWidth - r.right), flip });
+    else if (align === "right") setPos({ top, left: Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)), flip });
+    else setPos({ top, left: Math.max(8, Math.min(r.left, window.innerWidth - w - 8)), flip });
   }, [open, align]);
   useEffect(() => {
     if (!open) return;
@@ -164,13 +167,13 @@ export function Menu({
 }
 
 /* ───────── inspector: columna acoplada, cajón o hoja inferior según el ancho ───────── */
-export function Inspector({ open, onClose, label, children }: { open: boolean; onClose: () => void; label: string; children: ReactNode }) {
+export function Inspector({ open, onClose, label, children, wide }: { open: boolean; onClose: () => void; label: string; children: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLElement>(null);
   useEffect(() => { if (ref.current) ref.current.scrollTop = 0; }, [label]);
   return (
     <>
       <div className="b2-scrim" data-open={open} onClick={onClose} aria-hidden="true" />
-      <aside ref={ref} className="b2-insp" data-open={open} aria-label="Detalle" role="complementary">
+      <aside ref={ref} className="b2-insp" data-open={open} data-wide={wide || undefined} aria-label="Detalle" role="complementary">
         {open && (
           <>
             <div className="b2-insp-grab" aria-hidden="true" />

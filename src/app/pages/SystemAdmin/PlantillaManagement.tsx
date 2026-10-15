@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { FileSpreadsheet, FileText, Plus, Pencil, Trash2, Link2, Users, UsersRound } from "lucide-react";
-import type { ReactNode } from "react";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../components/ui/dialog";
-import { EmptyState, PageLoading, Panel, StatusPill } from "../../components/ds/primitives";
-import { AppSelect } from "../../components/AppSelect";
-import { useConfirmationDialog } from "../../components/ConfirmationDialog";
+import {
+  AdmPagina, Barra, Buscar, Campo, Cargando, DataTable, ErrorCarga, Filtro, FormInspector, Grupo, Paginador, Resumen, Tag, Vacio,
+  useConfirmar, type Col,
+} from "../../components/b2/admin-ui";
+import { Dl } from "../../components/b2/ui";
+import { IExterno, IMas } from "../../components/b2/icons";
+import { useMedia } from "../../components/b2/matriz-util";
 import { API_BASE, apiFetch as fetch } from "../../config/api";
 import { notify } from "../../lib/notify";
 import { formatDateOnly, formatDateTimeBogota, toDateOnly } from "../../lib/date";
+import "../../components/b2/b2-admin-plantillas.css";
 
 interface GrupoRow {
   id: number;
@@ -70,16 +72,39 @@ const emptyForm = {
   fecha_inicio: "",
   fecha_fin: "",
 };
+type Form = typeof emptyForm;
+type Modo = "ver" | "editar" | "crear" | "masiva";
+
+/** Mismas reglas que el envío original: un campo vacío de texto/fecha o un número no numérico detiene el guardado. */
+function validar(f: Form): Partial<Record<keyof Form, string>> {
+  const e: Partial<Record<keyof Form, string>> = {};
+  if (!f.entregable.trim()) e.entregable = "Indica el entregable.";
+  if (!f.categoria.trim()) e.categoria = "Indica la categoría.";
+  if (!f.fase.trim()) e.fase = "Indica la fase.";
+  if (!f.mes.trim()) e.mes = "Indica el mes.";
+  if (Number.isNaN(Number(f.numero))) e.numero = "Indica un número válido.";
+  if (Number.isNaN(Number(f.semana_numero))) e.semana_numero = "Indica una semana válida.";
+  if (Number.isNaN(Number(f.horas))) e.horas = "Indica las horas.";
+  if (!f.fecha_inicio) e.fecha_inicio = "Indica la fecha de inicio.";
+  if (!f.fecha_fin) e.fecha_fin = "Indica la fecha límite.";
+  else if (f.fecha_inicio && f.fecha_fin < f.fecha_inicio) e.fecha_fin = "La fecha límite no puede ser anterior al inicio.";
+  return e;
+}
+
+const PER_PAGE = 20;
 
 export default function PlantillaManagement({
+  cabecera,
   initialSemestre,
   initialGrupoId = null,
 }: {
+  cabecera: ReactNode;
   initialSemestre?: string;
   initialGrupoId?: number | null;
-} = {}) {
+}) {
   const navigate = useNavigate();
-  const requestConfirmation = useConfirmationDialog();
+  const movil = useMedia("(max-width: 720px)");
+  const { confirmar, dialogo } = useConfirmar();
   const aplicadoInicial = useRef(false);
   const [resumen, setResumen] = useState<GrupoResumen | null>(null);
   const [todosDocentes, setTodosDocentes] = useState<{ id: number; name: string }[]>([]);
@@ -92,11 +117,14 @@ export default function PlantillaManagement({
   const [plantillas, setPlantillas] = useState<PlantillaRow[]>([]);
   const [loadingGrupos, setLoadingGrupos] = useState(false);
   const [loadingPlantillas, setLoadingPlantillas] = useState(false);
+  const [errorGrupos, setErrorGrupos] = useState(false);
+  const [errorPlantillas, setErrorPlantillas] = useState(false);
   const [page, setPage] = useState(1);
-  const perPage = 20;
-  const [modalOpen, setModalOpen] = useState(false);
+  const [modo, setModo] = useState<Modo | null>(null);
+  const [selId, setSelId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState<Form>(emptyForm);
+  const [intentado, setIntentado] = useState(false);
   const [saving, setSaving] = useState(false);
   const [massSource, setMassSource] = useState<PlantillaRow | null>(null);
   const [massDescription, setMassDescription] = useState("");
@@ -104,6 +132,9 @@ export default function PlantillaManagement({
   const [massPreview, setMassPreview] = useState<MassPreview | null>(null);
   const [loadingMassPreview, setLoadingMassPreview] = useState(false);
   const [savingMass, setSavingMass] = useState(false);
+  const [busca, setBusca] = useState("");
+  const [filtroMes, setFiltroMes] = useState("");
+  const [filtroSemana, setFiltroSemana] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -119,18 +150,25 @@ export default function PlantillaManagement({
     })();
   }, []);
 
+  // Solo cuenta la última solicitud: una respuesta tardía de otro semestre no debe pisar la lista actual.
+  const solicitudGrupos = useRef(0);
   const loadGrupos = useCallback(async () => {
+    const mia = ++solicitudGrupos.current;
     setLoadingGrupos(true);
+    setErrorGrupos(false);
     try {
       const q = semestre ? `?semestre=${encodeURIComponent(semestre)}` : "";
       const r = await fetch(`${API_BASE}/admin/grupos-matriz${q}`);
       const j = await r.json();
+      if (mia !== solicitudGrupos.current) return;
       setGrupos(j.grupos || []);
     } catch {
+      if (mia !== solicitudGrupos.current) return;
       notify.error("No se pudieron cargar los grupos");
       setGrupos([]);
+      setErrorGrupos(true);
     } finally {
-      setLoadingGrupos(false);
+      if (mia === solicitudGrupos.current) setLoadingGrupos(false);
     }
   }, [semestre]);
 
@@ -186,6 +224,7 @@ export default function PlantillaManagement({
 
   const loadPlantillas = useCallback(async (grupoId: number) => {
     setLoadingPlantillas(true);
+    setErrorPlantillas(false);
     try {
       const r = await fetch(`${API_BASE}/admin/grupos-matriz/${grupoId}/plantillas`);
       const j = await r.json();
@@ -193,12 +232,18 @@ export default function PlantillaManagement({
     } catch {
       notify.error("No se pudieron cargar plantillas");
       setPlantillas([]);
+      setErrorPlantillas(true);
     } finally {
       setLoadingPlantillas(false);
     }
   }, []);
 
   useEffect(() => {
+    setModo(null);
+    setSelId(null);
+    setBusca("");
+    setFiltroMes("");
+    setFiltroSemana("");
     if (selectedGrupoId != null) {
       void loadPlantillas(selectedGrupoId);
       void loadResumen(selectedGrupoId);
@@ -225,14 +270,42 @@ export default function PlantillaManagement({
     () => [...new Set(sortedPlantillas.map((row) => row.mes.trim()).filter(Boolean))],
     [sortedPlantillas]
   );
+  const semanasDisponibles = useMemo(
+    () => [...new Set(sortedPlantillas.map((row) => Number(row.semana_numero)))].sort((a, b) => a - b),
+    [sortedPlantillas]
+  );
 
-  const totalPages = Math.max(1, Math.ceil(sortedPlantillas.length / perPage));
-  const pageSlice = sortedPlantillas.slice((page - 1) * perPage, page * perPage);
+  const filtradas = useMemo(() => {
+    const q = busca.trim().toLowerCase();
+    return sortedPlantillas.filter((p) => {
+      if (filtroMes && p.mes.trim() !== filtroMes) return false;
+      if (filtroSemana && String(p.semana_numero) !== filtroSemana) return false;
+      if (!q) return true;
+      return [p.entregable, p.categoria, p.fase, p.descripcion_evidencia].some((v) => String(v ?? "").toLowerCase().includes(q));
+    });
+  }, [sortedPlantillas, busca, filtroMes, filtroSemana]);
+  const hayFiltros = busca.trim() !== "" || filtroMes !== "" || filtroSemana !== "";
+  const limpiarFiltros = () => { setBusca(""); setFiltroMes(""); setFiltroSemana(""); };
+  useEffect(() => { setPage(1); }, [busca, filtroMes, filtroSemana]);
+
+  const pageSlice = filtradas.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+  const seleccionada = plantillas.find((p) => p.id === selId) ?? null;
+  const errores = intentado ? validar(form) : {};
+  const listaErrores = Object.values(errores) as string[];
+
+  const cerrar = () => { setModo(null); setSelId(null); setMassSource(null); };
+  const abrirVer = (p: PlantillaRow | null) => {
+    if (!p) return cerrar();
+    setSelId(p.id);
+    setModo("ver");
+  };
 
   const openCreate = () => {
     setEditingId(null);
     setForm({ ...emptyForm, mes: availableMonths[0] || "" });
-    setModalOpen(true);
+    setIntentado(false);
+    setSelId(null);
+    setModo("crear");
   };
 
   const openEdit = (p: PlantillaRow) => {
@@ -250,11 +323,14 @@ export default function PlantillaManagement({
       fecha_inicio: toDateOnly(p.fecha_inicio_calculada) ?? "",
       fecha_fin: toDateOnly(p.fecha_fin_calculada) ?? "",
     });
-    setModalOpen(true);
+    setIntentado(false);
+    setSelId(p.id);
+    setModo("editar");
   };
 
   const saveModal = async () => {
     if (selectedGrupoId == null) return;
+    setIntentado(true);
     const body: Record<string, unknown> = {
       numero: Number(form.numero),
       categoria: form.categoria.trim(),
@@ -268,18 +344,7 @@ export default function PlantillaManagement({
       fecha_inicio: form.fecha_inicio,
       fecha_fin: form.fecha_fin,
     };
-    if (
-      !form.entregable.trim() ||
-      !form.categoria.trim() ||
-      !form.fase.trim() ||
-      !form.mes.trim() ||
-      Number.isNaN(body.numero as number) ||
-      Number.isNaN(body.semana_numero as number) ||
-      Number.isNaN(body.horas as number) ||
-      !form.fecha_inicio ||
-      !form.fecha_fin ||
-      form.fecha_fin < form.fecha_inicio
-    ) {
+    if (Object.keys(validar(form)).length > 0) {
       notify.warning("Completa los campos requeridos.");
       return;
     }
@@ -304,9 +369,11 @@ export default function PlantillaManagement({
         notify.error(typeof j.error === "string" ? j.error : "Error al guardar");
         return;
       }
-      setModalOpen(false);
+      const eraEdicion = editingId != null;
       await loadPlantillas(selectedGrupoId);
-      notify.success(editingId != null ? "Cambios guardados" : "Plantilla creada");
+      setModo(eraEdicion ? "ver" : null);
+      if (!eraEdicion) setSelId(null);
+      notify.success(eraEdicion ? "Cambios guardados" : "Plantilla creada");
     } catch {
       notify.error("Error de conexión");
     } finally {
@@ -315,26 +382,24 @@ export default function PlantillaManagement({
   };
 
   const deleteRow = async (p: PlantillaRow) => {
-    const accepted = await requestConfirmation({
-      title: "Eliminar plantilla",
-      description: `¿Deseas eliminar la plantilla #${p.numero}: ${p.entregable.slice(0, 70)}${
-        p.entregable.length > 70 ? "…" : ""
-      }?`,
-      confirmLabel: "Eliminar",
-      tone: "danger",
+    const accepted = await confirmar({
+      titulo: "Eliminar plantilla",
+      descripcion: `¿Deseas eliminar la plantilla #${p.numero}: ${p.entregable.slice(0, 70)}${p.entregable.length > 70 ? "…" : ""}?`,
+      etiqueta: "Eliminar",
+      tono: "peligro",
     });
     if (!accepted) return;
     try {
       let res = await fetch(`${API_BASE}/admin/plantillas/${p.id}`, { method: "DELETE" });
       let j = await res.json().catch(() => ({}));
       if (res.status === 409 && j.requiere_confirmacion) {
-        const forceAccepted = await requestConfirmation({
-          title: "Conservar reportes y eliminar plantilla",
-          description:
+        const forceAccepted = await confirmar({
+          titulo: "Conservar reportes y eliminar plantilla",
+          descripcion:
             `Esta plantilla tiene ${Number(j.usos || 0)} reporte(s) vinculado(s). ` +
             "Los reportes se conservarán, pero dejarán de estar ligados a la plantilla.",
-          confirmLabel: "Eliminar plantilla",
-          tone: "warning",
+          etiqueta: "Eliminar plantilla",
+          tono: "aviso",
         });
         if (!forceAccepted) return;
         res = await fetch(`${API_BASE}/admin/plantillas/${p.id}?forzar=true`, {
@@ -347,6 +412,7 @@ export default function PlantillaManagement({
         return;
       }
       if (selectedGrupoId != null) await loadPlantillas(selectedGrupoId);
+      if (selId === p.id) cerrar();
       notify.success("Plantilla eliminada");
     } catch {
       notify.error("Error de conexión");
@@ -359,6 +425,8 @@ export default function PlantillaManagement({
     setMassLink(source.enlace_referencia || "");
     setMassPreview(null);
     setLoadingMassPreview(true);
+    setSelId(source.id);
+    setModo("masiva");
     try {
       const response = await fetch(
         `${API_BASE}/admin/plantillas/actualizacion-masiva/preview`,
@@ -372,12 +440,14 @@ export default function PlantillaManagement({
       if (!response.ok) {
         notify.fromError(data, "No se pudo calcular el alcance del cambio.");
         setMassSource(null);
+        setModo("ver");
         return;
       }
       setMassPreview(data as MassPreview);
     } catch {
       notify.error("Error de conexión al calcular el alcance.");
       setMassSource(null);
+      setModo("ver");
     } finally {
       setLoadingMassPreview(false);
     }
@@ -385,11 +455,11 @@ export default function PlantillaManagement({
 
   const applyMassUpdate = async () => {
     if (!massSource || !massPreview) return;
-    const accepted = await requestConfirmation({
-      title: "Actualizar evidencia compartida",
-      description: `Se actualizarán ${massPreview.plantillas_afectadas} plantilla(s) de ${massPreview.grupos_afectados} grupo(s) del semestre ${massPreview.semestre}.`,
-      confirmLabel: "Aplicar a todos",
-      tone: "warning",
+    const accepted = await confirmar({
+      titulo: "Actualizar evidencia compartida",
+      descripcion: `Se actualizarán ${massPreview.plantillas_afectadas} plantilla(s) de ${massPreview.grupos_afectados} grupo(s) del semestre ${massPreview.semestre}.`,
+      etiqueta: "Aplicar a todos",
+      tono: "aviso",
     });
     if (!accepted) return;
     setSavingMass(true);
@@ -413,6 +483,7 @@ export default function PlantillaManagement({
       }
       if (selectedGrupoId != null) await loadPlantillas(selectedGrupoId);
       setMassSource(null);
+      setModo("ver");
       notify.success(
         `Evidencia actualizada en ${Number(data.grupos_afectados || 0)} grupo(s)`
       );
@@ -423,341 +494,331 @@ export default function PlantillaManagement({
     }
   };
 
-  const field = (id: string, label: string, control: ReactNode, className = "") => (
-    <div className={className}>
-      <label htmlFor={id} className="ds-label">{label}</label>
-      {control}
+  const setF = (k: keyof Form, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  /* ───────── tabla ───────── */
+  const cols: Col<PlantillaRow>[] = [
+    {
+      id: "numero", titulo: "N°", ancho: "78px",
+      celda: (p) => (
+        <>
+          <span className="b2-tt">{p.numero}</span>
+          {p.importacion_id != null && <span className="b2-sub" title={`Importado de «${p.importacion_archivo ?? "Excel"}» · lote ${(p.importacion_lote ?? "").slice(0, 8)}`}>Excel f.{p.origen_fila ?? "?"}</span>}
+          {p.numero_original != null && <span className="b2-sub" title="Número original del Excel (renumerado por decisión administrativa)">Excel: {p.numero_original}</span>}
+        </>
+      ),
+    },
+    {
+      id: "semana", titulo: "Semana", ancho: "76px",
+      celda: (p) => (
+        <>
+          <span className="b2-tt">{p.semana_numero}</span>
+          {p.semana_original != null && <span className="b2-sub" title="Semana escrita en el Excel; se usó la semana de la fecha por decisión administrativa">Excel: {p.semana_original}</span>}
+        </>
+      ),
+    },
+    { id: "periodo", titulo: "Periodo", ancho: "172px", prioridad: 2, celda: (p) => <><span className="b2-tt">{formatDateOnly(p.fecha_inicio_calculada)}</span><span className="b2-sub">hasta {formatDateOnly(p.fecha_fin_calculada)}</span></> },
+    { id: "mes", titulo: "Mes", ancho: "90px", prioridad: 3, celda: (p) => <span className="b2-tt">{p.mes}</span> },
+    { id: "fase", titulo: "Fase", ancho: "minmax(110px, 150px)", prioridad: 3, celda: (p) => <span className="b2-tt" title={p.fase}>{p.fase}</span> },
+    { id: "entregable", titulo: "Entregable", ancho: "minmax(220px, 1.4fr)", celda: (p) => <><span className="b2-tt" title={p.entregable}>{p.entregable}</span><span className="b2-sub">{p.categoria}</span></> },
+    { id: "instrucciones", titulo: "Instrucciones", ancho: "minmax(150px, 1fr)", prioridad: 2, celda: (p) => <span className="b2-tt" title={p.descripcion_evidencia ?? ""}>{p.descripcion_evidencia || "—"}</span> },
+    { id: "horas", titulo: "Horas", ancho: "58px", num: true, celda: (p) => p.horas },
+  ];
+
+  /* ───────── inspector ───────── */
+  const camposForm = (
+    <>
+      <Grupo titulo="Cuándo">
+        <Campo etiqueta={`Semana (1–${resumen?.grupo.numero_semanas ?? 16})`} obligatorio error={errores.semana_numero}>
+          {(p) => <input {...p} className="b2-input" type="number" min={1} max={resumen?.grupo.numero_semanas ?? 16} value={form.semana_numero} onChange={(e) => setF("semana_numero", e.target.value)} />}
+        </Campo>
+        <Campo etiqueta="Mes" obligatorio error={errores.mes}>
+          {(p) => (
+            <>
+              <input {...p} className="b2-input" list="plantilla-month-options" value={form.mes} onChange={(e) => setF("mes", e.target.value)} />
+              <datalist id="plantilla-month-options">{availableMonths.map((m) => <option key={m} value={m} />)}</datalist>
+            </>
+          )}
+        </Campo>
+        <Campo etiqueta="Fecha exacta de inicio" obligatorio error={errores.fecha_inicio}>
+          {(p) => <input {...p} className="b2-input" type="date" value={form.fecha_inicio} onChange={(e) => setF("fecha_inicio", e.target.value)} />}
+        </Campo>
+        <Campo etiqueta="Fecha límite exacta" obligatorio error={errores.fecha_fin}>
+          {(p) => <input {...p} className="b2-input" type="date" value={form.fecha_fin} onChange={(e) => setF("fecha_fin", e.target.value)} />}
+        </Campo>
+        <p className="b2-campo-a" style={{ gridColumn: "1 / -1", margin: 0 }}>El sistema conserva la distancia respecto al inicio del semestre para poder clonar la plantilla a otros periodos.</p>
+      </Grupo>
+      <Grupo titulo="Qué se entrega">
+        <Campo etiqueta="Número" obligatorio error={errores.numero}>
+          {(p) => <input {...p} className="b2-input" type="number" value={form.numero} onChange={(e) => setF("numero", e.target.value)} />}
+        </Campo>
+        <Campo etiqueta="Horas" obligatorio error={errores.horas}>
+          {(p) => <input {...p} className="b2-input" type="number" step="0.5" value={form.horas} onChange={(e) => setF("horas", e.target.value)} />}
+        </Campo>
+        <Campo etiqueta="Fase" obligatorio error={errores.fase} ancho="completo">
+          {(p) => <input {...p} className="b2-input" value={form.fase} onChange={(e) => setF("fase", e.target.value)} />}
+        </Campo>
+        <Campo etiqueta="Categoría" obligatorio error={errores.categoria} ancho="completo">
+          {(p) => <input {...p} className="b2-input" value={form.categoria} onChange={(e) => setF("categoria", e.target.value)} />}
+        </Campo>
+        <Campo etiqueta="Entregable" obligatorio error={errores.entregable} ancho="completo">
+          {(p) => <textarea {...p} className="b2-input" rows={3} value={form.entregable} onChange={(e) => setF("entregable", e.target.value)} />}
+        </Campo>
+      </Grupo>
+      <Grupo titulo="Evidencia">
+        <Campo etiqueta="Instrucciones de evidencia (opcional)" ancho="completo">
+          {(p) => <textarea {...p} className="b2-input" rows={3} value={form.descripcion_evidencia} onChange={(e) => setF("descripcion_evidencia", e.target.value)} />}
+        </Campo>
+        <Campo etiqueta="Enlace o formulario de referencia (HTTPS)" ancho="completo">
+          {(p) => <input {...p} className="b2-input" type="url" placeholder="https://" value={form.enlace_referencia} onChange={(e) => setF("enlace_referencia", e.target.value)} />}
+        </Campo>
+      </Grupo>
+    </>
+  );
+
+  let inspector: ReactNode = null;
+  if ((modo === "editar" || modo === "crear") && (modo === "crear" || seleccionada)) {
+    inspector = (
+      <FormInspector
+        sup={selectedGrupo?.nombre}
+        titulo={modo === "editar" ? "Editar plantilla" : "Nueva plantilla"}
+        onCerrar={() => (modo === "editar" ? setModo("ver") : cerrar())}
+        onGuardar={() => void saveModal()}
+        guardando={saving}
+        etiquetaGuardar="Guardar plantilla"
+        errores={listaErrores}
+      >
+        {camposForm}
+      </FormInspector>
+    );
+  } else if (modo === "masiva" && massSource) {
+    inspector = (
+      <FormInspector
+        sup="Actualización masiva de evidencia"
+        titulo={massSource.entregable}
+        onCerrar={() => { if (!savingMass) { setMassSource(null); setModo("ver"); } }}
+        onGuardar={() => void applyMassUpdate()}
+        guardando={savingMass}
+        deshabilitarGuardar={loadingMassPreview || !massPreview}
+        etiquetaGuardar="Actualizar grupos"
+      >
+        {loadingMassPreview ? (
+          <Cargando etiqueta="Calculando grupos afectados…" />
+        ) : massPreview ? (
+          <div className="b2-callout">
+            <strong>{massPreview.plantillas_afectadas} plantilla(s) en {massPreview.grupos_afectados} grupo(s)</strong>
+            <p>Alcance restringido al semestre {massPreview.semestre}. Solo se incluyen entregables cuyo nombre coincide exactamente.</p>
+            <div className="b2-adm-pl-tags" style={{ marginTop: 8, marginBottom: 0 }}>
+              {[...new Map(massPreview.coincidencias.map((row) => [row.grupo_id, row])).values()].map((row) => <Tag key={row.grupo_id} tono="primario">{row.grupo_nombre}</Tag>)}
+            </div>
+          </div>
+        ) : null}
+        <Campo etiqueta="Instrucción o evidencia documental compartida" ancho="completo">
+          {(p) => <textarea {...p} className="b2-input" rows={5} value={massDescription} onChange={(e) => setMassDescription(e.target.value)} />}
+        </Campo>
+        <Campo etiqueta="Enlace o formulario compartido" ancho="completo">
+          {(p) => <input {...p} className="b2-input" type="url" placeholder="https://" value={massLink} onChange={(e) => setMassLink(e.target.value)} />}
+        </Campo>
+      </FormInspector>
+    );
+  } else if (modo === "ver" && seleccionada) {
+    const p = seleccionada;
+    inspector = (
+      <div className="b2-insp-c">
+        <p className="b2-insp-sup">Plantilla #{p.numero} · Semana {p.semana_numero}</p>
+        <h2 className="b2-insp-h">{p.entregable}</h2>
+        {(p.importacion_id != null || p.numero_original != null || p.semana_original != null) && (
+          <div className="b2-adm-pl-tags">
+            {p.importacion_id != null && <Tag tono="primario">Importada de Excel</Tag>}
+            {(p.numero_original != null || p.semana_original != null) && <Tag tono="aviso">Con ajuste administrativo</Tag>}
+          </div>
+        )}
+        <Dl rows={[
+          ["Categoría", p.categoria || "—"],
+          ["Fase", p.fase || "—"],
+          ["Mes", p.mes || "—"],
+          ["Semana", p.semana_original != null ? `${p.semana_numero} (Excel: ${p.semana_original})` : String(p.semana_numero)],
+          ["Número", p.numero_original != null ? `${p.numero} (Excel: ${p.numero_original})` : String(p.numero)],
+          ["Horas", String(p.horas)],
+          ["Inicio", formatDateOnly(p.fecha_inicio_calculada)],
+          ["Fecha límite", formatDateOnly(p.fecha_fin_calculada)],
+          ["Origen", p.importacion_id != null ? `«${p.importacion_archivo ?? "Excel"}» · fila ${p.origen_fila ?? "?"} · lote ${(p.importacion_lote ?? "").slice(0, 8)}${p.importacion_fecha ? ` · ${formatDateTimeBogota(p.importacion_fecha)}` : ""}` : "Creada en el sistema"],
+        ]} />
+        <h3 className="b2-insp-sub">Instrucciones de evidencia</h3>
+        <p className="b2-insp-p b2-adm-pl-texto">{p.descripcion_evidencia || "Sin instrucciones registradas."}</p>
+        <h3 className="b2-insp-sub">Enlace de referencia</h3>
+        {p.enlace_referencia ? (
+          <a className="b2-adm-pl-link" href={p.enlace_referencia} target="_blank" rel="noopener noreferrer">{p.enlace_referencia} <IExterno width={13} height={13} style={{ verticalAlign: "-2px" }} /></a>
+        ) : <p className="b2-insp-p">Sin enlace.</p>}
+        <div className="b2-insp-acc">
+          <button type="button" className="b2-btn b2-btn-primary" onClick={() => openEdit(p)}>Editar</button>
+          <button type="button" className="b2-btn" onClick={() => void openMassUpdate(p)} title="Actualizar evidencia en todos los grupos coincidentes">Actualizar evidencia compartida</button>
+          <button type="button" className="b2-btn b2-btn-ghost b2-link-peligro" onClick={() => void deleteRow(p)}>Eliminar</button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ───────── contenido ───────── */
+  const detallesAbiertos = false;
+  const contenido = selectedGrupoId == null ? (
+    <div className="b2-adm-pl-vacio" role="status">
+      <Vacio titulo="Elige un grupo">Selecciona un grupo en la lista para revisar y editar sus plantillas de entregables.</Vacio>
+    </div>
+  ) : (
+    <div className="b2-adm-pl-col">
+      {resumen && (
+        <>
+          <Resumen items={[
+            { k: "Entregables", v: resumen.totales.total },
+            { k: "Horas programadas", v: resumen.totales.horas },
+            { k: "Semestre", v: <>{resumen.grupo.semestre}{resumen.grupo.numero_semanas ? <small>{resumen.grupo.numero_semanas} semanas</small> : null}</> },
+            { k: "Docentes", v: resumen.docentes.length },
+            { k: "Importadas", v: resumen.totales.importadas },
+            { k: "Con ajuste administrativo", v: resumen.totales.con_ajustes, alerta: resumen.totales.con_ajustes > 0 },
+          ]} />
+          <details className="b2-adm-pl-det" key={movil ? "m" : "d"} open={detallesAbiertos}>
+            <summary>Origen, docentes y asignación{resumen.docentes.length > 0 ? ` · ${resumen.docentes.length} docente(s)` : ""}</summary>
+            <div className="b2-adm-pl-det-c">
+              <div>
+                <h3>Origen (importaciones de Excel)</h3>
+                {resumen.importaciones.length > 0 ? (
+                  resumen.importaciones.map((i) => (
+                    <p key={i.id}>
+                      {formatDateTimeBogota(i.creado_en)} · {i.archivo_nombre ?? "archivo"} · lote <code>{i.lote.slice(0, 8)}</code> · {i.usuario ?? "—"} · {Number(i.resumen?.creadas ?? 0)} creadas, {Number(i.resumen?.actualizadas ?? 0)} actualizadas
+                    </p>
+                  ))
+                ) : (
+                  <p>Este grupo no proviene de una importación de Excel.</p>
+                )}
+              </div>
+              <div>
+                <h3>Docentes con este grupo ({resumen.docentes.length})</h3>
+                {resumen.docentes.length === 0 && <p>Ningún docente tiene asignado este grupo todavía.</p>}
+                <div className="b2-adm-pl-docs">
+                  {resumen.docentes.map((d) => (
+                    <button key={d.id} type="button" className="b2-btn b2-btn-sm" onClick={() => navigate(`/admin/docentes/${d.id}/matriz`)} title="Abrir la matriz individual del docente">
+                      {d.nombre} {d.apellido} · ver su matriz
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="b2-adm-pl-asig">
+                <label>
+                  <span className="b2-label">Asignar este grupo a otro docente</span>
+                  <select className="b2-sel" value={docenteAsignar} onChange={(e) => setDocenteAsignar(e.target.value)}>
+                    <option value="">Selecciona el docente</option>
+                    {todosDocentes.filter((d) => !resumen.docentes.some((x) => x.id === d.id)).map((d) => <option key={d.id} value={String(d.id)}>{d.name}</option>)}
+                  </select>
+                </label>
+                <button type="button" className="b2-btn" disabled={!docenteAsignar || asignando} onClick={() => void asignarDocente()}>{asignando ? "Asignando…" : "Asignar"}</button>
+              </div>
+            </div>
+          </details>
+        </>
+      )}
+      <Barra contador={filtradas.length === sortedPlantillas.length ? `${sortedPlantillas.length} plantillas` : `${filtradas.length} de ${sortedPlantillas.length}`}>
+        <Buscar value={busca} onChange={setBusca} placeholder="Buscar entregable, categoría o fase" etiqueta="Buscar plantillas" />
+        <Filtro value={filtroMes} onChange={setFiltroMes} etiqueta="Filtrar por mes" ancho={150}>
+          <option value="">Todos los meses</option>
+          {availableMonths.map((m) => <option key={m} value={m}>{m}</option>)}
+        </Filtro>
+        <Filtro value={filtroSemana} onChange={setFiltroSemana} etiqueta="Filtrar por semana" ancho={150}>
+          <option value="">Todas las semanas</option>
+          {semanasDisponibles.map((s) => <option key={s} value={String(s)}>Semana {s}</option>)}
+        </Filtro>
+        {hayFiltros && <button type="button" className="b2-btn b2-btn-sm b2-btn-ghost" onClick={limpiarFiltros}>Limpiar</button>}
+      </Barra>
+      {errorPlantillas && <ErrorCarga onReintentar={() => void loadPlantillas(selectedGrupoId)}>No se pudieron cargar las plantillas del grupo.</ErrorCarga>}
+      <DataTable
+        etiqueta="Entregables de la plantilla"
+        cols={cols}
+        rows={pageSlice}
+        getKey={(p) => p.id}
+        selId={selId}
+        onSelect={abrirVer}
+        cargando={loadingPlantillas}
+        ocupado={saving || savingMass}
+        vacio={
+          hayFiltros && sortedPlantillas.length > 0 ? (
+            <Vacio titulo="Ninguna plantilla coincide" accion={<button type="button" className="b2-btn b2-btn-sm" onClick={limpiarFiltros}>Limpiar filtros</button>}>Prueba con otro término o quita algún filtro.</Vacio>
+          ) : (
+            <Vacio titulo="Este grupo no tiene plantillas" accion={<button type="button" className="b2-btn b2-btn-primary b2-btn-sm" onClick={openCreate}>Nueva plantilla</button>}>Crea la primera o importa la matriz desde Excel.</Vacio>
+          )
+        }
+        filaMovil={(p) => ({
+          titulo: <>#{p.numero} · {p.entregable}</>,
+          lineas: [`Semana ${p.semana_numero} · ${p.mes}`, `${formatDateOnly(p.fecha_inicio_calculada)} → ${formatDateOnly(p.fecha_fin_calculada)}`],
+          lado: <><span>{p.horas} h</span>{p.importacion_id != null && <Tag tono="primario">Excel</Tag>}</>,
+        })}
+        acciones={(p) => [
+          { label: "Ver detalle", onSelect: () => abrirVer(p) },
+          { label: "Editar", onSelect: () => openEdit(p) },
+          { label: "Actualizar evidencia compartida", onSelect: () => void openMassUpdate(p) },
+          "sep",
+          { label: "Eliminar", danger: true, onSelect: () => void deleteRow(p) },
+        ]}
+      />
+      {filtradas.length > PER_PAGE && <Paginador pagina={page} total={filtradas.length} limite={PER_PAGE} onPagina={setPage} etiqueta="plantillas" />}
     </div>
   );
 
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,17rem)_minmax(0,1fr)] lg:items-start">
-      <Panel
-        title="Grupos"
-        description="Selecciona un grupo para ver sus plantillas"
-        bodyClassName="space-y-3 p-3"
-        className="lg:sticky lg:top-4"
+    <>
+      <AdmPagina
+        tab="plantillas"
+        cabecera={cabecera}
+        titulo={`Plantillas · ${selectedGrupo?.nombre ?? "selecciona un grupo"}`}
+        subtitulo="Entregables de la matriz por grupo. Los cambios respetan los reportes históricos."
+        acciones={
+          <button type="button" className="b2-btn b2-btn-primary" disabled={selectedGrupoId == null} onClick={openCreate}><IMas width={16} height={16} />Nueva plantilla</button>
+        }
+        inspector={inspector}
+        inspectorAbierto={inspector != null}
+        inspectorEtiqueta={`${modo}-${selId ?? "n"}`}
+        onCerrarInspector={() => { if (!saving && !savingMass) cerrar(); }}
+        ancho
       >
-        <div>
-          <span className="ds-label">Semestre</span>
-          <AppSelect
-            value={semestre}
-            onValueChange={(v) => setSemestre(v)}
-            emptyValue="__all__"
-            className="w-full"
-            options={[{ value: "__all__", label: "Todos" }, ...semestresList.map((s) => ({ value: s, label: s }))]}
-          />
-        </div>
-        {loadingGrupos && <PageLoading label="Cargando grupos…" />}
-        {!loadingGrupos && grupos.length === 0 && (
-          <EmptyState icon={Users} title="Sin grupos">
-            No hay grupos en este semestre. Créalos en «Tareas semanales».
-          </EmptyState>
-        )}
-        {!loadingGrupos && grupos.length > 0 && (
-          <ul className="max-h-[60vh] space-y-1 overflow-y-auto" aria-label="Grupos matriz">
-            {grupos.map((g) => {
-              const activo = selectedGrupoId === g.id;
-              return (
-                <li key={g.id}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedGrupoId(g.id)}
-                    aria-current={activo ? "true" : undefined}
-                    className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
-                      activo ? "border-brand bg-blue-50" : "border-transparent hover:border-line hover:bg-surface-2"
-                    }`}
-                  >
-                    <span className="block truncate text-[0.8125rem] text-text" style={{ fontWeight: 600 }}>{g.nombre}</span>
-                    <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-text-subtle">
-                      <span className="tabular-nums">{g.semestre}</span>
-                      <StatusPill tone={g.tipo_docente === "NUEVO" ? "brand" : "neutral"}>{g.tipo_docente === "NUEVO" ? "Nuevo" : "Antiguo"}</StatusPill>
-                      {activo && <span className="tabular-nums">{sortedPlantillas.length} plantillas</span>}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </Panel>
-
-      <div className="min-w-0 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-base">Plantillas · {selectedGrupo?.nombre ?? "selecciona un grupo"}</h2>
-          <button type="button" disabled={selectedGrupoId == null} onClick={openCreate} className="ds-btn ds-btn-primary">
-            <Plus className="h-4 w-4" aria-hidden /> Nueva plantilla
-          </button>
-        </div>
-
-        {!selectedGrupoId && (
-          <Panel bodyClassName="">
-            <EmptyState icon={FileText} title="Elige un grupo">
-              Selecciona un grupo en la lista para revisar y editar sus plantillas de entregables.
-            </EmptyState>
-          </Panel>
-        )}
-        {selectedGrupoId != null && (
-          <>
-            {resumen && (
-              <Panel title="Resumen del grupo" bodyClassName="space-y-3 p-4">
-                <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-text-muted">
-                  <span><strong className="text-text">{resumen.totales.total}</strong> entregables · <strong className="text-text">{resumen.totales.horas}</strong> h programadas</span>
-                  <span>Semestre <strong className="text-text">{resumen.grupo.semestre}</strong>{resumen.grupo.numero_semanas ? ` · ${resumen.grupo.numero_semanas} semanas` : ""}</span>
-                  {resumen.totales.importadas > 0 && <span>{resumen.totales.importadas} provienen de importación</span>}
-                  {resumen.totales.con_ajustes > 0 && <StatusPill tone="warning">{resumen.totales.con_ajustes} con ajuste administrativo (semana o número)</StatusPill>}
-                </div>
-                {resumen.importaciones.length > 0 ? (
-                  <div className="space-y-0.5 text-xs text-text-muted">
-                    <p className="flex items-center gap-1 text-text" style={{ fontWeight: 600 }}><FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" aria-hidden /> Origen (importaciones de Excel)</p>
-                    {resumen.importaciones.map((i) => (
-                      <p key={i.id}>
-                        {formatDateTimeBogota(i.creado_en)} · {i.archivo_nombre ?? "archivo"} · lote <code>{i.lote.slice(0, 8)}</code> · {i.usuario ?? "—"} · {Number(i.resumen?.creadas ?? 0)} creadas, {Number(i.resumen?.actualizadas ?? 0)} actualizadas
-                      </p>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-xs text-text-subtle">Este grupo no proviene de una importación de Excel.</p>
-                )}
-                <div className="space-y-2 border-t border-line pt-3">
-                  <p className="flex items-center gap-1.5 text-sm text-text" style={{ fontWeight: 600 }}><UsersRound className="h-4 w-4" aria-hidden /> Docentes con este grupo ({resumen.docentes.length})</p>
-                  {resumen.docentes.length === 0 && <p className="text-xs text-text-subtle">Ningún docente tiene asignado este grupo todavía.</p>}
-                  <div className="flex flex-wrap gap-2">
-                    {resumen.docentes.map((d) => (
-                      <button
-                        key={d.id}
-                        type="button"
-                        onClick={() => navigate(`/admin/docentes/${d.id}/matriz`)}
-                        className="ds-btn ds-btn-secondary ds-btn-sm"
-                        title="Abrir la matriz individual del docente"
-                      >
-                        {d.nombre} {d.apellido} · ver su matriz
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex max-w-xl flex-wrap items-end gap-2">
-                    <label className="block min-w-[14rem] flex-1">
-                      <span className="ds-label">Asignar este grupo a otro docente</span>
-                      <AppSelect
-                        className="w-full"
-                        value={docenteAsignar}
-                        onValueChange={setDocenteAsignar}
-                        options={todosDocentes.filter((d) => !resumen.docentes.some((x) => x.id === d.id)).map((d) => ({ value: String(d.id), label: d.name }))}
-                        placeholder="Selecciona el docente"
-                      />
-                    </label>
-                    <button type="button" disabled={!docenteAsignar || asignando} onClick={() => void asignarDocente()} className="ds-btn ds-btn-secondary">
-                      {asignando ? "Asignando…" : "Asignar"}
-                    </button>
-                  </div>
-                </div>
-              </Panel>
+        <div className="b2-adm-split">
+          <aside className="b2-adm-lat" aria-label="Grupos matriz">
+            <div className="b2-adm-lat-h">
+              <h3>Grupos</h3>
+              <label>
+                <span className="b2-label">Semestre</span>
+                <select className="b2-sel" value={semestre || "__all__"} onChange={(e) => setSemestre(e.target.value === "__all__" ? "" : e.target.value)}>
+                  <option value="__all__">Todos</option>
+                  {semestresList.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </label>
+            </div>
+            {loadingGrupos && <Cargando etiqueta="Cargando grupos…" />}
+            {!loadingGrupos && errorGrupos && <div style={{ padding: 10 }}><ErrorCarga onReintentar={() => void loadGrupos()}>No se pudieron cargar los grupos.</ErrorCarga></div>}
+            {!loadingGrupos && !errorGrupos && grupos.length === 0 && (
+              <div style={{ padding: 12 }}><Vacio titulo="Sin grupos">No hay grupos en este semestre. Créalos en «Tareas semanales».</Vacio></div>
             )}
-
-            <Panel bodyClassName="" title="Entregables de la plantilla" description={`${sortedPlantillas.length} en total`}>
-              {loadingPlantillas && <PageLoading label="Cargando plantillas…" />}
-              {!loadingPlantillas && sortedPlantillas.length === 0 && (
-                <EmptyState
-                  icon={FileText}
-                  title="Este grupo no tiene plantillas"
-                  action={
-                    <button type="button" onClick={openCreate} className="ds-btn ds-btn-primary ds-btn-sm">
-                      <Plus className="h-4 w-4" aria-hidden /> Nueva plantilla
-                    </button>
-                  }
-                >
-                  Crea la primera o importa la matriz desde Excel.
-                </EmptyState>
-              )}
-              {!loadingPlantillas && sortedPlantillas.length > 0 && (
-                <>
-                  <div className="overflow-x-auto">
-                    <table className="ds-table">
-                      <thead>
-                        <tr>
-                          <th>N°</th>
-                          <th>Semana</th>
-                          <th className="hidden md:table-cell">Periodo</th>
-                          <th className="hidden min-[1600px]:table-cell">Mes</th>
-                          <th className="hidden min-[1600px]:table-cell">Fase</th>
-                          <th>Entregable</th>
-                          <th className="hidden lg:table-cell">Instrucciones</th>
-                          <th className="text-right">Horas</th>
-                          <th className="text-right">Acciones</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {pageSlice.map((p) => {
-                          const short = p.entregable.length > 60 ? `${p.entregable.slice(0, 60)}…` : p.entregable;
-                          return (
-                            <tr key={p.id}>
-                              <td className="align-top tabular-nums">
-                                {p.numero}
-                                {p.numero_original != null && <span className="block text-xs text-amber-700" title="Número original del Excel (renumerado por decisión administrativa)">Excel: {p.numero_original}</span>}
-                                {p.importacion_id != null && (
-                                  <span className="block whitespace-nowrap text-xs text-emerald-700" title={`Importado de «${p.importacion_archivo ?? "Excel"}» · lote ${(p.importacion_lote ?? "").slice(0, 8)}`}>
-                                    Excel f.{p.origen_fila ?? "?"}
-                                  </span>
-                                )}
-                              </td>
-                              <td className="align-top tabular-nums">
-                                {p.semana_numero}
-                                {p.semana_original != null && <span className="block text-xs text-amber-700" title="Semana escrita en el Excel; se usó la semana de la fecha por decisión administrativa">Excel: {p.semana_original}</span>}
-                              </td>
-                              <td className="hidden whitespace-nowrap align-top text-xs text-text-muted md:table-cell">
-                                <div>{formatDateOnly(p.fecha_inicio_calculada)}</div>
-                                <div>hasta {formatDateOnly(p.fecha_fin_calculada)}</div>
-                              </td>
-                              <td className="hidden whitespace-nowrap align-top min-[1600px]:table-cell">{p.mes}</td>
-                              <td className="hidden max-w-[160px] truncate align-top min-[1600px]:table-cell" title={p.fase}>{p.fase}</td>
-                              <td className="max-w-[200px] align-top">
-                                <span title={p.entregable} className="line-clamp-2 text-text" style={{ fontWeight: 500 }}>{short}</span>
-                              </td>
-                              <td className="hidden max-w-[220px] align-top text-xs text-text-muted lg:table-cell">
-                                <span title={p.descripcion_evidencia ?? ""} className="line-clamp-2">{p.descripcion_evidencia || "—"}</span>
-                              </td>
-                              <td className="text-right align-top tabular-nums">{p.horas}</td>
-                              <td className="whitespace-nowrap text-right align-top">
-                                <div className="inline-flex items-center gap-0.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => void openMassUpdate(p)}
-                                    className="ds-btn ds-btn-ghost ds-btn-sm !px-2 text-emerald-700"
-                                    title="Actualizar evidencia en todos los grupos coincidentes"
-                                    aria-label={`Actualizar evidencia compartida de la plantilla ${p.numero}`}
-                                  >
-                                    <Link2 className="h-4 w-4" />
-                                  </button>
-                                  <button type="button" onClick={() => openEdit(p)} className="ds-btn ds-btn-ghost ds-btn-sm !px-2" title="Editar" aria-label={`Editar plantilla ${p.numero}`}>
-                                    <Pencil className="h-4 w-4" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => void deleteRow(p)}
-                                    className="ds-btn ds-btn-ghost ds-btn-sm !px-2 hover:!bg-red-50 hover:!text-red-700"
-                                    title="Eliminar"
-                                    aria-label={`Eliminar plantilla ${p.numero}`}
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  {sortedPlantillas.length > perPage && (
-                    <div className="flex items-center justify-between border-t border-line px-4 py-2.5 text-xs text-text-subtle">
-                      <button type="button" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="ds-btn ds-btn-secondary ds-btn-sm">
-                        Anterior
+            {!loadingGrupos && grupos.length > 0 && (
+              <ul className="b2-adm-lat-l">
+                {grupos.map((g) => {
+                  const activo = selectedGrupoId === g.id;
+                  return (
+                    <li key={g.id}>
+                      <button type="button" className="b2-adm-lat-i" aria-current={activo ? "true" : undefined} onClick={() => setSelectedGrupoId(g.id)}>
+                        <span>
+                          <span className="b2-tt">{g.nombre}</span>
+                          <span className="b2-sub">{g.semestre}{activo ? ` · ${sortedPlantillas.length} plantillas` : ""}</span>
+                        </span>
+                        <Tag tono={g.tipo_docente === "NUEVO" ? "primario" : "neutro"}>{g.tipo_docente === "NUEVO" ? "Nuevo" : "Antiguo"}</Tag>
                       </button>
-                      <span className="tabular-nums">Página {page} de {totalPages}</span>
-                      <button type="button" disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))} className="ds-btn ds-btn-secondary ds-btn-sm">
-                        Siguiente
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
-            </Panel>
-          </>
-        )}
-      </div>
-
-      <Dialog open={modalOpen} onOpenChange={setModalOpen}>
-        <DialogContent className="flex max-h-[90vh] flex-col gap-0 overflow-hidden rounded-xl border-line bg-surface p-0 sm:max-w-2xl">
-          <DialogHeader className="shrink-0 border-b border-line px-5 py-4">
-            <DialogTitle className="text-base">{editingId != null ? "Editar plantilla" : "Nueva plantilla"}</DialogTitle>
-            <DialogDescription className="text-xs text-text-subtle">
-              El sistema conserva la distancia respecto al inicio del semestre para poder clonar la plantilla a otros periodos.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-            <div className="grid grid-cols-1 gap-x-3 gap-y-3.5 md:grid-cols-2">
-              {field(
-                "pl-semana",
-                `Semana (1–${resumen?.grupo.numero_semanas ?? 16}) *`,
-                <input id="pl-semana" type="number" min={1} max={resumen?.grupo.numero_semanas ?? 16} value={form.semana_numero} onChange={(e) => setForm((f) => ({ ...f, semana_numero: e.target.value }))} className="ds-input" />
-              )}
-              {field(
-                "pl-mes",
-                "Mes *",
-                <>
-                  <input id="pl-mes" list="plantilla-month-options" value={form.mes} onChange={(e) => setForm((f) => ({ ...f, mes: e.target.value }))} className="ds-input" />
-                  <datalist id="plantilla-month-options">
-                    {availableMonths.map((month) => <option key={month} value={month} />)}
-                  </datalist>
-                </>
-              )}
-              {field("pl-numero", "Número *", <input id="pl-numero" type="number" value={form.numero} onChange={(e) => setForm((f) => ({ ...f, numero: e.target.value }))} className="ds-input" />)}
-              {field("pl-horas", "Horas *", <input id="pl-horas" type="number" step="0.5" value={form.horas} onChange={(e) => setForm((f) => ({ ...f, horas: e.target.value }))} className="ds-input" />)}
-              {field("pl-fase", "Fase *", <input id="pl-fase" value={form.fase} onChange={(e) => setForm((f) => ({ ...f, fase: e.target.value }))} className="ds-input" />, "md:col-span-2")}
-              {field("pl-cat", "Categoría *", <input id="pl-cat" value={form.categoria} onChange={(e) => setForm((f) => ({ ...f, categoria: e.target.value }))} className="ds-input" />, "md:col-span-2")}
-              {field("pl-fini", "Fecha exacta de inicio *", <input id="pl-fini" type="date" value={form.fecha_inicio} onChange={(e) => setForm((f) => ({ ...f, fecha_inicio: e.target.value }))} className="ds-input" />)}
-              {field("pl-ffin", "Fecha límite exacta *", <input id="pl-ffin" type="date" value={form.fecha_fin} onChange={(e) => setForm((f) => ({ ...f, fecha_fin: e.target.value }))} className="ds-input" />)}
-              {field("pl-entregable", "Entregable *", <textarea id="pl-entregable" rows={3} value={form.entregable} onChange={(e) => setForm((f) => ({ ...f, entregable: e.target.value }))} className="ds-input" />, "md:col-span-2")}
-              {field("pl-evid", "Instrucciones de evidencia (opcional)", <textarea id="pl-evid" rows={3} value={form.descripcion_evidencia} onChange={(e) => setForm((f) => ({ ...f, descripcion_evidencia: e.target.value }))} className="ds-input" />, "md:col-span-2")}
-              {field("pl-enlace", "Enlace o formulario de referencia (HTTPS)", <input id="pl-enlace" type="url" placeholder="https://" value={form.enlace_referencia} onChange={(e) => setForm((f) => ({ ...f, enlace_referencia: e.target.value }))} className="ds-input" />, "md:col-span-2")}
-            </div>
-          </div>
-          <DialogFooter className="shrink-0 border-t border-line px-5 py-3">
-            <button type="button" onClick={() => setModalOpen(false)} className="ds-btn ds-btn-secondary">
-              Cancelar
-            </button>
-            <button type="button" disabled={saving} onClick={() => void saveModal()} className="ds-btn ds-btn-primary">
-              {saving ? "Guardando…" : "Guardar"}
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={massSource != null} onOpenChange={(o) => { if (!o && !savingMass) setMassSource(null); }}>
-        <DialogContent className="flex max-h-[92vh] flex-col gap-0 overflow-hidden rounded-xl border-line bg-surface p-0 sm:max-w-xl">
-          <DialogHeader className="shrink-0 border-b border-line px-5 py-4">
-            <DialogTitle className="text-base">Actualización masiva de evidencia</DialogTitle>
-            <DialogDescription className="line-clamp-2 text-xs text-text-subtle">{massSource?.entregable}</DialogDescription>
-          </DialogHeader>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-            {loadingMassPreview ? (
-              <PageLoading label="Calculando grupos afectados…" />
-            ) : massPreview ? (
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3.5">
-                <p className="text-sm text-emerald-800" style={{ fontWeight: 600 }}>
-                  {massPreview.plantillas_afectadas} plantilla(s) en {massPreview.grupos_afectados} grupo(s)
-                </p>
-                <p className="mt-1 text-xs text-emerald-800">
-                  Alcance restringido al semestre {massPreview.semestre}. Solo se incluyen entregables cuyo nombre coincide exactamente.
-                </p>
-                <div className="mt-2 flex max-h-24 flex-wrap gap-1 overflow-y-auto">
-                  {[...new Map(massPreview.coincidencias.map((row) => [row.grupo_id, row])).values()].map((row) => (
-                    <span key={row.grupo_id} className="rounded-full bg-surface px-2 py-0.5 text-[11px] text-emerald-800">
-                      {row.grupo_nombre}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            <div>
-              <label htmlFor="pl-mass-desc" className="ds-label">Instrucción o evidencia documental compartida</label>
-              <textarea id="pl-mass-desc" rows={5} value={massDescription} onChange={(event) => setMassDescription(event.target.value)} className="ds-input" />
-            </div>
-            <div>
-              <label htmlFor="pl-mass-link" className="ds-label">Enlace o formulario compartido</label>
-              <input id="pl-mass-link" type="url" placeholder="https://" value={massLink} onChange={(event) => setMassLink(event.target.value)} className="ds-input" />
-            </div>
-          </div>
-          <DialogFooter className="shrink-0 border-t border-line px-5 py-3">
-            <button type="button" onClick={() => setMassSource(null)} disabled={savingMass} className="ds-btn ds-btn-secondary">
-              Cancelar
-            </button>
-            <button type="button" onClick={() => void applyMassUpdate()} disabled={savingMass || loadingMassPreview || !massPreview} className="ds-btn ds-btn-primary">
-              {savingMass ? "Aplicando…" : "Actualizar grupos"}
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </aside>
+          {contenido}
+        </div>
+      </AdmPagina>
+      {dialogo}
+    </>
   );
 }

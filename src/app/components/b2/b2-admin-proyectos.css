@@ -1,0 +1,24 @@
+/* Administración · Iniciativas: cronograma semanal dentro del inspector */
+.b2-adm-proyectos-cron { margin-top: 4px; }
+.b2-adm-proyectos-cron > summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; color: var(--c-primary); font-weight: 700; font-size: var(--fs-md); }
+.b2-adm-proyectos-sem { list-style: none; margin: 6px 0 0; padding: 0; border: 1px solid var(--c-line); border-radius: var(--r); }
+.b2-adm-proyectos-sem > li { padding: 8px 10px; }
+.b2-adm-proyectos-sem > li + li { border-top: 1px solid var(--c-line); }
+.b2-adm-proyectos-sem-t { display: flex; justify-content: space-between; gap: 8px; font-weight: 700; font-size: var(--fs-md); }
+.b2-adm-proyectos-sem-t small { font-weight: 500; color: var(--c-text-3); font-size: var(--fs-xs); }
+.b2-adm-proyectos-ent { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.b2-adm-proyectos-ent li { display: flex; align-items: flex-start; gap: 6px; font-size: var(--fs-sm); color: var(--c-text-2); }
+.b2-adm-proyectos-ent li > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.b2-adm-proyectos-ent [data-hecho] { color: var(--c-text-3); }
+.b2-adm-proyectos-chk { flex: none; width: 14px; text-align: center; font-weight: 800; color: var(--c-bar); }
+.b2-adm-proyectos-h { font-variant-numeric: tabular-nums; color: var(--c-text-3); flex: none; }
+.b2-adm-proyectos-ent a { color: var(--c-primary); display: inline-flex; flex: none; }
+.b2-adm-proyectos-docs { margin-top: 2px; }
+.b2-adm-proyectos-nota { font-size: var(--fs-xs); color: var(--c-text-3); margin-top: 4px; }
+
+/* Móvil: la pestaña entera se desplaza y la lista usa su altura natural (cabecera + filtros ocupan mucho a 390 px) */
+@media (max-width: 720px) {
+  #panel-proyectos { overflow-y: auto; }
+  #panel-proyectos > * { flex: none; }
+  #panel-proyectos .b2-adm-ml { overflow: visible; }
+}

@@ -69,3 +69,16 @@ textarea.b2-input { height: auto; padding: 8px 10px; resize: vertical; }
 .b2-c-e.b2-c-e-ico { width: 56px; gap: 4px; padding: 0 6px; justify-content: flex-start; }
 .b2-c-e-ico .b2-prog { width: 36px; }
 .b2-venc-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c-danger); flex: none; }
+
+.b2-meses { min-width: min(430px, 92vw); }
+.b2-meses ul { display: flex; flex-direction: column; }
+.b2-mes-i { display: grid; grid-template-columns: minmax(0, 1fr) 96px 52px; gap: 10px; align-items: center; width: 100%; min-height: 44px; padding: 4px 6px; background: none; border: 0; border-radius: var(--r); text-align: left; cursor: pointer; color: inherit; }
+.b2-mes-i[data-on] { background: var(--c-select); }
+@media (hover: hover) and (pointer: fine) { .b2-mes-i:hover:not([data-on]) { background: var(--c-hover); } }
+.b2-mes-n { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.b2-mes-n b { font-weight: 700; text-transform: capitalize; }
+.b2-mes-n small { font-size: var(--fs-xs); color: var(--c-text-3); }
+.b2-mes-v { font-size: var(--fs-xs); font-weight: 700; text-align: right; }
+.b2-mes-v[data-venc] { color: var(--c-danger); }
+.b2-ml-filtros { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.b2-ml-filtros .b2-ml-s { flex: 1 1 140px; }

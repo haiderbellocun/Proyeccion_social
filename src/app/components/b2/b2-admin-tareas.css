@@ -1,0 +1,6 @@
+/* Administración · Tareas semanales */
+.b2-adm-tareas-dh { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 16px; }
+.b2-adm-tareas-dh .b2-insp-sub { margin: 0; }
+.b2-adm-tareas-dh + .b2-adm-lista, .b2-adm-tareas-dh + .b2-insp-p { margin-top: 8px; }
+.b2-adm-tareas-ac { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex: none; }
+.b2-adm-lista .b2-link { word-break: break-all; white-space: normal; }

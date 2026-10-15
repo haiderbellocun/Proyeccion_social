@@ -1,0 +1,10 @@
+/* Usuarios (Administración B2): en móvil la pestaña se desplaza completa en lugar de encerrar la lista en un área mínima. */
+@media (max-width: 720px) {
+  #panel-usuarios { overflow-y: auto; }
+  #panel-usuarios > * { flex: none; }
+  #panel-usuarios .b2-adm-ml { overflow: visible; flex: none; }
+  #panel-usuarios .b2-adm-tb { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  #panel-usuarios .b2-adm-tb > .b2-adm-buscar, #panel-usuarios .b2-adm-tb > .b2-tb-fill, #panel-usuarios .b2-adm-tb > .b2-tb-count { grid-column: 1 / -1; }
+  #panel-usuarios .b2-adm-tb > .b2-tb-fill { display: none; }
+  #panel-usuarios .b2-adm-tb > .b2-tb-count { text-align: right; }
+}

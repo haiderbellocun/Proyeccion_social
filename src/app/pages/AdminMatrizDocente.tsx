@@ -418,6 +418,7 @@ export default function AdminMatrizDocente() {
         semana={semana}
         hoy={matrizStats?.hoy ?? semana?.hoy ?? null}
         resumen={resumen}
+        porMes={matrizStats?.por_mes ?? null}
         cargando={loading}
         error={loadError}
         onReintentar={() => setRecarga((n) => n + 1)}

@@ -1,31 +1,13 @@
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type Dispatch,
-  type SetStateAction,
-} from "react";
-import {
-  CalendarRange,
-  ChevronDown,
-  ChevronUp,
-  Copy,
-  Loader2,
-  Pencil,
-  Plus,
-  Trash2,
-  UserPlus,
-  Users,
-} from "lucide-react";
-import type { ReactNode } from "react";
-import { AppSelect } from "../../components/AppSelect";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../components/ui/dialog";
-import { EmptyState, InlineAlert, Kpi, PageLoading, Panel, StatusPill } from "../../components/ds/primitives";
-import { useConfirmationDialog } from "../../components/ConfirmationDialog";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router";
 import { API_BASE, apiFetch as fetch } from "../../config/api";
 import { notify } from "../../lib/notify";
+import {
+  AdmPagina, Barra, Campo, Cargando, DataTable, ErrorCarga, Filtro, FormInspector, Grupo, Resumen, Tag, Vacio, useConfirmar,
+  type Col,
+} from "../../components/b2/admin-ui";
+import { Dl, Estado } from "../../components/b2/ui";
+import "../../components/b2/b2-admin-tareas.css";
 
 const API_BASE_URL = API_BASE;
 
@@ -70,6 +52,21 @@ type GrupoFormState = {
   num_convenios_dinamizados: string;
 };
 
+type ResumenGrupo = {
+  grupo: { id: number; nombre: string; semestre: string; numero_semanas: number | null; horas_totales: number | null };
+  importaciones: { id: number; lote: string; creado_en: string; archivo_nombre: string | null }[];
+  totales: { total: number; importadas: number; horas: number; con_ajustes: number };
+};
+
+type Modo =
+  | { k: "ver"; id: number }
+  | { k: "crear" }
+  | { k: "editar"; id: number }
+  | { k: "clonar" }
+  | { k: "asignar"; id: number }
+  | { k: "docente"; id: number }
+  | null;
+
 const emptyForm = (semestre: string): GrupoFormState => ({
   nombre: "",
   descripcion: "",
@@ -86,46 +83,14 @@ function tipoIsNuevo(tipo: string | null | undefined): boolean {
   return String(tipo ?? "").toUpperCase() === "NUEVO";
 }
 
-function TipoBadge({ tipo }: { tipo: string | null | undefined }) {
-  const isNuevo = tipoIsNuevo(tipo);
+function TipoTag({ tipo }: { tipo: string | null | undefined }) {
   const label = tipo ? tipo.charAt(0).toUpperCase() + tipo.slice(1).toLowerCase() : "—";
-  return <StatusPill tone={isNuevo ? "brand" : "neutral"}>{label}</StatusPill>;
+  return <Tag tono={tipoIsNuevo(tipo) ? "primario" : "neutro"}>{label}</Tag>;
 }
 
-/** Diálogo estándar de la sección: encabezado, cuerpo con scroll y pie con acciones a la derecha. */
-function ModalShell({
-  open,
-  onOpenChange,
-  title,
-  description,
-  size = "md",
-  children,
-  footer,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  title: string;
-  description?: ReactNode;
-  size?: "md" | "lg";
-  children: ReactNode;
-  footer: ReactNode;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className={`max-h-[90vh] gap-0 overflow-hidden rounded-xl border-line bg-surface p-0 ${size === "lg" ? "sm:max-w-xl" : "sm:max-w-md"} flex flex-col`}>
-        <DialogHeader className="shrink-0 border-b border-line px-5 py-4">
-          <DialogTitle className="text-base">{title}</DialogTitle>
-          <DialogDescription className={description ? "text-xs text-text-subtle" : "sr-only"}>{description ?? title}</DialogDescription>
-        </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
-        <DialogFooter className="shrink-0 border-t border-line px-5 py-3">{footer}</DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-export default function GroupManagement() {
-  const requestConfirmation = useConfirmationDialog();
+export default function GroupManagement({ cabecera }: { cabecera: ReactNode }) {
+  const navigate = useNavigate();
+  const { confirmar, dialogo } = useConfirmar();
   const [semestres, setSemestres] = useState<string[]>([]);
   const [semestreActivo, setSemestreActivo] = useState<string>("");
   const [semestreInstitucionalActivo, setSemestreInstitucionalActivo] = useState<string>("");
@@ -134,29 +99,23 @@ export default function GroupManagement() {
   const [loadError, setLoadError] = useState(false);
   const [grupos, setGrupos] = useState<IndicadoresGrupoRow[]>([]);
   const [docentes, setDocentes] = useState<DocenteRow[]>([]);
-  const [expandedGrupoId, setExpandedGrupoId] = useState<number | null>(null);
+  const [modo, setModo] = useState<Modo>(null);
+  const [intento, setIntento] = useState(false);
 
-  const [assignOpen, setAssignOpen] = useState(false);
-  const [assignGrupoId, setAssignGrupoId] = useState<number | null>(null);
   const [assignDocenteId, setAssignDocenteId] = useState<number | "">("");
 
-  const [editOpen, setEditOpen] = useState(false);
   const [editDocente, setEditDocente] = useState<DocenteRow | null>(null);
   const [editTipo, setEditTipo] = useState<"ANTIGUO" | "NUEVO">("ANTIGUO");
   const [editRegional, setEditRegional] = useState("");
   const [editLink, setEditLink] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
 
-  const [createOpen, setCreateOpen] = useState(false);
   const [grupoForm, setGrupoForm] = useState<GrupoFormState>(() => emptyForm(""));
   const [savingGrupo, setSavingGrupo] = useState(false);
 
-  const [editGrupoOpen, setEditGrupoOpen] = useState(false);
-  const [grupoEditId, setGrupoEditId] = useState<number | null>(null);
   const [grupoEditNumDocentes, setGrupoEditNumDocentes] = useState(0);
   const [grupoEditForm, setGrupoEditForm] = useState<GrupoFormState>(emptyForm(""));
 
-  const [cloneOpen, setCloneOpen] = useState(false);
   const [cloneOrigen, setCloneOrigen] = useState("");
   const [cloneDestino, setCloneDestino] = useState("");
   const [cloneFechaInicio, setCloneFechaInicio] = useState("");
@@ -166,6 +125,8 @@ export default function GroupManagement() {
   const [cloneActivar, setCloneActivar] = useState(false);
   const [clonePreviewCount, setClonePreviewCount] = useState(0);
   const [cloning, setCloning] = useState(false);
+
+  const [resumenGrupo, setResumenGrupo] = useState<{ id: number; data: ResumenGrupo | null; cargando: boolean } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -178,6 +139,7 @@ export default function GroupManagement() {
         if (cancelled) return;
         setSemestres(list);
         setSemestreInstitucionalActivo(String(d.activo?.codigo || ""));
+        if (list.length === 0 && !d.activo?.codigo) setLoading(false);
         setSemestreActivo((prev) => {
           if (prev) return prev;
           return d.activo?.codigo ?? list[0] ?? "";
@@ -241,6 +203,7 @@ export default function GroupManagement() {
     void loadAll();
   }, [loadAll]);
 
+  const cloneOpen = modo?.k === "clonar";
   useEffect(() => {
     if (!cloneOpen) return;
     let cancelled = false;
@@ -282,18 +245,50 @@ export default function GroupManagement() {
     [docentes]
   );
 
+  const grupoModo = modo && "id" in modo ? grupos.find((g) => g.id === modo.id) ?? null : null;
+  const verId = modo && "id" in modo ? modo.id : null;
+
+  // Resumen de solo lectura (entregables, horas y semanas) del grupo abierto en el inspector
+  useEffect(() => {
+    if (modo?.k !== "ver") return;
+    const id = modo.id;
+    let cancelled = false;
+    setResumenGrupo({ id, data: null, cargando: true });
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE_URL}/admin/grupos-matriz/${id}/resumen`);
+        const d = r.ok ? ((await r.json()) as ResumenGrupo) : null;
+        if (!cancelled) setResumenGrupo({ id, data: d, cargando: false });
+      } catch {
+        if (!cancelled) setResumenGrupo({ id, data: null, cargando: false });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [modo?.k === "ver" ? modo.id : null, grupos]);
+
+  const cerrar = () => {
+    setModo(null);
+    setIntento(false);
+  };
+
+  const abrirVer = (id: number) => {
+    setIntento(false);
+    setModo({ k: "ver", id });
+  };
+
   const openAssign = (grupoId: number) => {
-    setAssignGrupoId(grupoId);
     setAssignDocenteId("");
-    setAssignOpen(true);
+    setModo({ k: "asignar", id: grupoId });
   };
 
   const candidatosAsignar = useMemo(() => {
-    if (assignGrupoId == null) return [];
+    if (modo?.k !== "asignar") return [];
     return docentes.filter(
-      (d) => d.grupo_matriz_id == null || d.grupo_matriz_id !== assignGrupoId
+      (d) => d.grupo_matriz_id == null || d.grupo_matriz_id !== modo.id
     );
-  }, [docentes, assignGrupoId]);
+  }, [docentes, modo]);
 
   const selectedCandidato = useMemo(() => {
     if (assignDocenteId === "") return null;
@@ -301,14 +296,15 @@ export default function GroupManagement() {
   }, [docentes, assignDocenteId]);
 
   const handleAsignar = async () => {
-    if (assignGrupoId == null || assignDocenteId === "") return;
+    if (modo?.k !== "asignar" || assignDocenteId === "") return;
+    const grupoId = modo.id;
     try {
       const res = await fetch(
         `${API_BASE_URL}/admin/docentes/${assignDocenteId}/grupo-matriz`,
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ grupo_matriz_id: assignGrupoId }),
+          body: JSON.stringify({ grupo_matriz_id: grupoId }),
         }
       );
       if (!res.ok) {
@@ -316,7 +312,7 @@ export default function GroupManagement() {
         notify.error(j.error || "No se pudo asignar.");
         return;
       }
-      setAssignOpen(false);
+      abrirVer(grupoId);
       await loadAll();
       notify.success("Docente asignado");
     } catch (err) {
@@ -327,13 +323,13 @@ export default function GroupManagement() {
 
   const quitarDelGrupo = async (docenteId: number) => {
     const docente = docentes.find((item) => item.id === docenteId);
-    const accepted = await requestConfirmation({
-      title: "Quitar docente del grupo",
-      description: docente
+    const accepted = await confirmar({
+      titulo: "Quitar docente del grupo",
+      descripcion: docente
         ? `${docente.name} quedará sin grupo matriz asignado.`
         : "El docente quedará sin grupo matriz asignado.",
-      confirmLabel: "Quitar del grupo",
-      tone: "warning",
+      etiqueta: "Quitar del grupo",
+      tono: "aviso",
     });
     if (!accepted) return;
     try {
@@ -358,16 +354,17 @@ export default function GroupManagement() {
     }
   };
 
-  const openEdit = (d: DocenteRow) => {
+  const openEdit = (d: DocenteRow, grupoId: number) => {
     setEditDocente(d);
     setEditTipo(tipoIsNuevo(d.tipo_docente) ? "NUEVO" : "ANTIGUO");
     setEditRegional(d.regional || "");
     setEditLink(d.link_drive || "");
-    setEditOpen(true);
+    setModo({ k: "docente", id: grupoId });
   };
 
   const handleGuardarEdit = async () => {
-    if (!editDocente) return;
+    if (!editDocente || modo?.k !== "docente") return;
+    const grupoId = modo.id;
     setSavingEdit(true);
     try {
       const tipoAntes = editDocente.tipo_docente;
@@ -407,7 +404,7 @@ export default function GroupManagement() {
         }
       }
 
-      setEditOpen(false);
+      abrirVer(grupoId);
       await loadAll();
       notify.success("Cambios guardados");
     } catch (err) {
@@ -420,10 +417,19 @@ export default function GroupManagement() {
 
   const openCreateGrupo = () => {
     setGrupoForm(emptyForm(semestreActivo));
-    setCreateOpen(true);
+    setIntento(false);
+    setModo({ k: "crear" });
+  };
+
+  const erroresGrupo = (f: GrupoFormState, mensajeSemestre: string) => {
+    const e: { nombre?: string; semestre?: string } = {};
+    if (!f.nombre.trim()) e.nombre = "El nombre es obligatorio.";
+    if (!SEMESTRE_HINT.test(f.semestre.trim())) e.semestre = mensajeSemestre;
+    return e;
   };
 
   const handleCrearGrupo = async () => {
+    setIntento(true);
     if (!grupoForm.nombre.trim()) {
       notify.warning("El nombre es obligatorio.");
       return;
@@ -454,7 +460,7 @@ export default function GroupManagement() {
         notify.error(j.error || "No se pudo crear el grupo.");
         return;
       }
-      setCreateOpen(false);
+      cerrar();
       const creadoSem = grupoForm.semestre.trim();
       if (!semestres.includes(creadoSem)) {
         setSemestres((prev) => [...new Set([...prev, creadoSem])].sort().reverse());
@@ -471,7 +477,6 @@ export default function GroupManagement() {
   };
 
   const openEditGrupo = (g: IndicadoresGrupoRow) => {
-    setGrupoEditId(g.id);
     setGrupoEditNumDocentes(g.num_docentes ?? 0);
     setGrupoEditForm({
       nombre: g.nombre,
@@ -484,11 +489,14 @@ export default function GroupManagement() {
       num_convenios_nuevos: String(g.num_convenios_nuevos ?? 0),
       num_convenios_dinamizados: String(g.num_convenios_dinamizados ?? 0),
     });
-    setEditGrupoOpen(true);
+    setIntento(false);
+    setModo({ k: "editar", id: g.id });
   };
 
   const handleGuardarGrupo = async () => {
-    if (grupoEditId == null) return;
+    if (modo?.k !== "editar") return;
+    const grupoEditId = modo.id;
+    setIntento(true);
     if (!grupoEditForm.nombre.trim()) {
       notify.warning("El nombre es obligatorio.");
       return;
@@ -519,7 +527,7 @@ export default function GroupManagement() {
         notify.error(j.error || "No se pudo guardar.");
         return;
       }
-      setEditGrupoOpen(false);
+      abrirVer(grupoEditId);
       await loadAll();
       notify.success("Cambios guardados");
     } catch (err) {
@@ -538,11 +546,11 @@ export default function GroupManagement() {
       );
       return;
     }
-    const accepted = await requestConfirmation({
-      title: "Eliminar grupo matriz",
-      description: `¿Deseas eliminar «${g.nombre}»?`,
-      confirmLabel: "Eliminar",
-      tone: "danger",
+    const accepted = await confirmar({
+      titulo: "Eliminar grupo matriz",
+      descripcion: `¿Deseas eliminar «${g.nombre}»?`,
+      etiqueta: "Eliminar",
+      tono: "peligro",
     });
     if (!accepted) return;
     try {
@@ -552,13 +560,13 @@ export default function GroupManagement() {
       if (res.status === 400) {
         const j = await res.json().catch(() => ({}));
         if (j.tiene_plantillas && typeof j.num_plantillas === "number") {
-          const forceAccepted = await requestConfirmation({
-            title: "Eliminar grupo y plantillas",
-            description:
+          const forceAccepted = await confirmar({
+            titulo: "Eliminar grupo y plantillas",
+            descripcion:
               `Este grupo tiene ${j.num_plantillas} plantillas de entregables. ` +
               "También se eliminarán y esta acción no se puede deshacer.",
-            confirmLabel: "Eliminar todo",
-            tone: "danger",
+            etiqueta: "Eliminar todo",
+            tono: "peligro",
           });
           if (!forceAccepted) return;
           res = await fetch(
@@ -576,7 +584,7 @@ export default function GroupManagement() {
         return;
       }
       setGrupos((prev) => prev.filter((x) => x.id !== g.id));
-      setExpandedGrupoId((exp) => (exp === g.id ? null : exp));
+      setModo((m) => (m && "id" in m && m.id === g.id ? null : m));
       notify.success("Grupo eliminado");
     } catch (err) {
       console.error(err);
@@ -592,16 +600,17 @@ export default function GroupManagement() {
     setCloneNumeroSemanas("16");
     setClonePlantillas(true);
     setCloneActivar(false);
-    setCloneOpen(true);
+    setIntento(false);
+    setModo({ k: "clonar" });
   };
 
   const handleActivarSemestre = async () => {
     if (!semestreActivo || semestreActivo === semestreInstitucionalActivo) return;
-    const accepted = await requestConfirmation({
-      title: "Activar semestre",
-      description: `${semestreActivo} pasará a ser el semestre activo para toda la aplicación.`,
-      confirmLabel: "Activar",
-      tone: "primary",
+    const accepted = await confirmar({
+      titulo: "Activar semestre",
+      descripcion: `${semestreActivo} pasará a ser el semestre activo para toda la aplicación.`,
+      etiqueta: "Activar",
+      tono: "primario",
     });
     if (!accepted) return;
     setActivatingSemester(true);
@@ -621,7 +630,22 @@ export default function GroupManagement() {
     }
   };
 
+  const erroresClon = () => {
+    const dest = cloneDestino.trim().toUpperCase();
+    const e: { destino?: string; origen?: string; fechas?: string; semanas?: string } = {};
+    if (!SEMESTRE_HINT.test(dest)) e.destino = "Semestre destino inválido (ej: 2026B).";
+    else if (dest === cloneOrigen) e.destino = "El semestre destino debe ser distinto al origen.";
+    if (!cloneOrigen) e.origen = "Selecciona semestre origen.";
+    if (!cloneFechaInicio || !cloneFechaFin || cloneFechaFin < cloneFechaInicio) {
+      e.fechas = "Indica un rango de fechas válido para el nuevo semestre.";
+    }
+    const weeks = Number(cloneNumeroSemanas);
+    if (!Number.isInteger(weeks) || weeks < 1 || weeks > 53) e.semanas = "El número de semanas debe estar entre 1 y 53.";
+    return e;
+  };
+
   const handleClonarSemestre = async () => {
+    setIntento(true);
     const dest = cloneDestino.trim().toUpperCase();
     if (!SEMESTRE_HINT.test(dest)) {
       notify.warning("Semestre destino inválido (ej: 2026B).");
@@ -664,7 +688,7 @@ export default function GroupManagement() {
       notify.success(
         `Se crearon ${data.grupos_clonados ?? 0} grupos y ${data.plantillas_clonadas ?? 0} plantillas para ${dest}.`
       );
-      setCloneOpen(false);
+      cerrar();
       if (!semestres.includes(dest)) {
         setSemestres((prev) => [...new Set([...prev, dest])].sort().reverse());
       }
@@ -681,490 +705,340 @@ export default function GroupManagement() {
     }
   };
 
-  const renderGrupoFormFields = (
-    form: GrupoFormState,
-    setForm: Dispatch<SetStateAction<GrupoFormState>>,
-    options: { semestreReadonly: boolean; showSemestreWarning: boolean; idPrefix: string }
+  /* ───────── presentación ───────── */
+  const verPlantillas = (g: IndicadoresGrupoRow) =>
+    navigate(`/admin/sistema?tab=plantillas&semestre=${encodeURIComponent(String(g.semestre ?? semestreActivo))}&grupo=${g.id}`);
+
+  const cols: Col<IndicadoresGrupoRow>[] = [
+    { id: "grupo", titulo: "Grupo", ancho: "minmax(200px, 1fr)", celda: (g) => <span className="b2-tt" title={g.nombre} style={{ fontWeight: 700 }}>{g.nombre}</span> },
+    { id: "tipo", titulo: "Tipo", ancho: "84px", celda: (g) => <TipoTag tipo={g.tipo_docente} /> },
+    { id: "docentes", titulo: "Docentes", ancho: "72px", num: true, celda: (g) => g.num_docentes ?? 0 },
+    { id: "horas", titulo: "Horas", ancho: "64px", num: true, prioridad: 2, celda: (g) => g.horas_totales ?? "—" },
+    { id: "proy", titulo: "Proyectos", ancho: "76px", num: true, prioridad: 2, celda: (g) => g.num_proyectos ?? 0 },
+    { id: "plant", titulo: "Plantillas", ancho: "76px", num: true, prioridad: 2, celda: (g) => g.num_plantilla_entregables ?? 0 },
+    { id: "act", titulo: "Actividades", ancho: "88px", num: true, prioridad: 3, celda: (g) => g.num_actividades ?? 0 },
+    { id: "cn", titulo: "Conv. nuevos", ancho: "92px", num: true, prioridad: 3, celda: (g) => g.num_convenios_nuevos ?? 0 },
+    { id: "cd", titulo: "Conv. dinam.", ancho: "92px", num: true, prioridad: 3, celda: (g) => g.num_convenios_dinamizados ?? 0 },
+  ];
+
+  const esActivo = semestreActivo === semestreInstitucionalActivo;
+  const opcionesSemestre = semestres.length === 0 ? [semestreActivo] : semestres;
+
+  const numCampo = (f: GrupoFormState, set: (fn: (p: GrupoFormState) => GrupoFormState) => void, key: keyof GrupoFormState, label: string, min: number, completo?: boolean) => (
+    <Campo etiqueta={label} ancho={completo ? "completo" : undefined} obligatorio={key === "horas_totales"}>
+      {(p) => <input {...p} type="number" min={min} className="b2-input" value={f[key]} onChange={(e) => set((s) => ({ ...s, [key]: e.target.value }))} />}
+    </Campo>
+  );
+
+  const camposGrupo = (
+    f: GrupoFormState,
+    set: (fn: (p: GrupoFormState) => GrupoFormState) => void,
+    opts: { semestreReadonly: boolean; aviso: boolean; mensajeSemestre: string; prefix: string }
   ) => {
-    const p = options.idPrefix;
-    const numField = (key: keyof GrupoFormState, label: string, min: number) => (
-      <div>
-        <label htmlFor={`${p}-${key}`} className="ds-label">{label}</label>
-        <input
-          id={`${p}-${key}`}
-          type="number"
-          min={min}
-          className="ds-input"
-          value={form[key]}
-          onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-        />
-      </div>
-    );
-    return (
-      <div className="grid grid-cols-2 gap-x-3 gap-y-3.5">
-        {options.showSemestreWarning && (
-          <div className="col-span-2">
-            <InlineAlert tone="warning">El semestre no puede modificarse porque hay docentes asignados a este grupo.</InlineAlert>
-          </div>
-        )}
-        <div className="col-span-2">
-          <label htmlFor={`${p}-nombre`} className="ds-label">Nombre *</label>
-          <input id={`${p}-nombre`} className="ds-input" value={form.nombre} onChange={(e) => setForm((f) => ({ ...f, nombre: e.target.value }))} />
-        </div>
-        <div className="col-span-2">
-          <label htmlFor={`${p}-desc`} className="ds-label">Descripción</label>
-          <textarea
-            id={`${p}-desc`}
-            rows={2}
-            className="ds-input resize-none"
-            value={form.descripcion}
-            onChange={(e) => setForm((f) => ({ ...f, descripcion: e.target.value }))}
-          />
-        </div>
-        <div>
-          <label className="ds-label">Semestre *</label>
-          <AppSelect
-            className="w-full"
-            value={form.semestre}
-            disabled={options.semestreReadonly}
-            onValueChange={(v) => setForm((f) => ({ ...f, semestre: v }))}
-            options={[
-              ...(!semestres.includes(form.semestre) && form.semestre ? [{ value: form.semestre, label: form.semestre }] : []),
-              ...semestres.map((semester) => ({ value: semester, label: semester })),
-            ]}
-          />
-        </div>
-        <fieldset>
-          <legend className="ds-label">Tipo docente</legend>
-          <div className="flex h-9 items-center gap-4">
-            {(["ANTIGUO", "NUEVO"] as const).map((t) => (
-              <label key={t} className="flex cursor-pointer items-center gap-2 text-sm">
-                <input
-                  type="radio"
-                  name={`${p}-tipo`}
-                  className="accent-brand"
-                  checked={form.tipo_docente === t}
-                  onChange={() => setForm((f) => ({ ...f, tipo_docente: t }))}
-                />
-                {t === "ANTIGUO" ? "Antiguo" : "Nuevo"}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        {numField("horas_totales", "Horas totales *", 1)}
-        {numField("num_proyectos", "Proyectos", 0)}
-        {numField("num_actividades", "Actividades", 0)}
-        {numField("num_convenios_nuevos", "Convenios nuevos", 0)}
-        <div className="col-span-2">{numField("num_convenios_dinamizados", "Convenios dinamizados", 0)}</div>
-        <p className="col-span-2 text-xs text-text-subtle">Solo se muestran semestres con calendario registrado.</p>
-      </div>
-    );
-  };
-
-  if (!semestreActivo) {
-    return loading ? (
-      <PageLoading label="Inicializando semestre…" />
-    ) : (
-      <Panel bodyClassName="">
-        <EmptyState icon={CalendarRange} title="No hay un semestre configurado">
-          Crea un semestre en la pestaña «Semestres» para gestionar grupos y tareas.
-        </EmptyState>
-      </Panel>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-[0.8125rem] text-text-muted" style={{ fontWeight: 550 }}>
-            Semestre
-          </span>
-          <AppSelect
-
-            value={semestreActivo}
-            onValueChange={(v) => setSemestreActivo(v)}
-            className="min-w-[100px]"
-            options={semestres.length === 0 ? [{ value: semestreActivo, label: semestreActivo }] : semestres.map((s) => ({ value: s, label: s }))}
-          />
-        </div>
-        {semestreActivo === semestreInstitucionalActivo ? (
-          <StatusPill tone="success">Semestre activo</StatusPill>
-        ) : (
-          <button type="button" disabled={activatingSemester} onClick={() => void handleActivarSemestre()} className="ds-btn ds-btn-secondary ds-btn-sm">
-            {activatingSemester ? "Activando…" : "Establecer como activo"}
-          </button>
-        )}
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <button type="button" onClick={openCloneSemestre} className="ds-btn ds-btn-secondary">
-            <Copy className="h-4 w-4" aria-hidden /> Clonar semestre
-          </button>
-          <button type="button" onClick={openCreateGrupo} className="ds-btn ds-btn-primary">
-            <Plus className="h-4 w-4" aria-hidden /> Nuevo grupo
-          </button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Kpi label="Total de grupos" value={resumen.totalGrupos} icon={Users} tone="brand" />
-        <Kpi label="Grupos antiguo" value={resumen.antiguo} />
-        <Kpi label="Grupos nuevo" value={resumen.nuevo} tone="brand" />
-        <Kpi label="Docentes sin grupo" value={resumen.sinGrupo} tone={resumen.sinGrupo > 0 ? "warning" : "success"} hint={resumen.sinGrupo > 0 ? "Asígnalos desde cada grupo" : undefined} />
-      </div>
-
-      <Panel bodyClassName="" title="Grupos matriz" description={`Semestre ${semestreActivo}`}>
-        {loading && <PageLoading label="Cargando grupos…" />}
-        {!loading && loadError && (
-          <div className="p-4">
-            <InlineAlert
-              action={
-                <button type="button" className="ds-btn ds-btn-secondary ds-btn-sm" onClick={() => void loadAll()}>
-                  Reintentar
-                </button>
-              }
-            >
-              No se pudo cargar la información de grupos.
-            </InlineAlert>
-          </div>
-        )}
-        {!loading && !loadError && grupos.length === 0 && (
-          <EmptyState
-            icon={Users}
-            title={`Sin grupos en ${semestreActivo}`}
-            action={
-              <button type="button" onClick={openCreateGrupo} className="ds-btn ds-btn-primary ds-btn-sm">
-                <Plus className="h-4 w-4" aria-hidden /> Nuevo grupo
-              </button>
-            }
-          >
-            Crea un grupo o clona los de otro semestre.
-          </EmptyState>
-        )}
-        {!loading && !loadError && grupos.length > 0 && (
-          <div className="overflow-x-auto">
-            <table className="ds-table">
-              <thead>
-                <tr>
-                  <th>Grupo</th>
-                  <th className="hidden min-[1600px]:table-cell">Semestre</th>
-                  <th>Tipo</th>
-                  <th className="hidden sm:table-cell text-right">Horas</th>
-                  <th className="hidden md:table-cell text-right">Proyectos</th>
-                  <th className="hidden xl:table-cell text-right">Actividades</th>
-                  <th className="hidden min-[1600px]:table-cell text-right">Conv. nuevos</th>
-                  <th className="hidden min-[1600px]:table-cell text-right">Conv. dinam.</th>
-                  <th>Docentes</th>
-                  <th className="hidden md:table-cell text-right">Plantillas</th>
-                  <th className="text-right">Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {grupos.map((g) => {
-                  const open = expandedGrupoId === g.id;
-                  const lista = docentesPorGrupo(g.id);
-                  return (
-                    <Fragment key={g.id}>
-                      <tr>
-                        <td className="max-w-[18rem]">
-                          <span className="block truncate text-text" style={{ fontWeight: 600 }} title={g.nombre}>
-                            {g.nombre}
-                          </span>
-                        </td>
-                        <td className="hidden min-[1600px]:table-cell">
-                          <StatusPill tone="brand" dot={false}>{g.semestre ?? "—"}</StatusPill>
-                        </td>
-                        <td>
-                          <TipoBadge tipo={g.tipo_docente} />
-                        </td>
-                        <td className="hidden text-right text-text-muted sm:table-cell">{g.horas_totales ?? "—"}</td>
-                        <td className="hidden text-right text-text-muted md:table-cell">{g.num_proyectos ?? 0}</td>
-                        <td className="hidden text-right text-text-muted xl:table-cell">{g.num_actividades ?? 0}</td>
-                        <td className="hidden text-right text-text-muted min-[1600px]:table-cell">{g.num_convenios_nuevos ?? 0}</td>
-                        <td className="hidden text-right text-text-muted min-[1600px]:table-cell">{g.num_convenios_dinamizados ?? 0}</td>
-                        <td>
-                          <button
-                            type="button"
-                            onClick={() => setExpandedGrupoId(open ? null : g.id)}
-                            aria-expanded={open}
-                            aria-label={`${open ? "Ocultar" : "Ver"} docentes de ${g.nombre}`}
-                            className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[0.8125rem] text-brand hover:bg-blue-50"
-                          >
-                            <span className="tabular-nums" style={{ fontWeight: 600 }}>{g.num_docentes ?? 0}</span>
-                            {open ? <ChevronUp className="h-3.5 w-3.5" aria-hidden /> : <ChevronDown className="h-3.5 w-3.5" aria-hidden />}
-                          </button>
-                        </td>
-                        <td className="hidden text-right text-text-muted md:table-cell">{g.num_plantilla_entregables ?? 0}</td>
-                        <td className="whitespace-nowrap text-right">
-                          <div className="inline-flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => openEditGrupo(g)}
-                              className="ds-btn ds-btn-ghost ds-btn-sm !px-2"
-                              aria-label={`Editar grupo ${g.nombre}`}
-                              title="Editar grupo"
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void eliminarGrupo(g)}
-                              className="ds-btn ds-btn-ghost ds-btn-sm !px-2 hover:!bg-red-50 hover:!text-red-700"
-                              aria-label={`Eliminar grupo ${g.nombre}`}
-                              title="Eliminar grupo"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                      {open && (
-                        <tr>
-                          <td colSpan={11} className="!bg-surface-2"><div className="w-0 min-w-full">
-                            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                              <p className="text-xs text-text-muted" style={{ fontWeight: 600 }}>
-                                Docentes en «{g.nombre}» ({lista.length})
-                              </p>
-                              <button type="button" onClick={() => openAssign(g.id)} className="ds-btn ds-btn-primary ds-btn-sm">
-                                <UserPlus className="h-3.5 w-3.5" aria-hidden /> Asignar docente
-                              </button>
-                            </div>
-                            {lista.length === 0 ? (
-                              <p className="text-xs text-text-subtle">Sin docentes asignados.</p>
-                            ) : (
-                              <div className="overflow-x-auto rounded-lg border border-line bg-surface">
-                                <table className="ds-table">
-                                  <thead>
-                                    <tr>
-                                      <th>Nombre</th>
-                                      <th className="hidden sm:table-cell">Regional</th>
-                                      <th className="hidden md:table-cell">Enlace Drive</th>
-                                      <th>Tipo</th>
-                                      <th className="text-right"><span className="sr-only">Acciones</span></th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {lista.map((d) => (
-                                      <tr key={d.id}>
-                                        <td className="text-text">{d.name}</td>
-                                        <td className="hidden text-text-muted sm:table-cell">{d.regional || "—"}</td>
-                                        <td className="hidden max-w-[220px] truncate md:table-cell">
-                                          {d.link_drive ? (
-                                            <a href={d.link_drive} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">
-                                              {d.link_drive}
-                                            </a>
-                                          ) : (
-                                            "—"
-                                          )}
-                                        </td>
-                                        <td>
-                                          <TipoBadge tipo={d.tipo_docente} />
-                                        </td>
-                                        <td className="whitespace-nowrap text-right">
-                                          <button type="button" onClick={() => openEdit(d)} className="ds-btn ds-btn-ghost ds-btn-sm text-brand">
-                                            Editar
-                                          </button>
-                                          <button type="button" onClick={() => void quitarDelGrupo(d.id)} className="ds-btn ds-btn-ghost ds-btn-sm hover:!bg-red-50 hover:!text-red-700">
-                                            Quitar del grupo
-                                          </button>
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
-                          </div></td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
-
-      <ModalShell
-        open={assignOpen}
-        onOpenChange={setAssignOpen}
-        title="Asignar docente a grupo"
-        size="md"
-        footer={
-          <>
-            <button type="button" onClick={() => setAssignOpen(false)} className="ds-btn ds-btn-secondary">
-              Cancelar
-            </button>
-            <button type="button" onClick={() => void handleAsignar()} disabled={assignDocenteId === ""} className="ds-btn ds-btn-primary">
-              Asignar
-            </button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <div>
-            <label className="ds-label">Docente</label>
-            <AppSelect
-              className="w-full"
-              value={assignDocenteId === "" ? "" : String(assignDocenteId)}
-              onValueChange={(v) => setAssignDocenteId(v === "" ? "" : Number(v))}
-              placeholder="Seleccionar…"
-              options={candidatosAsignar.map((d) => ({ value: String(d.id), label: `${d.name} — ${d.program}` }))}
-            />
-          </div>
-          {selectedCandidato && (
-            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg bg-surface-2 px-3 py-2.5 text-xs">
-              <dt className="text-text-subtle">Nombre</dt>
-              <dd className="text-text">{selectedCandidato.name}</dd>
-              <dt className="text-text-subtle">Programa</dt>
-              <dd className="text-text">{selectedCandidato.program}</dd>
-              <dt className="text-text-subtle">Regional</dt>
-              <dd className="text-text">{selectedCandidato.regional || "—"}</dd>
-            </dl>
-          )}
-        </div>
-      </ModalShell>
-
-      <ModalShell
-        open={editOpen && !!editDocente}
-        onOpenChange={setEditOpen}
-        title="Editar docente"
-        description={editDocente?.name}
-        size="md"
-        footer={
-          <>
-            <button type="button" onClick={() => setEditOpen(false)} className="ds-btn ds-btn-secondary">
-              Cancelar
-            </button>
-            <button type="button" disabled={savingEdit} onClick={() => void handleGuardarEdit()} className="ds-btn ds-btn-primary">
-              {savingEdit ? "Guardando…" : "Guardar"}
-            </button>
-          </>
-        }
-      >
-        <div className="space-y-3.5">
-          <fieldset>
-            <legend className="ds-label">Tipo docente</legend>
-            <div className="flex items-center gap-4">
+    const err = intento ? erroresGrupo(f, opts.mensajeSemestre) : {};
+    const lista = [err.nombre, err.semestre].filter(Boolean) as string[];
+    return { err, lista, nodo: (
+      <>
+        {opts.aviso && <div className="b2-nota-aviso" data-t="warn">El semestre no puede modificarse porque hay docentes asignados a este grupo.</div>}
+        <Grupo>
+          <Campo etiqueta="Nombre" obligatorio ancho="completo" error={err.nombre}>
+            {(p) => <input {...p} className="b2-input" value={f.nombre} onChange={(e) => set((s) => ({ ...s, nombre: e.target.value }))} />}
+          </Campo>
+          <Campo etiqueta="Descripción" ancho="completo">
+            {(p) => <textarea {...p} rows={2} className="b2-input" value={f.descripcion} onChange={(e) => set((s) => ({ ...s, descripcion: e.target.value }))} />}
+          </Campo>
+          <Campo etiqueta="Semestre" obligatorio error={err.semestre} ayuda="Solo se muestran semestres con calendario registrado.">
+            {(p) => (
+              <select {...p} className="b2-sel" value={f.semestre} disabled={opts.semestreReadonly} onChange={(e) => set((s) => ({ ...s, semestre: e.target.value }))}>
+                {!semestres.includes(f.semestre) && f.semestre && <option value={f.semestre}>{f.semestre}</option>}
+                {semestres.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
+          </Campo>
+          <div className="b2-campo-f" role="radiogroup" aria-label="Tipo docente">
+            <span className="b2-label">Tipo docente</span>
+            <div className="b2-radios">
               {(["ANTIGUO", "NUEVO"] as const).map((t) => (
-                <label key={t} className="flex cursor-pointer items-center gap-2 text-sm">
-                  <input type="radio" name="tipo_doc" className="accent-brand" checked={editTipo === t} onChange={() => setEditTipo(t)} />
+                <label key={t}>
+                  <input type="radio" name={`${opts.prefix}-tipo`} checked={f.tipo_docente === t} onChange={() => set((s) => ({ ...s, tipo_docente: t }))} />
                   {t === "ANTIGUO" ? "Antiguo" : "Nuevo"}
                 </label>
               ))}
             </div>
-          </fieldset>
-          <div>
-            <label htmlFor="gm-regional" className="ds-label">Regional</label>
-            <input id="gm-regional" className="ds-input" value={editRegional} onChange={(e) => setEditRegional(e.target.value)} />
           </div>
-          <div>
-            <label htmlFor="gm-link" className="ds-label">Enlace Drive</label>
-            <input id="gm-link" type="url" className="ds-input" value={editLink} onChange={(e) => setEditLink(e.target.value)} />
+        </Grupo>
+        <Grupo titulo="Carga académica">
+          {numCampo(f, set, "horas_totales", "Horas totales", 1)}
+          {numCampo(f, set, "num_proyectos", "Proyectos", 0)}
+          {numCampo(f, set, "num_actividades", "Actividades", 0)}
+          {numCampo(f, set, "num_convenios_nuevos", "Convenios nuevos", 0)}
+          {numCampo(f, set, "num_convenios_dinamizados", "Convenios dinamizados", 0, true)}
+        </Grupo>
+      </>
+    ) };
+  };
+
+  let inspector: ReactNode = null;
+  let etiquetaInsp = "";
+  let abierto = false;
+
+  if (modo?.k === "ver" && grupoModo) {
+    const g = grupoModo;
+    const lista = docentesPorGrupo(g.id);
+    const rs = resumenGrupo && resumenGrupo.id === g.id ? resumenGrupo : null;
+    abierto = true;
+    etiquetaInsp = `ver-${g.id}`;
+    inspector = (
+      <div className="b2-insp-c">
+        <p className="b2-insp-sup">Grupo matriz · {g.semestre ?? semestreActivo}</p>
+        <h2 className="b2-insp-h">{g.nombre}</h2>
+        <div className="b2-insp-estado"><TipoTag tipo={g.tipo_docente} /></div>
+        {g.descripcion && <p className="b2-insp-p">{g.descripcion}</p>}
+        <h3 className="b2-insp-sub">Carga</h3>
+        <Dl rows={[
+          ["Horas totales", g.horas_totales ?? "—"],
+          ["Proyectos", g.num_proyectos ?? 0],
+          ["Actividades", g.num_actividades ?? 0],
+          ["Conv. nuevos", g.num_convenios_nuevos ?? 0],
+          ["Conv. dinam.", g.num_convenios_dinamizados ?? 0],
+        ]} />
+        <h3 className="b2-insp-sub">Semanas y entregables</h3>
+        {rs?.cargando && <Cargando etiqueta="Cargando resumen…" />}
+        {rs && !rs.cargando && !rs.data && <p className="b2-insp-p">No se pudo cargar el resumen del grupo.</p>}
+        {rs?.data && (
+          <Dl rows={[
+            ["Entregables", rs.data.totales.total],
+            ["Horas programadas", `${rs.data.totales.horas} h`],
+            ["Semanas", rs.data.grupo.numero_semanas ?? "—"],
+            ["Plantillas", g.num_plantilla_entregables ?? 0],
+            ...(rs.data.totales.importadas > 0 ? ([["Importadas", `${rs.data.totales.importadas} desde Excel`]] as [string, ReactNode][]) : []),
+            ...(rs.data.totales.con_ajustes > 0 ? ([["Con ajuste", rs.data.totales.con_ajustes]] as [string, ReactNode][]) : []),
+          ]} />
+        )}
+        <div className="b2-insp-acc b2-insp-acc-0">
+          <button type="button" className="b2-btn" onClick={() => verPlantillas(g)}>Ver plantillas y semanas</button>
+        </div>
+        <div className="b2-adm-tareas-dh">
+          <h3 className="b2-insp-sub">Docentes ({lista.length})</h3>
+          <button type="button" className="b2-btn b2-btn-sm" onClick={() => openAssign(g.id)}>Asignar docente</button>
+        </div>
+        {lista.length === 0 ? (
+          <p className="b2-insp-p">Sin docentes asignados.</p>
+        ) : (
+          <ul className="b2-adm-lista" aria-label={`Docentes de ${g.nombre}`}>
+            {lista.map((d) => (
+              <li key={d.id}>
+                <span>
+                  <span className="b2-tt">{d.name}</span>
+                  <span className="b2-sub">{d.regional || "Sin regional"} · {tipoIsNuevo(d.tipo_docente) ? "Nuevo" : "Antiguo"}</span>
+                  {d.link_drive && <a className="b2-sub b2-link" href={d.link_drive} target="_blank" rel="noopener noreferrer">{d.link_drive}</a>}
+                </span>
+                <span className="b2-adm-tareas-ac">
+                  <button type="button" className="b2-link-btn" aria-label={`Editar a ${d.name}`} onClick={() => openEdit(d, g.id)}>Editar</button>
+                  <button type="button" className="b2-link-btn b2-link-peligro" aria-label={`Quitar a ${d.name} del grupo`} onClick={() => void quitarDelGrupo(d.id)}>Quitar del grupo</button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="b2-insp-acc">
+          <button type="button" className="b2-btn b2-btn-primary" onClick={() => openEditGrupo(g)}>Editar grupo</button>
+          <button type="button" className="b2-btn" onClick={() => void eliminarGrupo(g)}>Eliminar grupo</button>
+          <button type="button" className="b2-btn b2-btn-ghost" onClick={cerrar}>Cerrar</button>
+        </div>
+      </div>
+    );
+  } else if (modo?.k === "crear") {
+    const { lista, nodo } = camposGrupo(grupoForm, setGrupoForm, { semestreReadonly: false, aviso: false, mensajeSemestre: "Semestre inválido. Use formato 2026A o 2026B.", prefix: "gm-new" });
+    abierto = true;
+    etiquetaInsp = "crear";
+    inspector = (
+      <FormInspector sup="Tareas semanales" titulo="Nuevo grupo matriz" onCerrar={cerrar} onGuardar={() => void handleCrearGrupo()} guardando={savingGrupo} etiquetaGuardar="Crear grupo" errores={lista}>
+        {nodo}
+      </FormInspector>
+    );
+  } else if (modo?.k === "editar" && grupoModo) {
+    const { lista, nodo } = camposGrupo(grupoEditForm, setGrupoEditForm, { semestreReadonly: grupoEditNumDocentes > 0, aviso: grupoEditNumDocentes > 0, mensajeSemestre: "Semestre inválido.", prefix: "gm-edit" });
+    abierto = true;
+    etiquetaInsp = `editar-${grupoModo.id}`;
+    inspector = (
+      <FormInspector sup="Grupo matriz" titulo="Editar grupo matriz" onCerrar={() => abrirVer(grupoModo.id)} onGuardar={() => void handleGuardarGrupo()} guardando={savingGrupo} etiquetaGuardar="Guardar cambios" errores={lista}>
+        {nodo}
+      </FormInspector>
+    );
+  } else if (modo?.k === "clonar") {
+    const err = intento ? erroresClon() : {};
+    const lista = Object.values(err).filter(Boolean) as string[];
+    abierto = true;
+    etiquetaInsp = "clonar";
+    inspector = (
+      <FormInspector sup="Tareas semanales" titulo="Clonar semestre" onCerrar={cerrar} onGuardar={() => void handleClonarSemestre()} guardando={cloning} etiquetaGuardar="Clonar semestre" errores={lista}>
+        <p className="b2-insp-p">Copia los grupos (y opcionalmente sus plantillas) a un semestre nuevo.</p>
+        <Grupo>
+          <Campo etiqueta="Semestre origen" error={err.origen}>
+            {(p) => (
+              <select {...p} className="b2-sel" value={cloneOrigen} onChange={(e) => setCloneOrigen(e.target.value)}>
+                {opcionesSemestre.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
+          </Campo>
+          <Campo etiqueta="Semestre destino" error={err.destino}>
+            {(p) => <input {...p} className="b2-input" value={cloneDestino} onChange={(e) => setCloneDestino(e.target.value.toUpperCase())} placeholder="Ej.: 2026B" />}
+          </Campo>
+          <Campo etiqueta="Fecha de inicio" error={err.fechas}>
+            {(p) => <input {...p} type="date" className="b2-input" value={cloneFechaInicio} onChange={(e) => setCloneFechaInicio(e.target.value)} />}
+          </Campo>
+          <Campo etiqueta="Fecha de finalización">
+            {(p) => <input {...p} type="date" className="b2-input" min={cloneFechaInicio || undefined} value={cloneFechaFin} onChange={(e) => setCloneFechaFin(e.target.value)} />}
+          </Campo>
+          <Campo etiqueta="Número de semanas" ancho="completo" error={err.semanas}>
+            {(p) => <input {...p} type="number" min={1} max={53} className="b2-input" value={cloneNumeroSemanas} onChange={(e) => setCloneNumeroSemanas(e.target.value)} />}
+          </Campo>
+        </Grupo>
+        <label className="b2-chk">
+          <input type="checkbox" checked={clonePlantillas} onChange={(e) => setClonePlantillas(e.target.checked)} />
+          Copiar también las plantillas de entregables
+        </label>
+        <label className="b2-chk">
+          <input type="checkbox" checked={cloneActivar} onChange={(e) => setCloneActivar(e.target.checked)} />
+          Establecer el nuevo semestre como activo
+        </label>
+        <p className="b2-nota-aviso" data-t="ok" aria-live="polite">
+          Se clonarán <strong>{clonePreviewCount}</strong> grupo{clonePreviewCount === 1 ? "" : "s"} del semestre <strong>{cloneOrigen || "—"}</strong>.
+        </p>
+      </FormInspector>
+    );
+  } else if (modo?.k === "asignar" && grupoModo) {
+    abierto = true;
+    etiquetaInsp = `asignar-${grupoModo.id}`;
+    inspector = (
+      <FormInspector sup={grupoModo.nombre} titulo="Asignar docente a grupo" onCerrar={() => abrirVer(grupoModo.id)} onGuardar={() => void handleAsignar()} guardando={false} etiquetaGuardar="Asignar" deshabilitarGuardar={assignDocenteId === ""}>
+        <Campo etiqueta="Docente">
+          {(p) => (
+            <select {...p} className="b2-sel" value={assignDocenteId === "" ? "" : String(assignDocenteId)} onChange={(e) => setAssignDocenteId(e.target.value === "" ? "" : Number(e.target.value))}>
+              <option value="">Seleccionar…</option>
+              {candidatosAsignar.map((d) => <option key={d.id} value={d.id}>{`${d.name} — ${d.program}`}</option>)}
+            </select>
+          )}
+        </Campo>
+        {selectedCandidato && (
+          <Dl rows={[
+            ["Nombre", selectedCandidato.name],
+            ["Programa", selectedCandidato.program],
+            ["Regional", selectedCandidato.regional || "—"],
+          ]} />
+        )}
+      </FormInspector>
+    );
+  } else if (modo?.k === "docente" && grupoModo && editDocente) {
+    abierto = true;
+    etiquetaInsp = `docente-${editDocente.id}`;
+    inspector = (
+      <FormInspector sup={editDocente.name} titulo="Editar docente" onCerrar={() => abrirVer(grupoModo.id)} onGuardar={() => void handleGuardarEdit()} guardando={savingEdit} etiquetaGuardar="Guardar">
+        <div className="b2-campo-f" role="radiogroup" aria-label="Tipo docente">
+          <span className="b2-label">Tipo docente</span>
+          <div className="b2-radios">
+            {(["ANTIGUO", "NUEVO"] as const).map((t) => (
+              <label key={t}>
+                <input type="radio" name="tipo_doc" checked={editTipo === t} onChange={() => setEditTipo(t)} />
+                {t === "ANTIGUO" ? "Antiguo" : "Nuevo"}
+              </label>
+            ))}
           </div>
         </div>
-      </ModalShell>
+        <Campo etiqueta="Regional">
+          {(p) => <input {...p} className="b2-input" value={editRegional} onChange={(e) => setEditRegional(e.target.value)} />}
+        </Campo>
+        <Campo etiqueta="Enlace Drive">
+          {(p) => <input {...p} type="url" className="b2-input" value={editLink} onChange={(e) => setEditLink(e.target.value)} />}
+        </Campo>
+      </FormInspector>
+    );
+  }
 
-      <ModalShell
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        title="Nuevo grupo matriz"
-        size="lg"
-        footer={
-          <>
-            <button type="button" onClick={() => setCreateOpen(false)} className="ds-btn ds-btn-secondary">
-              Cancelar
-            </button>
-            <button type="button" disabled={savingGrupo} onClick={() => void handleCrearGrupo()} className="ds-btn ds-btn-primary">
-              {savingGrupo ? "Creando…" : "Crear grupo"}
-            </button>
-          </>
-        }
-      >
-        {renderGrupoFormFields(grupoForm, setGrupoForm, { semestreReadonly: false, showSemestreWarning: false, idPrefix: "gm-new" })}
-      </ModalShell>
+  const acciones = semestreActivo ? (
+    <>
+      <button type="button" className="b2-btn" onClick={openCloneSemestre}>Clonar semestre</button>
+      <button type="button" className="b2-btn b2-btn-primary" onClick={openCreateGrupo}>Nuevo grupo</button>
+    </>
+  ) : null;
 
-      <ModalShell
-        open={editGrupoOpen}
-        onOpenChange={setEditGrupoOpen}
-        title="Editar grupo matriz"
-        size="lg"
-        footer={
-          <>
-            <button type="button" onClick={() => setEditGrupoOpen(false)} className="ds-btn ds-btn-secondary">
-              Cancelar
-            </button>
-            <button type="button" disabled={savingGrupo} onClick={() => void handleGuardarGrupo()} className="ds-btn ds-btn-primary">
-              {savingGrupo ? "Guardando…" : "Guardar cambios"}
-            </button>
-          </>
+  if (!semestreActivo) {
+    return (
+      <AdmPagina tab="tareas" cabecera={cabecera} titulo="Tareas semanales" subtitulo="Grupos de matriz, carga académica y cronogramas por semestre." inspectorAbierto={false} inspectorEtiqueta="" onCerrarInspector={cerrar}>
+        {loading ? <Cargando etiqueta="Inicializando semestre…" /> : (
+          <Vacio titulo="No hay un semestre configurado">Crea un semestre en la pestaña «Semestres» para gestionar grupos y tareas.</Vacio>
+        )}
+        {dialogo}
+      </AdmPagina>
+    );
+  }
+
+  return (
+    <AdmPagina
+      tab="tareas"
+      cabecera={cabecera}
+      titulo="Tareas semanales"
+      subtitulo="Grupos de matriz, carga académica y cronogramas por semestre."
+      acciones={acciones}
+      inspector={inspector}
+      inspectorAbierto={abierto}
+      inspectorEtiqueta={etiquetaInsp}
+      onCerrarInspector={cerrar}
+      ancho
+    >
+      <Barra contador={loading ? "Cargando…" : `${grupos.length} grupo${grupos.length === 1 ? "" : "s"}`}>
+        <Filtro value={semestreActivo} onChange={(v) => { cerrar(); setSemestreActivo(v); }} etiqueta="Semestre" ancho={130}>
+          {opcionesSemestre.map((s) => <option key={s} value={s}>{s}</option>)}
+        </Filtro>
+        {esActivo ? (
+          <Estado kind="encurso" label="Semestre activo" />
+        ) : (
+          <button type="button" className="b2-btn b2-btn-sm" disabled={activatingSemester} onClick={() => void handleActivarSemestre()}>
+            {activatingSemester ? "Activando…" : "Establecer como activo"}
+          </button>
+        )}
+      </Barra>
+
+      <Resumen items={[
+        { k: "Total de grupos", v: resumen.totalGrupos },
+        { k: "Grupos antiguo", v: resumen.antiguo },
+        { k: "Grupos nuevo", v: resumen.nuevo },
+        { k: "Docentes sin grupo", v: resumen.sinGrupo, alerta: resumen.sinGrupo > 0 },
+      ]} />
+
+      {loadError && <ErrorCarga onReintentar={() => void loadAll()}>No se pudo cargar la información de grupos.</ErrorCarga>}
+
+      <DataTable
+        etiqueta={`Grupos matriz del semestre ${semestreActivo}`}
+        cols={cols}
+        rows={grupos}
+        getKey={(g) => g.id}
+        selId={modo && "id" in modo ? modo.id : null}
+        onSelect={(g) => (g ? abrirVer(g.id) : cerrar())}
+        cargando={loading}
+        vacio={
+          loadError ? "No hay datos para mostrar." : (
+            <Vacio titulo={`Sin grupos en ${semestreActivo}`} accion={<button type="button" className="b2-btn b2-btn-sm b2-btn-primary" onClick={openCreateGrupo}>Nuevo grupo</button>}>
+              Crea un grupo o clona los de otro semestre.
+            </Vacio>
+          )
         }
-      >
-        {renderGrupoFormFields(grupoEditForm, setGrupoEditForm, {
-          semestreReadonly: grupoEditNumDocentes > 0,
-          showSemestreWarning: grupoEditNumDocentes > 0,
-          idPrefix: "gm-edit",
+        filaMovil={(g) => ({
+          titulo: g.nombre,
+          lineas: [`${g.horas_totales ?? "—"} h · ${g.num_proyectos ?? 0} proyectos · ${g.num_actividades ?? 0} actividades`, `${g.num_docentes ?? 0} docentes · ${g.num_plantilla_entregables ?? 0} plantillas`],
+          lado: <TipoTag tipo={g.tipo_docente} />,
         })}
-      </ModalShell>
-
-      <ModalShell
-        open={cloneOpen}
-        onOpenChange={setCloneOpen}
-        title="Clonar semestre"
-        description="Copia los grupos (y opcionalmente sus plantillas) a un semestre nuevo."
-        size="md"
-        footer={
-          <>
-            <button type="button" onClick={() => setCloneOpen(false)} className="ds-btn ds-btn-secondary">
-              Cancelar
-            </button>
-            <button type="button" disabled={cloning} onClick={() => void handleClonarSemestre()} className="ds-btn ds-btn-primary">
-              {cloning ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
-              Clonar semestre
-            </button>
-          </>
-        }
-      >
-        <div className="grid grid-cols-2 gap-x-3 gap-y-3.5">
-          <div>
-            <label className="ds-label">Semestre origen</label>
-            <AppSelect
-              value={cloneOrigen}
-              onValueChange={(v) => setCloneOrigen(v)}
-              className="w-full"
-              options={semestres.length === 0 ? [{ value: semestreActivo, label: semestreActivo }] : semestres.map((s) => ({ value: s, label: s }))}
-            />
-          </div>
-          <div>
-            <label htmlFor="gm-destino" className="ds-label">Semestre destino</label>
-            <input id="gm-destino" className="ds-input" value={cloneDestino} onChange={(e) => setCloneDestino(e.target.value.toUpperCase())} placeholder="Ej.: 2026B" />
-          </div>
-          <div>
-            <label htmlFor="gm-fini" className="ds-label">Fecha de inicio</label>
-            <input id="gm-fini" type="date" value={cloneFechaInicio} onChange={(e) => setCloneFechaInicio(e.target.value)} className="ds-input" />
-          </div>
-          <div>
-            <label htmlFor="gm-ffin" className="ds-label">Fecha de finalización</label>
-            <input id="gm-ffin" type="date" min={cloneFechaInicio || undefined} value={cloneFechaFin} onChange={(e) => setCloneFechaFin(e.target.value)} className="ds-input" />
-          </div>
-          <div className="col-span-2">
-            <label htmlFor="gm-nsem" className="ds-label">Número de semanas</label>
-            <input id="gm-nsem" type="number" min={1} max={53} value={cloneNumeroSemanas} onChange={(e) => setCloneNumeroSemanas(e.target.value)} className="ds-input" />
-          </div>
-          <label className="col-span-2 flex cursor-pointer items-center gap-2 text-sm">
-            <input type="checkbox" className="accent-brand" checked={clonePlantillas} onChange={(e) => setClonePlantillas(e.target.checked)} />
-            Copiar también las plantillas de entregables
-          </label>
-          <label className="col-span-2 flex cursor-pointer items-center gap-2 text-sm">
-            <input type="checkbox" className="accent-brand" checked={cloneActivar} onChange={(e) => setCloneActivar(e.target.checked)} />
-            Establecer el nuevo semestre como activo
-          </label>
-          <p className="col-span-2 rounded-lg bg-surface-2 px-3 py-2 text-sm text-text-muted">
-            Se clonarán <strong className="text-text">{clonePreviewCount}</strong> grupo{clonePreviewCount === 1 ? "" : "s"} del semestre{" "}
-            <strong className="text-text">{cloneOrigen || "—"}</strong>.
-          </p>
-        </div>
-      </ModalShell>
-    </div>
+        acciones={(g) => [
+          { label: "Ver detalle", onSelect: () => abrirVer(g.id) },
+          { label: "Editar grupo", onSelect: () => openEditGrupo(g) },
+          { label: "Asignar docente", onSelect: () => openAssign(g.id) },
+          { label: "Ver plantillas y semanas", onSelect: () => verPlantillas(g) },
+          "sep",
+          { label: "Eliminar grupo", danger: true, onSelect: () => void eliminarGrupo(g) },
+        ]}
+      />
+      {dialogo}
+    </AdmPagina>
   );
 }

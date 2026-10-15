@@ -523,3 +523,5 @@ a.b2-doc:hover { background: var(--c-hover); }
 .b2-dash { color: var(--c-text); }
 :where(.b2-dash) :where(h1, h2, h3, p, dl, dd, ul) { margin: 0; }
 @media (max-width: 720px) { .b2-chip { min-height: 36px; padding: 0 12px; } .b2-link { min-height: 32px; display: inline-flex; align-items: center; } }
+.b2-side-ext { margin-left: auto; opacity: 0.6; flex: none; }
+.b2-side:not([data-open="true"]) .b2-side-ext { display: none; }

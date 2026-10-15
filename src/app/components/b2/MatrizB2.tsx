@@ -8,8 +8,9 @@ import { esHttp } from "../EnlaceEvidencia";
 import { HistorialEntregable } from "../HistorialEntregable";
 import { categoryConfig, etiquetaSemana, isDeliverableCompleted, type EstadoEntregable, type IndicadoresSeguimiento, type SemanaActual } from "../../data/matrizConstants";
 import {
-  IBuscar, IChevD, IChevR, IColumnas, IContraer, IExpandirTodo, IFiltro, IKebab, ISeguimiento, IAbajo, IArriba,
+  IBuscar, ICalendario, IChevD, IChevR, IColumnas, IContraer, IExpandirTodo, IFiltro, IKebab, ISeguimiento, IAbajo, IArriba,
 } from "./icons";
+import { Bullet } from "./Bullet";
 import { Dl, enControl, Estado, EstadoIcon, Inspector, Menu, Popover, type Kind } from "./ui";
 import {
   addDays, armarCalendario, dias, esFecha, ESTATUS_LABEL, ESTATUS_ORDEN, estatusDe, fechaCorta, fechaLarga, nombreMes, tipoEnlace, useMedia,
@@ -54,6 +55,21 @@ export interface ItemMatrizB2 {
   requiere_evidencia?: boolean;
 }
 
+/** Avance por mes tal como lo devuelve /matriz-stats (no se recalcula). */
+export interface PorMesRow {
+  mes: string;
+  total: number;
+  reportados?: number;
+  aprobados?: number;
+  esperado?: number;
+  vencidos?: number;
+  observados?: number;
+  pct_reportado?: number;
+  pct_aprobado?: number;
+  pct_esperado?: number;
+  porcentaje_mensual?: number;
+}
+
 export interface MatrizB2Props {
   rol: "docente" | "admin";
   titulo: string;
@@ -62,6 +78,7 @@ export interface MatrizB2Props {
   semana: SemanaActual | null;
   hoy: string | null;
   resumen: IndicadoresSeguimiento | null;
+  porMes?: PorMesRow[] | null;
   cargando?: boolean;
   error?: string | null;
   onReintentar?: () => void;
@@ -116,6 +133,31 @@ function useFiltrado(items: ItemMatrizB2[], f: Filtros, semanaNum: number | null
     if (q && !`${i.entregable} ${i.iniciativa_titulo} ${i.numero ?? ""} ${i.fase}`.toLowerCase().includes(q)) return false;
     return true;
   }), [items, f, q, semanaNum]);
+}
+
+/* ───────────────────────── avance por mes (backend) ───────────────────────── */
+function PanelMeses({ filas, activo, onElegir }: { filas: PorMesRow[]; activo: string; onElegir: (mes: string) => void }) {
+  return (
+    <div className="b2-pop-body b2-meses">
+      <p className="b2-pop-t">Avance por mes</p>
+      <ul>
+        {filas.map((m) => {
+          const rep = m.pct_reportado ?? m.porcentaje_mensual ?? 0;
+          const venc = m.vencidos ?? 0;
+          return (
+            <li key={m.mes}>
+              <button type="button" className="b2-mes-i" data-on={activo === m.mes || undefined} onClick={() => onElegir(m.mes)} aria-pressed={activo === m.mes} title="Filtrar la matriz por este mes">
+                <span className="b2-mes-n"><b>{m.mes}</b><small>{m.reportados ?? 0}/{m.total} reportados · {m.aprobados ?? 0} aprobados{m.total > 0 && m.esperado != null ? ` · ${m.esperado} esperados` : ""}</small></span>
+                {m.total > 0 ? <Bullet rep={rep} apr={m.pct_aprobado} esp={m.pct_esperado} nombre={m.mes} /> : <span className="b2-muted">Sin entregables</span>}
+                <span className="b2-mes-v" data-venc={venc > 0 || undefined}>{venc > 0 ? `${venc} venc.` : ""}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="b2-sub" style={{ whiteSpace: "normal", marginTop: 8 }}>Barra: reportado · franja oscura: aprobado · marca: esperado a hoy.</p>
+    </div>
+  );
 }
 
 /* ───────────────────────── panel de filtros ───────────────────────── */
@@ -274,9 +316,9 @@ export function MatrizB2(props: MatrizB2Props) {
           ) : items.length === 0 ? (
             <div className="b2-gantt"><div className="b2-g-vacio-w"><ISeguimiento width={22} height={22} /><p>{props.textoVacio}</p></div></div>
           ) : movil ? (
-            <Lista {...{ items, lista, f, setF, meses, semanas, categorias, hayFiltros, limpiar, semana, semanaNum, hoy, calendario, sel, onSel: setSel }} />
+            <Lista {...{ porMes: props.porMes ?? null, items, lista, f, setF, meses, semanas, categorias, hayFiltros, limpiar, semana, semanaNum, hoy, calendario, sel, onSel: setSel }} />
           ) : (
-            <Cronograma {...{ items, lista, f, setF, meses, semanas, categorias, hayFiltros, limpiar, semana, semanaNum, hoy, calendario, sel, onSel: setSel }} />
+            <Cronograma {...{ porMes: props.porMes ?? null, items, lista, f, setF, meses, semanas, categorias, hayFiltros, limpiar, semana, semanaNum, hoy, calendario, sel, onSel: setSel }} />
           )}
         </section>
       </div>
@@ -288,6 +330,7 @@ export function MatrizB2(props: MatrizB2Props) {
 }
 
 interface VistaProps {
+  porMes: PorMesRow[] | null;
   items: ItemMatrizB2[];
   lista: ItemMatrizB2[];
   f: Filtros;
@@ -514,6 +557,12 @@ function Cronograma(p: VistaProps) {
           trigger={({ props }) => (<button type="button" className="b2-btn b2-btn-sm" data-on={p.hayFiltros || undefined} {...props}><IFiltro width={16} height={16} />Filtros</button>)}>
           {() => <PanelFiltros f={f} setF={setF} meses={p.meses} semanas={p.semanas} categorias={p.categorias} />}
         </Popover>
+        {p.porMes && p.porMes.length > 0 && (
+          <Popover label="Avance por mes"
+            trigger={({ props }) => (<button type="button" className="b2-btn b2-btn-sm" {...props}><ICalendario width={16} height={16} />Por mes</button>)}>
+            {(cerrar) => <PanelMeses filas={p.porMes!} activo={f.mes} onElegir={(m) => { setF({ ...f, mes: f.mes === m ? "todos" : m }); cerrar(); }} />}
+          </Popover>
+        )}
         <label className="b2-tb-search">
           <IBuscar width={15} height={15} />
           <input value={f.q} onChange={(e) => setF({ ...f, q: e.target.value })} placeholder="Buscar entregable, iniciativa o número" aria-label="Buscar en la matriz" />
@@ -726,6 +775,12 @@ function Lista(p: VistaProps) {
             trigger={({ props }) => (<button type="button" className="b2-btn" data-on={p.hayFiltros || undefined} {...props}><IFiltro width={16} height={16} />Filtros</button>)}>
             {() => <PanelFiltros f={f} setF={setF} meses={p.meses} semanas={p.semanas} categorias={p.categorias} />}
           </Popover>
+          {p.porMes && p.porMes.length > 0 && (
+            <Popover align="right" label="Avance por mes"
+              trigger={({ props }) => (<button type="button" className="b2-btn" {...props}><ICalendario width={16} height={16} />Por mes</button>)}>
+              {(cerrar) => <PanelMeses filas={p.porMes!} activo={f.mes} onElegir={(m) => { setF({ ...f, mes: f.mes === m ? "todos" : m }); cerrar(); }} />}
+            </Popover>
+          )}
         </div>
       </div>
       <ul className="b2-ml-list">

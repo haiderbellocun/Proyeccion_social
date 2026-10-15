@@ -1,0 +1,65 @@
+/* Portal docente B2: panel, iniciativas, detalle, reportar, historial y perfil */
+.b2-kpis-4 { grid-template-columns: repeat(4, 1fr); }
+.b2-kpis-4 dt { display: flex; align-items: center; gap: 5px; }
+.b2-kpis-4 dd { font-size: 22px; }
+.b2-acento { color: var(--c-primary); }
+.b2-lista { padding: 0; margin: 0; list-style: none; }
+.b2-lista li + li { border-top: 1px solid var(--c-line); }
+.b2-fila { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 14px; background: none; border: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; transition: background-color var(--t-fast) ease; }
+@media (hover: hover) and (pointer: fine) { .b2-fila:hover { background: var(--c-hover); } }
+.b2-fila-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.b2-fila-sem { flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: var(--r); background: var(--c-bg); font-weight: 800; font-size: var(--fs-md); line-height: 1; font-variant-numeric: tabular-nums; }
+.b2-fila-sem small { font-size: 9.5px; font-weight: 600; color: var(--c-text-3); margin-bottom: 2px; }
+.b2-sub-obs { color: var(--c-primary); white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.b2-c-hide { }
+@media (max-width: 900px) { .b2-tbl .b2-c-hide { display: none; } }
+@media (max-width: 720px) {
+  .b2-kpis-4 { grid-template-columns: repeat(2, 1fr); }
+  .b2-fila { min-height: 56px; }
+  .b2-fila > .b2-acc-fila { display: none; }
+}
+
+/* tablas de iniciativas e historial: columnas que se adaptan al ancho disponible */
+.b2-tabla-ini { --cols: minmax(220px, 1fr) 100px 60px 72px 92px 130px 120px 16px; container-type: inline-size; }
+.b2-tabla-his { --cols: 120px minmax(220px, 1fr) minmax(140px, 220px) 130px 160px 92px 16px; container-type: inline-size; }
+@container (max-width: 900px) {
+  .b2-tabla-ini { --cols: minmax(200px, 1fr) 130px 120px 16px; }
+  .b2-tabla-ini .b2-tabla-h > :nth-child(2), .b2-tabla-ini .b2-tabla-h > :nth-child(3), .b2-tabla-ini .b2-tabla-h > :nth-child(4), .b2-tabla-ini .b2-tabla-h > :nth-child(5),
+  .b2-tabla-ini .b2-tabla-r > :nth-child(2), .b2-tabla-ini .b2-tabla-r > :nth-child(3), .b2-tabla-ini .b2-tabla-r > :nth-child(4), .b2-tabla-ini .b2-tabla-r > :nth-child(5) { display: none; }
+  .b2-tabla-his { --cols: 110px minmax(200px, 1fr) 130px 150px 16px; }
+  .b2-tabla-his .b2-tabla-h > :nth-child(3), .b2-tabla-his .b2-tabla-h > :nth-child(6),
+  .b2-tabla-his .b2-tabla-r > :nth-child(3), .b2-tabla-his .b2-tabla-r > :nth-child(6) { display: none; }
+}
+.b2-tabla-his .b2-cola-t .b2-tt { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* detalle de iniciativa: entregables por semana */
+.b2-ent-l { list-style: none; padding: 0; margin: 0; }
+.b2-ent-i { display: flex; gap: 12px; padding: 12px 14px; border-top: 1px solid var(--c-line); }
+.b2-ent-chk { margin-top: 3px; flex: none; width: 18px; height: 18px; accent-color: var(--c-primary); }
+.b2-ent-c { flex: 1; min-width: 0; }
+.b2-ent-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.b2-ent-t { font-weight: 600; cursor: pointer; }
+.b2-ent-hecho { color: var(--c-text-3); text-decoration: line-through; font-weight: 500; }
+
+/* reportar entregable */
+.b2-rp { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.b2-rp-form { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.b2-rp-lado { position: sticky; top: 0; }
+.b2-rp-info { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+.b2-rp-barra { position: sticky; bottom: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px; background: color-mix(in srgb, var(--c-surface) 96%, transparent); border: 1px solid var(--c-line-2); border-radius: 6px; box-shadow: 0 -4px 12px color-mix(in srgb, var(--c-text) 8%, transparent); }
+.b2-rp-estado { font-size: var(--fs-sm); color: var(--c-text-2); }
+.b2-rango { width: 100%; accent-color: var(--c-primary); margin: 8px 0 2px; height: 28px; }
+.b2-rango-e { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--c-text-3); font-variant-numeric: tabular-nums; }
+.b2-det { margin-top: 8px; font-size: var(--fs-sm); color: var(--c-text-2); }
+.b2-det summary { cursor: pointer; min-height: 28px; display: flex; align-items: center; color: var(--c-primary); font-weight: 700; }
+@media (max-width: 1100px) { .b2-rp { grid-template-columns: minmax(0, 1fr); } .b2-rp-lado { position: static; order: -1; } }
+@media (max-width: 720px) { .b2-rp-barra { padding: 10px; } .b2-rp-barra .b2-acc-fila { width: 100%; } .b2-rp-barra .b2-btn { flex: 1; } .b2-rango { height: 40px; } }
+
+/* perfil */
+.b2-perfil-id { display: flex; gap: 16px; align-items: center; padding: 16px; flex-wrap: wrap; }
+.b2-perfil-av { display: grid; place-items: center; width: 56px; height: 56px; border-radius: var(--r); background: var(--c-primary); color: var(--c-on-dark); font-size: 20px; font-weight: 800; flex: none; }
+.b2-perfil-n { font-size: var(--fs-title); font-weight: 800; letter-spacing: -0.01em; line-height: 1.2; }
+.b2-det-info { margin-top: 0; }
+.b2-det-info > :not(summary) { margin-top: 10px; display: block; }
+.b2-det-info[open] > summary { margin-bottom: 4px; }
+@media (min-width: 721px) { .b2-det-info > summary { display: none; } }
