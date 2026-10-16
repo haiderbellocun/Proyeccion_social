@@ -55,8 +55,10 @@ interface MassPreview {
   semestre: string;
   entregable_clave: string;
   plantillas_afectadas: number;
+  /** Plantillas con reportes: no se modifican (histórico protegido). */
+  plantillas_protegidas?: number;
   grupos_afectados: number;
-  coincidencias: { grupo_id: number; grupo_nombre: string }[];
+  coincidencias: { grupo_id: number; grupo_nombre: string; protegida?: boolean }[];
 }
 
 const emptyForm = {
@@ -484,8 +486,10 @@ export default function PlantillaManagement({
       if (selectedGrupoId != null) await loadPlantillas(selectedGrupoId);
       setMassSource(null);
       setModo("ver");
+      const protegidas = Number(data.plantillas_protegidas || 0);
       notify.success(
-        `Evidencia actualizada en ${Number(data.grupos_afectados || 0)} grupo(s)`
+        `Evidencia actualizada en ${Number(data.grupos_afectados || 0)} grupo(s)`,
+        protegidas > 0 ? `${protegidas} plantilla(s) con reportes se conservaron sin cambios.` : undefined
       );
     } catch {
       notify.error("Error de conexión al actualizar las plantillas.");
@@ -608,8 +612,11 @@ export default function PlantillaManagement({
           <div className="b2-callout">
             <strong>{massPreview.plantillas_afectadas} plantilla(s) en {massPreview.grupos_afectados} grupo(s)</strong>
             <p>Alcance restringido al semestre {massPreview.semestre}. Solo se incluyen entregables cuyo nombre coincide exactamente.</p>
+            {Number(massPreview.plantillas_protegidas || 0) > 0 && (
+              <p>{massPreview.plantillas_protegidas} plantilla(s) con reportes no se modifican: su histórico está protegido.</p>
+            )}
             <div className="b2-adm-pl-tags" style={{ marginTop: 8, marginBottom: 0 }}>
-              {[...new Map(massPreview.coincidencias.map((row) => [row.grupo_id, row])).values()].map((row) => <Tag key={row.grupo_id} tono="primario">{row.grupo_nombre}</Tag>)}
+              {[...new Map(massPreview.coincidencias.filter((row) => !row.protegida).map((row) => [row.grupo_id, row])).values()].map((row) => <Tag key={row.grupo_id} tono="primario">{row.grupo_nombre}</Tag>)}
             </div>
           </div>
         ) : null}

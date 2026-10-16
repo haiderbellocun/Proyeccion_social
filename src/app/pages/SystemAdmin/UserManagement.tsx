@@ -375,7 +375,7 @@ export default function UserManagement({ cabecera }: { cabecera: ReactNode }) {
     if (!accepted) return;
     try {
       const res = await fetch(`${API_BASE_URL}/admin/usuarios/${u.id}`, { method: "DELETE" });
-      if (res.status === 400) {
+      if (res.status === 400 || res.status === 409) {
         const data = await res.json().catch(() => ({}));
         notify.error(String(data.error || "No se puede eliminar este usuario."));
         return;

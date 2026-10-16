@@ -1,6 +1,7 @@
 import express from "express";
 import { pool } from "../db.js";
 import {
+  ErrorNegocio,
   buildMatrixStats,
   calcularMetricas,
   fechaBogota,
@@ -18,6 +19,19 @@ import {
   toDateOnlyISO,
 } from "../services/matrizService.js";
 import { aplicarRevisionAdmin, reabrirEntregable } from "../services/entregableWorkflowService.js";
+import {
+  LOCK_ADMINISTRADORES,
+  bloquearPlantillasDeGrupos,
+  describirResumen,
+  docentesDeGrupos,
+  errorHistorico,
+  exigirAsignacionSinHistorico,
+  historicoDeGrupos,
+  historicoDePlantillas,
+  historicoDeSemestre,
+  historicoDeUsuario,
+  plantillasConHistorico,
+} from "../services/historicosService.js";
 import { evidenciasDeEntregables, historialDeEntregable } from "../services/evidenciaService.js";
 import { markNotificationsAsRead } from "../services/notificationService.js";
 import {
@@ -1177,6 +1191,24 @@ router.delete("/semestres/:codigo", async (req, res) => {
       });
     }
 
+    // Historia y docentes asignados: protegidos siempre, con o sin `forzar`. Se bloquean grupos y plantillas antes de contar.
+    const gruposSem = (
+      await client.query(`SELECT id FROM grupos_matriz WHERE semestre = $1 ORDER BY id FOR UPDATE`, [codigo])
+    ).rows.map((r) => Number(r.id));
+    if (gruposSem.length > 0) {
+      const plantillaIds = await bloquearPlantillasDeGrupos(client, gruposSem);
+      const nDoc = await docentesDeGrupos(client, gruposSem);
+      const h = await historicoDeSemestre(client, codigo, gruposSem, plantillaIds);
+      if (nDoc > 0 || h.total > 0) {
+        const detalle = { ...h, docentes: nDoc };
+        throw errorHistorico(
+          `No se puede eliminar el semestre ${codigo}: ${describirResumen(detalle)} dependen de él.`,
+          detalle,
+          "Un semestre con historia no se elimina: déjalo cerrado (activa otro semestre) o inactiva sus grupos."
+        );
+      }
+    }
+
     const related = await client.query(
       `
       SELECT
@@ -1209,16 +1241,7 @@ router.delete("/semestres/:codigo", async (req, res) => {
     }
 
     if (forzar) {
-      await client.query(
-        `
-        UPDATE usuarios
-        SET grupo_matriz_id = NULL
-        WHERE grupo_matriz_id IN (
-          SELECT id FROM grupos_matriz WHERE semestre = $1
-        )
-        `,
-        [codigo]
-      );
+      // Sin historia ni docentes (comprobado arriba): solo se eliminan grupos y plantillas sin reportes.
       await client.query("DELETE FROM grupos_matriz WHERE semestre = $1", [codigo]);
     }
     await client.query("DELETE FROM semestres WHERE codigo = $1", [codigo]);
@@ -1226,6 +1249,7 @@ router.delete("/semestres/:codigo", async (req, res) => {
     res.json({ ok: true, eliminado: codigo, resumen: counts });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
+    if (error instanceof ErrorNegocio) return responderError(res, error, "Error en DELETE /admin/semestres/:codigo");
     console.error("Error en DELETE /admin/semestres/:codigo", error);
     res.status(500).json({ error: "Error interno al eliminar el semestre" });
   } finally {
@@ -1573,6 +1597,7 @@ router.put("/grupos-matriz/:id", async (req, res) => {
       return res.status(404).json({ error: "Grupo no encontrado" });
     }
     const semestreActual = curR.rows[0].semestre;
+    let cambiaSemestre = false;
 
     if (b.semestre !== undefined && b.semestre !== null) {
       const nuevoS = String(b.semestre).trim();
@@ -1587,6 +1612,7 @@ router.put("/grupos-matriz/:id", async (req, res) => {
         return res.status(409).json({ error: "El semestre no tiene calendario configurado" });
       }
       if (nuevoS !== semestreActual) {
+        cambiaSemestre = true;
         const docC = await pool.query(
           `SELECT COUNT(*)::int AS n FROM usuarios WHERE grupo_matriz_id = $1`,
           [id]
@@ -1671,17 +1697,49 @@ router.put("/grupos-matriz/:id", async (req, res) => {
     }
 
     vals.push(id);
-    const upd = await pool.query(
-      `
-      UPDATE grupos_matriz
-      SET ${sets.join(", ")}
-      WHERE id = $${i}
-      RETURNING *
-      `,
-      vals
-    );
+    // Cambiar el semestre de un grupo con historia recalcularía retroactivamente sus fechas: bloqueo + comprobación + escritura atómicos.
+    const tx = await pool.connect();
+    let upd;
+    try {
+      await tx.query("BEGIN");
+      await tx.query(`SELECT id FROM grupos_matriz WHERE id = $1 FOR UPDATE`, [id]);
+      if (cambiaSemestre) {
+        if ((await docentesDeGrupos(tx, [id])) > 0) {
+          throw new ErrorNegocio(
+            400,
+            "GRUPO_CON_DOCENTES",
+            "No se puede cambiar el semestre: hay docentes asignados a este grupo. Desasigna los docentes primero."
+          );
+        }
+        const plantillaIds = await bloquearPlantillasDeGrupos(tx, [id]);
+        const h = await historicoDeGrupos(tx, [id], plantillaIds);
+        if (h.total > 0) {
+          throw errorHistorico(
+            `No se puede cambiar el semestre del grupo: ${describirResumen(h)} dependen de él.`,
+            h,
+            "Crea un grupo nuevo en el semestre deseado (clonación) y conserva este con su historia."
+          );
+        }
+      }
+      upd = await tx.query(
+        `
+        UPDATE grupos_matriz
+        SET ${sets.join(", ")}
+        WHERE id = $${i}
+        RETURNING *
+        `,
+        vals
+      );
+      await tx.query("COMMIT");
+    } catch (inner) {
+      await tx.query("ROLLBACK").catch(() => {});
+      throw inner;
+    } finally {
+      tx.release();
+    }
     res.json({ grupo: upd.rows[0] });
   } catch (error) {
+    if (error instanceof ErrorNegocio) return responderError(res, error, "Error en PUT /admin/grupos-matriz/:id");
     if (error?.code === "23505") {
       return res.status(409).json({ error: "Ya existe un grupo con ese nombre en el semestre" });
     }
@@ -1690,6 +1748,8 @@ router.put("/grupos-matriz/:id", async (req, res) => {
   }
 });
 
+// Un grupo con historia (reportes, evidencias, eventos o importaciones) o con docentes asignados no se elimina.
+// `forzar` solo confirma la eliminación de plantillas SIN reportes; nunca permite saltarse la historia.
 router.delete("/grupos-matriz/:id", async (req, res) => {
   const id = Number(req.params.id);
   const forzar = String(req.query.forzar || "") === "true";
@@ -1699,28 +1759,33 @@ router.delete("/grupos-matriz/:id", async (req, res) => {
 
   const client = await pool.connect();
   try {
-    const ex = await client.query(`SELECT id FROM grupos_matriz WHERE id = $1`, [id]);
+    await client.query("BEGIN");
+    const ex = await client.query(`SELECT id FROM grupos_matriz WHERE id = $1 FOR UPDATE`, [id]);
     if (ex.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Grupo no encontrado" });
     }
 
-    const docQ = await client.query(
-      `SELECT COUNT(*)::int AS n FROM usuarios WHERE grupo_matriz_id = $1`,
-      [id]
-    );
-    const nDoc = docQ.rows[0]?.n ?? 0;
+    const nDoc = await docentesDeGrupos(client, [id]);
     if (nDoc > 0) {
+      await client.query("ROLLBACK");
       return res.status(400).json({
         error: `Desasigna los docentes antes de eliminar este grupo (${nDoc} docente(s) asignado(s)).`,
       });
     }
 
-    const tplQ = await client.query(
-      `SELECT COUNT(*)::int AS n FROM plantilla_entregables WHERE grupo_id = $1`,
-      [id]
-    );
-    const nTpl = tplQ.rows[0]?.n ?? 0;
+    const plantillaIds = await bloquearPlantillasDeGrupos(client, [id]);
+    const h = await historicoDeGrupos(client, [id], plantillaIds);
+    if (h.total > 0) {
+      throw errorHistorico(
+        `No se puede eliminar el grupo: ${describirResumen(h)} dependen de él.`,
+        h,
+        "Inactiva el grupo (activo = false) en lugar de eliminarlo: conserva toda su historia."
+      );
+    }
+    const nTpl = plantillaIds.length;
     if (nTpl > 0 && !forzar) {
+      await client.query("ROLLBACK");
       return res.status(400).json({
         error:
           "Este grupo tiene plantillas de entregables. Confirma si deseas eliminarlas junto con el grupo.",
@@ -1729,8 +1794,7 @@ router.delete("/grupos-matriz/:id", async (req, res) => {
       });
     }
 
-    await client.query("BEGIN");
-    if (forzar && nTpl > 0) {
+    if (nTpl > 0) {
       await client.query(`DELETE FROM plantilla_entregables WHERE grupo_id = $1`, [id]);
     }
     await client.query(`DELETE FROM grupos_matriz WHERE id = $1`, [id]);
@@ -1738,8 +1802,7 @@ router.delete("/grupos-matriz/:id", async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
-    console.error("Error en DELETE /admin/grupos-matriz/:id", error);
-    res.status(500).json({ error: "Error interno" });
+    responderError(res, error, "Error en DELETE /admin/grupos-matriz/:id");
   } finally {
     client.release();
   }
@@ -1813,18 +1876,38 @@ router.put("/docentes/:id/tipo-docente", async (req, res) => {
     return res.status(400).json({ error: "tipo_docente debe ser ANTIGUO o NUEVO" });
   }
 
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
-      `UPDATE usuarios SET tipo_docente = $1 WHERE id = $2 AND rol = 'docente' RETURNING id`,
-      [tipo_docente, docenteId]
+    await client.query("BEGIN");
+    const cur = await client.query(
+      `SELECT u.id, g.tipo_docente AS tipo_grupo
+       FROM usuarios u
+       LEFT JOIN grupos_matriz g ON g.id = u.grupo_matriz_id
+       WHERE u.id = $1 AND u.rol = 'docente'
+       FOR UPDATE OF u`,
+      [docenteId]
     );
-    if (result.rowCount === 0) {
+    if (cur.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Docente no encontrado" });
     }
+    // Misma regla que «Editar usuario»: el tipo del docente debe coincidir con el de su grupo.
+    const tipoGrupo = cur.rows[0].tipo_grupo;
+    if (tipoGrupo && tipoGrupo !== tipo_docente) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "El tipo del docente no coincide con el grupo matriz asignado. Cambia el tipo y el grupo a la vez desde «Editar usuario».",
+        codigo: "TIPO_GRUPO_INCOMPATIBLE",
+      });
+    }
+    await client.query(`UPDATE usuarios SET tipo_docente = $1 WHERE id = $2`, [tipo_docente, docenteId]);
+    await client.query("COMMIT");
     res.json({ ok: true });
   } catch (error) {
-    console.error("Error en PUT /admin/docentes/:id/tipo-docente", error);
-    res.status(500).json({ error: "Error interno" });
+    await client.query("ROLLBACK").catch(() => {});
+    responderError(res, error, "Error en PUT /admin/docentes/:id/tipo-docente");
+  } finally {
+    client.release();
   }
 });
 
@@ -1890,29 +1973,42 @@ router.put("/docentes/:id/grupo-matriz", async (req, res) => {
     return res.status(400).json({ error: "grupo_matriz_id es inválido" });
   }
 
+  const client = await pool.connect();
   try {
-    if (groupId !== null) {
-      const group = await pool.query("SELECT 1 FROM grupos_matriz WHERE id = $1", [groupId]);
-      if (group.rowCount === 0) {
-        return res.status(404).json({ error: "Grupo matriz no encontrado" });
-      }
-    }
-    const result = await pool.query(
-      `
-      UPDATE usuarios
-      SET grupo_matriz_id = $1
-      WHERE id = $2 AND rol = 'docente'
-      RETURNING id
-      `,
-      [groupId, docenteId]
+    await client.query("BEGIN");
+    const cur = await client.query(
+      `SELECT id, COALESCE(tipo_docente, 'ANTIGUO') AS tipo, grupo_matriz_id
+       FROM usuarios WHERE id = $1 AND rol = 'docente' FOR UPDATE`,
+      [docenteId]
     );
-    if (result.rowCount === 0) {
+    if (cur.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Docente no encontrado" });
     }
+    // Mismas reglas que «Editar usuario»: grupo activo y del mismo tipo que el docente.
+    if (groupId !== null) {
+      const group = await client.query("SELECT tipo_docente FROM grupos_matriz WHERE id = $1 AND activo = true", [groupId]);
+      if (group.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Grupo matriz no encontrado o inactivo" });
+      }
+      if (group.rows[0].tipo_docente !== cur.rows[0].tipo) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "El tipo del docente no coincide con el grupo matriz seleccionado" });
+      }
+    }
+    // Cambiar o quitar el grupo de un docente con reportes dejaría su historia fuera de la matriz: se bloquea.
+    if (Number(groupId ?? 0) !== Number(cur.rows[0].grupo_matriz_id ?? 0)) {
+      await exigirAsignacionSinHistorico(client, docenteId, groupId);
+    }
+    await client.query(`UPDATE usuarios SET grupo_matriz_id = $1 WHERE id = $2`, [groupId, docenteId]);
+    await client.query("COMMIT");
     res.json({ ok: true });
   } catch (error) {
-    console.error("Error en PUT /admin/docentes/:id/grupo-matriz", error);
-    res.status(500).json({ error: "Error interno" });
+    await client.query("ROLLBACK").catch(() => {});
+    responderError(res, error, "Error en PUT /admin/docentes/:id/grupo-matriz");
+  } finally {
+    client.release();
   }
 });
 
@@ -2050,6 +2146,8 @@ router.put("/usuarios/:id", async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // Serializa con otros cambios de administradores (evita dejar el sistema sin administradores activos).
+    await client.query("SELECT pg_advisory_xact_lock($1)", [LOCK_ADMINISTRADORES]);
     const currentResult = await client.query(
       `
       SELECT id, correo, rol, estado, programa_id, tipo_docente, regional, link_drive, grupo_matriz_id
@@ -2127,6 +2225,11 @@ router.put("/usuarios/:id", async (req, res) => {
           error: "El tipo del docente no coincide con el grupo matriz seleccionado",
         });
       }
+    }
+    // Cambiar o quitar el grupo de un docente con reportes dejaría su historia fuera de la matriz: se bloquea.
+    const grupoFinal = rolDb === "docente" ? finalGroupId : null;
+    if (current.rol === "docente" && Number(grupoFinal ?? 0) !== Number(current.grupo_matriz_id ?? 0)) {
+      await exigirAsignacionSinHistorico(client, userId, grupoFinal);
     }
     const regionalValue = regional === undefined
       ? current.regional
@@ -2219,6 +2322,7 @@ router.put("/usuarios/:id", async (req, res) => {
     if (error?.code === "23505") {
       return res.status(409).json({ error: "Ya existe un usuario con ese correo" });
     }
+    if (error instanceof ErrorNegocio) return responderError(res, error, "Error en PUT /admin/usuarios/:id");
     console.error("Error en PUT /admin/usuarios/:id", error);
     res.status(500).json({ error: "Error interno" });
   } finally {
@@ -2226,6 +2330,7 @@ router.put("/usuarios/:id", async (req, res) => {
   }
 });
 
+// Un usuario con historia (reportes, evidencias, eventos o importaciones) no se elimina: se inactiva.
 router.delete("/usuarios/:id", async (req, res) => {
   const userId = Number(req.params.id);
   if (!userId) {
@@ -2237,20 +2342,36 @@ router.delete("/usuarios/:id", async (req, res) => {
 
   const client = await pool.connect();
   try {
+    await client.query("BEGIN");
+    // Serializa con cualquier otro cambio que pueda dejar al sistema sin administradores activos.
+    await client.query("SELECT pg_advisory_xact_lock($1)", [LOCK_ADMINISTRADORES]);
     const u = await client.query(
-      `SELECT id, rol, nombre, apellido FROM usuarios WHERE id = $1 AND rol IN ('docente', 'admin')`,
+      `SELECT id, rol, estado, nombre, apellido FROM usuarios WHERE id = $1 AND rol IN ('docente', 'admin') FOR UPDATE`,
       [userId]
     );
     if (u.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Usuario no encontrado" });
     }
-    if (u.rows[0].rol === "admin") {
-      const admins = await client.query(
-        "SELECT COUNT(*)::int AS total FROM usuarios WHERE rol = 'admin' AND estado = 'activo'"
+    if (u.rows[0].rol === "admin" && u.rows[0].estado === "activo") {
+      const otros = await client.query(
+        "SELECT COUNT(*)::int AS total FROM usuarios WHERE rol = 'admin' AND estado = 'activo' AND id <> $1",
+        [userId]
       );
-      if (Number(admins.rows[0]?.total || 0) <= 1) {
+      if (Number(otros.rows[0]?.total || 0) === 0) {
+        await client.query("ROLLBACK");
         return res.status(409).json({ error: "Debe permanecer al menos un administrador activo" });
       }
+    }
+
+    const h = await historicoDeUsuario(client, userId);
+    if (h.total > 0) {
+      const nombre = `${u.rows[0].nombre} ${u.rows[0].apellido}`.trim();
+      throw errorHistorico(
+        `No se puede eliminar a ${nombre}: tiene ${describirResumen(h)}.`,
+        h,
+        "Inactívalo (Editar usuario → Estado: Inactivo): conserva todo su historial y le retira el acceso."
+      );
     }
 
     const asResp = await client.query(
@@ -2259,16 +2380,24 @@ router.delete("/usuarios/:id", async (req, res) => {
     );
     const n = asResp.rows[0]?.n ?? 0;
     if (n > 0) {
+      await client.query("ROLLBACK");
       return res.status(400).json({
         error: `No se puede eliminar: el usuario es responsable de ${n} iniciativa(s). Reasigne el docente responsable antes de eliminar.`,
       });
     }
 
     await client.query(`DELETE FROM usuarios WHERE id = $1`, [userId]);
+    await client.query("COMMIT");
     res.json({ ok: true });
   } catch (error) {
-    console.error("Error en DELETE /admin/usuarios/:id", error);
-    res.status(500).json({ error: "Error interno" });
+    await client.query("ROLLBACK").catch(() => {});
+    if (error?.code === "23503") {
+      return res.status(409).json({
+        error: "No se puede eliminar: el usuario tiene registros relacionados. Inactívalo en su lugar.",
+        codigo: "HISTORICO_PROTEGIDO",
+      });
+    }
+    responderError(res, error, "Error en DELETE /admin/usuarios/:id");
   } finally {
     client.release();
   }
@@ -3952,6 +4081,21 @@ router.put(
         targetWeekId = Number(assigned.rows[0].semana_id);
       }
 
+      if (targetWeekId != null) {
+        // Mover un reporte ya existente a otra iniciativa o semana reescribiría su historia.
+        const movidos = await client.query(
+          `SELECT id FROM proyecto_entregables WHERE docente_id = $1 AND plantilla_id = $2 AND proyecto_semana_id <> $3 FOR UPDATE`,
+          [docenteId, plantillaId, targetWeekId]
+        );
+        if (movidos.rowCount > 0) {
+          throw errorHistorico(
+            "No se puede asignar la excepción a esa iniciativa: el docente ya tiene un reporte de este entregable en otra iniciativa o semana y moverlo alteraría el histórico.",
+            { excepciones_movidas: movidos.rowCount },
+            "Deja el reporte donde está; la excepción solo puede cambiar la iniciativa de entregables aún sin reportar."
+          );
+        }
+      }
+
       const saved = await client.query(
         `
         INSERT INTO docente_entregable_excepciones (
@@ -4008,6 +4152,9 @@ router.put(
       res.json({ excepcion: saved.rows[0] });
     } catch (error) {
       await client.query("ROLLBACK");
+      if (error instanceof ErrorNegocio) {
+        return responderError(res, error, "Error en PUT /admin/docentes/:docenteId/plantillas/:plantillaId/excepcion");
+      }
       console.error(
         "Error en PUT /admin/docentes/:docenteId/plantillas/:plantillaId/excepcion",
         error
@@ -4370,13 +4517,18 @@ router.post("/plantillas/actualizacion-masiva/preview", async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: "Plantilla no encontrada" });
     }
-    const groups = new Set(result.rows.map((row) => Number(row.grupo_id)));
+    // Las plantillas con reportes no se modifican: la vista previa cuenta solo las que realmente cambiarían.
+    const conHistorico = await plantillasConHistorico(pool, result.rows.map((row) => Number(row.plantilla_id)));
+    const coincidencias = result.rows.map((row) => ({ ...row, protegida: conHistorico.has(Number(row.plantilla_id)) }));
+    const actualizables = coincidencias.filter((row) => !row.protegida);
+    const groups = new Set(actualizables.map((row) => Number(row.grupo_id)));
     res.json({
       semestre: result.rows[0].semestre,
       entregable_clave: result.rows[0].entregable,
-      plantillas_afectadas: result.rowCount,
+      plantillas_afectadas: actualizables.length,
+      plantillas_protegidas: coincidencias.length - actualizables.length,
       grupos_afectados: groups.size,
-      coincidencias: result.rows,
+      coincidencias,
     });
   } catch (error) {
     console.error("Error en POST /admin/plantillas/actualizacion-masiva/preview", error);
@@ -4444,7 +4596,17 @@ router.put("/plantillas/actualizacion-masiva", async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Plantilla no encontrada" });
     }
-    const ids = matches.rows.map((row) => Number(row.id));
+    // Solo se actualizan las plantillas sin historia; las que tienen reportes quedan protegidas (se informa cuántas).
+    const protegidas = await plantillasConHistorico(client, matches.rows.map((row) => Number(row.id)));
+    const actualizables = matches.rows.filter((row) => !protegidas.has(Number(row.id)));
+    if (actualizables.length === 0) {
+      throw errorHistorico(
+        `No se puede actualizar: las ${matches.rowCount} plantilla(s) coincidentes tienen reportes y el cambio alteraría el histórico.`,
+        { plantillas_protegidas: matches.rowCount },
+        "Las plantillas con reportes quedan congeladas hasta contar con el versionado de plantillas."
+      );
+    }
+    const ids = actualizables.map((row) => Number(row.id));
     await client.query(
       `
       UPDATE plantilla_entregables
@@ -4454,7 +4616,7 @@ router.put("/plantillas/actualizacion-masiva", async (req, res) => {
       `,
       [ids, hasDescription, description, hasLink, link]
     );
-    const groups = new Set(matches.rows.map((row) => Number(row.grupo_id)));
+    const groups = new Set(actualizables.map((row) => Number(row.grupo_id)));
     await client.query(
       `
       INSERT INTO actualizaciones_masivas_entregables (
@@ -4473,7 +4635,7 @@ router.put("/plantillas/actualizacion-masiva", async (req, res) => {
         matches.rows[0].entregable_clave,
         hasDescription ? description : null,
         hasLink ? link : null,
-        matches.rowCount,
+        actualizables.length,
         groups.size,
         Number(req.user?.id) || null,
       ]
@@ -4482,13 +4644,13 @@ router.put("/plantillas/actualizacion-masiva", async (req, res) => {
     res.json({
       ok: true,
       semestre: matches.rows[0].semestre,
-      plantillas_afectadas: matches.rowCount,
+      plantillas_afectadas: actualizables.length,
+      plantillas_protegidas: matches.rowCount - actualizables.length,
       grupos_afectados: groups.size,
     });
   } catch (error) {
-    await client.query("ROLLBACK");
-    console.error("Error en PUT /admin/plantillas/actualizacion-masiva", error);
-    res.status(500).json({ error: "Error interno" });
+    await client.query("ROLLBACK").catch(() => {});
+    responderError(res, error, "Error en PUT /admin/plantillas/actualizacion-masiva");
   } finally {
     client.release();
   }
@@ -4569,8 +4731,25 @@ router.put("/plantillas/:id", async (req, res) => {
   }
 
   vals.push(id);
+  // Una plantilla con reportes no se modifica (ningún campo): cambiaría retroactivamente horas, fechas, requisitos o el
+  // significado del entregable. Bloqueo de la fila + comprobación + escritura en una sola transacción.
+  const client = await pool.connect();
   try {
-    const upd = await pool.query(
+    await client.query("BEGIN");
+    const lock = await client.query(`SELECT id FROM plantilla_entregables WHERE id = $1 FOR UPDATE`, [id]);
+    if (lock.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Plantilla no encontrada" });
+    }
+    const h = await historicoDePlantillas(client, [id]);
+    if (h.total > 0) {
+      throw errorHistorico(
+        `No se puede modificar la plantilla: ${describirResumen(h)} dependen de ella y el cambio alteraría el histórico.`,
+        h,
+        "Las plantillas con reportes quedan congeladas hasta contar con el versionado de plantillas."
+      );
+    }
+    const upd = await client.query(
       `
       UPDATE plantilla_entregables
       SET ${sets.join(", ")}
@@ -4579,50 +4758,47 @@ router.put("/plantillas/:id", async (req, res) => {
       `,
       vals
     );
-    if (upd.rowCount === 0) {
-      return res.status(404).json({ error: "Plantilla no encontrada" });
-    }
+    await client.query("COMMIT");
     res.json({ plantilla: upd.rows[0] });
   } catch (error) {
-    console.error("Error en PUT /admin/plantillas/:id", error);
-    res.status(500).json({ error: "Error interno" });
+    await client.query("ROLLBACK").catch(() => {});
+    responderError(res, error, "Error en PUT /admin/plantillas/:id");
+  } finally {
+    client.release();
   }
 });
 
+// La historia protegida no se elimina: sin reportes, entregables, evidencias ni eventos que dependan de la plantilla.
+// El parámetro `forzar` ya no existe (se ignora): ninguna confirmación permite saltarse esta restricción.
 router.delete("/plantillas/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const forzar = String(req.query.forzar || "").toLowerCase() === "true";
-  if (!id) {
+  if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "id inválido" });
   }
-
+  const client = await pool.connect();
   try {
-    const cnt = await pool.query(
-      `
-      SELECT
-        EXISTS(SELECT 1 FROM plantilla_entregables WHERE id = $1) AS existe,
-        (SELECT COUNT(*)::int FROM proyecto_entregables WHERE plantilla_id = $1) AS usos
-      `,
-      [id]
-    );
-    if (!cnt.rows[0]?.existe) {
+    await client.query("BEGIN");
+    const tpl = await client.query(`SELECT id FROM plantilla_entregables WHERE id = $1 FOR UPDATE`, [id]);
+    if (tpl.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Plantilla no encontrada" });
     }
-    const usos = cnt.rows[0]?.usos ?? 0;
-    if (usos > 0 && !forzar) {
-      return res.status(409).json({
-        error:
-          "La plantilla tiene reportes vinculados. Confirme para eliminarla conservando los reportes.",
-        usos,
-        requiere_confirmacion: true,
-      });
+    const h = await historicoDePlantillas(client, [id]);
+    if (h.total > 0) {
+      throw errorHistorico(
+        `No se puede eliminar la plantilla: ${describirResumen(h)} dependen de ella.`,
+        h,
+        "Una plantilla con reportes no se elimina. Los cambios controlados se habilitarán con el versionado de plantillas."
+      );
     }
-
-    await pool.query(`DELETE FROM plantilla_entregables WHERE id = $1`, [id]);
-    res.json({ ok: true, reportes_conservados: usos });
+    await client.query(`DELETE FROM plantilla_entregables WHERE id = $1`, [id]);
+    await client.query("COMMIT");
+    res.json({ ok: true, reportes_conservados: 0 });
   } catch (error) {
-    console.error("Error en DELETE /admin/plantillas/:id", error);
-    res.status(500).json({ error: "Error interno" });
+    await client.query("ROLLBACK").catch(() => {});
+    responderError(res, error, "Error en DELETE /admin/plantillas/:id");
+  } finally {
+    client.release();
   }
 });
 

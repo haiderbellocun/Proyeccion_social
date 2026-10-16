@@ -8,3 +8,5 @@ gha-creds-*.json
 backend/ejemplos/
 
 e2e/salida/
+.env.test
+backend/.env.test

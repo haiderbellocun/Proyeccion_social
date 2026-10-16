@@ -17,6 +17,7 @@ import {
 } from "./matrixImportService.js";
 import { indiceACol } from "./xlsxReader.js";
 import { ErrorNegocio, fechaDesdeColumnaDate, normalizarCalendario } from "./matrizService.js";
+import { exigirAsignacionSinHistorico } from "./historicosService.js";
 
 const TIPOS_DOCENTE = ["ANTIGUO", "NUEVO"];
 const LOCK_IMPORTACION = 74010023; // serializa importaciones: evita carreras sobre el mismo grupo
@@ -386,6 +387,9 @@ export async function confirmarImportacion(pool, params, { usuarioId }) {
 
     let docenteAsignado = null;
     if (asignaDocente) {
+      // Reasignar al docente con reportes vinculados a otro grupo dejaría su historia fuera de la matriz: se bloquea.
+      await client.query(`SELECT id FROM usuarios WHERE id = $1 FOR UPDATE`, [prep.destino.docente.id]);
+      await exigirAsignacionSinHistorico(client, prep.destino.docente.id, grupoId);
       await client.query(`UPDATE usuarios SET grupo_matriz_id = $1 WHERE id = $2 AND rol = 'docente'`, [grupoId, prep.destino.docente.id]);
       docenteAsignado = prep.destino.docente.id;
     }
