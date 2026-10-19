@@ -52,13 +52,14 @@ type Form = {
   regional: string;
   drive: string;
   grupoId: number | "";
+  motivoGrupo: string; // solo edición: motivo obligatorio cuando cambia el grupo (Bloque 3B)
 };
 
 type Modo = { tipo: "ver"; id: number } | { tipo: "editar"; id: number } | { tipo: "crear" } | null;
 
 const formVacio: Form = {
   nombre: "", apellido: "", correo: "", rol: "docente", escuela: "", programaNombre: "", programaId: "",
-  estado: "activo", tipo: "ANTIGUO", regional: "", drive: "", grupoId: "",
+  estado: "activo", tipo: "ANTIGUO", regional: "", drive: "", grupoId: "", motivoGrupo: "",
 };
 
 function tipoIsNuevo(t: string | null | undefined) {
@@ -236,10 +237,16 @@ export default function UserManagement({ cabecera }: { cabecera: ReactNode }) {
       regional: u.regional || "",
       drive: u.link_drive || "",
       grupoId: u.grupo_matriz_id ?? "",
+      motivoGrupo: "",
     });
     setIntentado(false);
     setModo({ tipo: "editar", id: u.id });
   };
+
+  // ¿Cambia el grupo del docente? (también al dejar de ser docente). El cambio efectivo exige un motivo (queda registrado en el historial).
+  const grupoOriginal = modo?.tipo === "editar" ? users.find((x) => x.id === modo.id)?.grupo_matriz_id ?? null : null;
+  const grupoNuevo = form.rol === "docente" && form.grupoId !== "" ? form.grupoId : null;
+  const cambiaGrupo = modo?.tipo === "editar" && grupoNuevo !== grupoOriginal;
 
   // Reglas idénticas a las de los handlers de guardado (crear: sin recortar; editar: recortando)
   const errores = useMemo(() => {
@@ -253,9 +260,10 @@ export default function UserManagement({ cabecera }: { cabecera: ReactNode }) {
       if (!form.nombre.trim()) e.nombre = "El nombre es obligatorio.";
       if (!form.apellido.trim()) e.apellido = "El apellido es obligatorio.";
       if (!form.correo.trim()) e.correo = "El correo es obligatorio.";
+      if (cambiaGrupo && form.motivoGrupo.trim().length < 5) e.motivoGrupo = "Indica el motivo del cambio de grupo (mínimo 5 caracteres).";
     }
     return e;
-  }, [modo, form]);
+  }, [modo, form, cambiaGrupo]);
   const verErr = (k: string) => (intentado ? errores[k] ?? null : null);
 
   const handleSaveUser = async () => {
@@ -303,7 +311,7 @@ export default function UserManagement({ cabecera }: { cabecera: ReactNode }) {
     const editId = modo.id;
     if (Object.keys(errores).length > 0) {
       setIntentado(true);
-      notify.warning("Nombre, apellido y correo son obligatorios.");
+      notify.warning(errores.motivoGrupo && !errores.nombre && !errores.apellido && !errores.correo ? errores.motivoGrupo : "Nombre, apellido y correo son obligatorios.");
       return;
     }
     setSaving(true);
@@ -322,6 +330,7 @@ export default function UserManagement({ cabecera }: { cabecera: ReactNode }) {
           regional: form.rol === "docente" ? form.regional.trim() || null : null,
           link_drive: form.rol === "docente" ? form.drive.trim() || null : null,
           grupo_matriz_id: form.rol === "docente" && form.grupoId !== "" ? form.grupoId : null,
+          ...(cambiaGrupo ? { motivo_cambio_grupo: form.motivoGrupo.trim() } : {}),
         }),
       });
       if (!res.ok) {
@@ -512,6 +521,14 @@ export default function UserManagement({ cabecera }: { cabecera: ReactNode }) {
           </Campo>
           <Campo etiqueta="Carpeta de Google Drive" ancho="completo">
             {(p) => <input {...p} type="url" className="b2-input" placeholder="https://drive.google.com/..." value={form.drive} onChange={(e) => set("drive", e.target.value)} />}
+          </Campo>
+        </Grupo>
+      )}
+
+      {cambiaGrupo && (
+        <Grupo titulo="Cambio de grupo">
+          <Campo etiqueta="Motivo del cambio de grupo" obligatorio error={verErr("motivoGrupo")} ancho="completo" ayuda="Queda registrado con tu usuario y la fecha en el historial de asignaciones.">
+            {(p) => <input {...p} className="b2-input" maxLength={500} value={form.motivoGrupo} onChange={(e) => set("motivoGrupo", e.target.value)} />}
           </Campo>
         </Grupo>
       )}

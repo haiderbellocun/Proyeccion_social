@@ -236,6 +236,7 @@ async function run() {
         regional: null,
         link_drive: null,
         grupo_matriz_id: groupId,
+        motivo_cambio_grupo: "Prueba automática de cambio de grupo", // Bloque 3B: el cambio de grupo exige motivo
       }),
     });
 

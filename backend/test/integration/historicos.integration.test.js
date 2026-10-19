@@ -14,6 +14,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { purgarAsignaciones } from "./helpers/purgar-asignaciones.js";
+import { conSemestreActivo } from "./helpers/semestre-activo.js";
 
 process.env.JWT_SECRET ||= "pruebas-historicos-secreto-largo-0123456789abcdef";
 process.env.EMAIL_ENABLED = "false";
@@ -28,6 +30,7 @@ const skip = DB_OK ? false : "Estas pruebas destructivas solo corren con PGDATAB
 
 const { pool } = await import("../../src/db.js");
 const { createSessionToken } = await import("../../src/middleware/auth.js");
+const { alinearHistorial } = await import("./helpers/alinear-historial.js");
 const { hoyBogota, sumarDias } = await import("../../src/services/matrizService.js");
 const wf = await import("../../src/services/entregableWorkflowService.js");
 
@@ -81,6 +84,9 @@ async function waitForServer() {
 async function cleanup() {
   const grupos = (await q(`SELECT id FROM grupos_matriz WHERE nombre LIKE $1`, [`${M}%`])).map((r) => r.id);
   const usuarios = (await q(`SELECT id FROM usuarios WHERE correo ILIKE $1`, [`${M}.%`])).map((r) => r.id);
+  // El historial de asignaciones es inmutable y RESTRICT: se purga (solo en pruebas) antes de retirar fixtures.
+  await purgarAsignaciones(pool, { usuarioLike: `${M}.%`, semestre: S1 });
+  await purgarAsignaciones(pool, { semestre: S2 });
   await q(`DELETE FROM entregable_eventos WHERE plantilla_id IN (SELECT id FROM plantilla_entregables WHERE grupo_id = ANY($1::int[])) OR docente_id = ANY($2::int[]) OR actor_id = ANY($2::int[])`, [grupos, usuarios]);
   await q(`DELETE FROM proyectos WHERE titulo LIKE $1`, [`${M}%`]);
   await q(`DELETE FROM docente_entregable_excepciones WHERE docente_id = ANY($1::int[])`, [usuarios]);
@@ -149,6 +155,7 @@ before(async () => {
   ctx.u.d2 = await mkUser("D2", "docente", ctx.g.g2);
   ctx.u.dH = await mkUser("DH", "docente", ctx.g.gh);
   ctx.u.dLibre = await mkUser("DLibre", "docente", null);
+  await alinearHistorial(pool);
   tokens = { adminA: createSessionToken(ctx.u.adminA), adminB: createSessionToken(ctx.u.adminB), d1: createSessionToken(ctx.u.d1) };
 
   const mkProyecto = async (titulo, docente) => {
@@ -220,11 +227,13 @@ test("2. un grupo con entregables no se elimina: con docentes asignados se pide 
   assert.equal(conDocentes.status, 400);
   // Historia sin docentes asignados (situación heredada): se simula desasignando por SQL a quien reportó.
   await q(`UPDATE usuarios SET grupo_matriz_id = NULL WHERE id = $1`, [ctx.u.dH.id]);
+  await alinearHistorial(pool);
   const antes2 = await huella();
   esHistorico(await api(`/admin/grupos-matriz/${ctx.g.gh}`, tokens.adminA, { method: "DELETE" }));
   esHistorico(await api(`/admin/grupos-matriz/${ctx.g.gh}?forzar=true`, tokens.adminA, { method: "DELETE" }));
   await sinCambios(antes2);
   await q(`UPDATE usuarios SET grupo_matriz_id = $1 WHERE id = $2`, [ctx.g.gh, ctx.u.dH.id]);
+  await alinearHistorial(pool);
   await sinCambios(antes);
 });
 
@@ -316,7 +325,7 @@ test("7. un docente con historial no se elimina; el administrador con acciones r
 test("8. inactivar a un docente conserva sus reportes, evidencias y eventos", { skip }, async () => {
   const d = ctx.u.d1;
   const antes = await huella();
-  const body = { nombre: d.nombre, apellido: d.apellido, correo: d.correo, rol: "docente", estado: "inactivo", tipo_docente: "ANTIGUO", grupo_matriz_id: ctx.g.g1 };
+  const body = { nombre: d.nombre, apellido: d.apellido, correo: d.correo, rol: "docente", estado: "inactivo", tipo_docente: "ANTIGUO", grupo_matriz_id: ctx.g.g1, motivo_cambio_grupo: "Prueba de integración" };
   const r = await api(`/admin/usuarios/${d.id}`, tokens.adminA, { method: "PUT", body });
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.estado, "inactivo");
@@ -338,51 +347,59 @@ test("8b. un docente sin historial sí puede eliminarse (la protección no bloqu
 /* ───────────── 9-10. Asignación de grupo ───────────── */
 
 test("9. se puede reasignar a un docente sin historial, por las dos rutas, con las mismas reglas", { skip }, async () => {
-  const d = ctx.u.d2; // sin reportes
-  const aG = await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g4 } });
-  assert.equal(aG.status, 200, JSON.stringify(aG.data));
-  assert.equal((await q(`SELECT grupo_matriz_id FROM usuarios WHERE id = $1`, [d.id]))[0].grupo_matriz_id, ctx.g.g4);
-  const body = { nombre: d.nombre, apellido: d.apellido, correo: d.correo, rol: "docente", estado: "activo", tipo_docente: "ANTIGUO", grupo_matriz_id: ctx.g.g2 };
-  const porUsuario = await api(`/admin/usuarios/${d.id}`, tokens.adminA, { method: "PUT", body });
-  assert.equal(porUsuario.status, 200, JSON.stringify(porUsuario.data));
-  assert.equal(porUsuario.data.grupo_matriz_id, ctx.g.g2);
-  // Quitar el grupo a quien no tiene historial también es legítimo.
-  assert.equal((await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: null } })).status, 200);
-  assert.equal((await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g2 } })).status, 200);
+  await conSemestreActivo(q, S1, async () => {
+    const d = ctx.u.d2; // sin reportes
+    const aG = await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g4, motivo: "Prueba de integración" } });
+    assert.equal(aG.status, 200, JSON.stringify(aG.data));
+    assert.equal((await q(`SELECT grupo_matriz_id FROM usuarios WHERE id = $1`, [d.id]))[0].grupo_matriz_id, ctx.g.g4);
+    const body = { nombre: d.nombre, apellido: d.apellido, correo: d.correo, rol: "docente", estado: "activo", tipo_docente: "ANTIGUO", grupo_matriz_id: ctx.g.g2, motivo_cambio_grupo: "Prueba de integración" };
+    const porUsuario = await api(`/admin/usuarios/${d.id}`, tokens.adminA, { method: "PUT", body });
+    assert.equal(porUsuario.status, 200, JSON.stringify(porUsuario.data));
+    assert.equal(porUsuario.data.grupo_matriz_id, ctx.g.g2);
+    // Quitar el grupo a quien no tiene historial también es legítimo.
+    assert.equal((await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: null, motivo: "Prueba de integración" } })).status, 200);
+    assert.equal((await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g2, motivo: "Prueba de integración" } })).status, 200);
+  });
 });
 
 test("9b. la ruta de asignación aplica las reglas que antes solo tenía «Editar usuario» (grupo activo, mismo tipo)", { skip }, async () => {
-  const d = ctx.u.dLibre; // sin grupo ni historial
-  const antes = await huella();
-  const tipo = await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g3 } });
-  assert.equal(tipo.status, 409, "grupo NUEVO para un docente ANTIGUO");
-  const inactivo = await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g5 } });
-  assert.equal(inactivo.status, 404, "grupo inactivo");
-  assert.equal((await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: 999999999 } })).status, 404);
-  // Cambiar el tipo estando en un grupo de otro tipo se rechaza (hay que cambiar tipo y grupo a la vez).
-  await q(`UPDATE usuarios SET grupo_matriz_id = $1 WHERE id = $2`, [ctx.g.g4, d.id]);
-  const desajuste = await api(`/admin/docentes/${d.id}/tipo-docente`, tokens.adminA, { method: "PUT", body: { tipo_docente: "NUEVO" } });
-  assert.equal(desajuste.status, 409);
-  assert.equal(desajuste.data.codigo, "TIPO_GRUPO_INCOMPATIBLE");
-  assert.equal((await api(`/admin/docentes/${d.id}/tipo-docente`, tokens.adminA, { method: "PUT", body: { tipo_docente: "ANTIGUO" } })).status, 200);
-  await q(`UPDATE usuarios SET grupo_matriz_id = NULL WHERE id = $1`, [d.id]);
-  assert.deepEqual(await huella(), antes, "estado final igual al inicial");
+  await conSemestreActivo(q, S1, async () => {
+    const d = ctx.u.dLibre; // sin grupo ni historial
+    const antes = await huella();
+    const tipo = await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g3, motivo: "Prueba de integración" } });
+    assert.equal(tipo.status, 409, "grupo NUEVO para un docente ANTIGUO");
+    const inactivo = await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g5, motivo: "Prueba de integración" } });
+    assert.equal(inactivo.status, 404, "grupo inactivo");
+    assert.equal((await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: 999999999, motivo: "Prueba de integración" } })).status, 404);
+    // Cambiar el tipo estando en un grupo de otro tipo se rechaza (hay que cambiar tipo y grupo a la vez).
+    await q(`UPDATE usuarios SET grupo_matriz_id = $1 WHERE id = $2`, [ctx.g.g4, d.id]);
+    await alinearHistorial(pool);
+    const desajuste = await api(`/admin/docentes/${d.id}/tipo-docente`, tokens.adminA, { method: "PUT", body: { tipo_docente: "NUEVO" } });
+    assert.equal(desajuste.status, 409);
+    assert.equal(desajuste.data.codigo, "TIPO_GRUPO_INCOMPATIBLE");
+    assert.equal((await api(`/admin/docentes/${d.id}/tipo-docente`, tokens.adminA, { method: "PUT", body: { tipo_docente: "ANTIGUO" } })).status, 200);
+    await q(`UPDATE usuarios SET grupo_matriz_id = NULL WHERE id = $1`, [d.id]);
+    await alinearHistorial(pool);
+    assert.deepEqual(await huella(), antes, "estado final igual al inicial");
+  });
 });
 
 test("10. una reasignación que alteraría históricos se bloquea con un 409 claro, por todas las rutas", { skip }, async () => {
-  const d = ctx.u.d1; // tiene un aprobado y un borrador en G1
-  const antes = await huella();
-  const porGrupo = await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g2 } });
-  esHistorico(porGrupo);
-  esHistorico(await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: null } }));
-  const body = { nombre: d.nombre, apellido: d.apellido, correo: d.correo, rol: "docente", estado: "activo", tipo_docente: "ANTIGUO", grupo_matriz_id: ctx.g.g2 };
-  esHistorico(await api(`/admin/usuarios/${d.id}`, tokens.adminA, { method: "PUT", body }));
-  // Convertirlo en administrador le quitaría el grupo: también se bloquea.
-  esHistorico(await api(`/admin/usuarios/${d.id}`, tokens.adminA, { method: "PUT", body: { ...body, rol: "admin", grupo_matriz_id: ctx.g.g1 } }));
-  await sinCambios(antes);
-  // Dejarlo en su mismo grupo sí se permite.
-  const igual = await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g1 } });
-  assert.equal(igual.status, 200);
+  await conSemestreActivo(q, S1, async () => {
+    const d = ctx.u.d1; // tiene un aprobado y un borrador en G1
+    const antes = await huella();
+    const porGrupo = await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g2, motivo: "Prueba de integración" } });
+    esHistorico(porGrupo);
+    esHistorico(await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: null, motivo: "Prueba de integración" } }));
+    const body = { nombre: d.nombre, apellido: d.apellido, correo: d.correo, rol: "docente", estado: "activo", tipo_docente: "ANTIGUO", grupo_matriz_id: ctx.g.g2, motivo_cambio_grupo: "Prueba de integración" };
+    esHistorico(await api(`/admin/usuarios/${d.id}`, tokens.adminA, { method: "PUT", body }));
+    // Convertirlo en administrador le quitaría el grupo: también se bloquea.
+    esHistorico(await api(`/admin/usuarios/${d.id}`, tokens.adminA, { method: "PUT", body: { ...body, rol: "admin", grupo_matriz_id: ctx.g.g1, motivo_cambio_grupo: "Prueba de integración" } }));
+    await sinCambios(antes);
+    // Dejarlo en su mismo grupo sí se permite.
+    const igual = await api(`/admin/docentes/${d.id}/grupo-matriz`, tokens.adminA, { method: "PUT", body: { grupo_matriz_id: ctx.g.g1, motivo: "Prueba de integración" } });
+    assert.equal(igual.status, 200);
+  });
 });
 
 test("10b. la excepción individual no mueve un reporte existente a otra iniciativa; sí puede dejarlo donde está", { skip }, async () => {
@@ -400,15 +417,28 @@ test("10c. el cambio de semestre de un grupo con historia se bloquea (con docent
   const conDocentes = await api(`/admin/grupos-matriz/${ctx.g.g1}`, tokens.adminA, { method: "PUT", body: { semestre: S2 } });
   assert.equal(conDocentes.status, 400);
   await q(`UPDATE usuarios SET grupo_matriz_id = NULL WHERE id = $1`, [ctx.u.dH.id]);
+  await alinearHistorial(pool);
   const antes2 = await huella();
   esHistorico(await api(`/admin/grupos-matriz/${ctx.g.gh}`, tokens.adminA, { method: "PUT", body: { semestre: S2 } }));
   await sinCambios(antes2);
   await q(`UPDATE usuarios SET grupo_matriz_id = $1 WHERE id = $2`, [ctx.g.gh, ctx.u.dH.id]);
+  await alinearHistorial(pool);
   await sinCambios(antes);
+  // Un grupo que ya figura en el historial de asignaciones (aunque hoy no tenga docentes) tampoco cambia de semestre.
+  const conAsignaciones = (await q(`SELECT grupo_id FROM docente_grupo_matriz WHERE grupo_id = $1 LIMIT 1`, [ctx.g.g4])).length;
+  if (conAsignaciones) {
+    const quieto = await api(`/admin/grupos-matriz/${ctx.g.g4}`, tokens.adminA, { method: "PUT", body: { semestre: S2 } });
+    assert.ok([400, 409].includes(quieto.status), JSON.stringify(quieto.data));
+  }
   // Sin historia, el cambio de semestre sigue funcionando.
-  const libre = await api(`/admin/grupos-matriz/${ctx.g.g4}`, tokens.adminA, { method: "PUT", body: { semestre: S2 } });
+  const g6 = (await q(
+    `INSERT INTO grupos_matriz (nombre, descripcion, tipo_docente, horas_totales, num_proyectos, num_actividades, num_convenios_nuevos, num_convenios_dinamizados, activo, semestre)
+     VALUES ($1, 'sintético', 'ANTIGUO', 10, 1, 0, 0, 0, true, $2) RETURNING id`, [`${M} G6 libre`, S1]
+  ))[0].id;
+  ctx.g.g6 = g6;
+  const libre = await api(`/admin/grupos-matriz/${g6}`, tokens.adminA, { method: "PUT", body: { semestre: S2 } });
   assert.equal(libre.status, 200, JSON.stringify(libre.data));
-  assert.equal((await api(`/admin/grupos-matriz/${ctx.g.g4}`, tokens.adminA, { method: "PUT", body: { semestre: S1 } })).status, 200);
+  assert.equal((await api(`/admin/grupos-matriz/${g6}`, tokens.adminA, { method: "PUT", body: { semestre: S1 } })).status, 200);
 });
 
 /* ───────────── 11. Concurrencia de administradores ───────────── */
@@ -518,11 +548,17 @@ test("13. las evidencias, versiones y reportes aprobados conservan sus referenci
 test("14. las eliminaciones legítimas siguen funcionando: plantilla, grupo y semestre sin historia", { skip }, async () => {
   // Plantilla sin reportes.
   assert.equal((await api(`/admin/plantillas/${ctx.tpl.c}`, tokens.adminA, { method: "DELETE" })).status, 200);
+  // Un grupo que figura en el historial de asignaciones (la prueba 9 pasó a un docente por g4) ya no se elimina.
+  esHistorico(await api(`/admin/grupos-matriz/${ctx.g.g4}?forzar=true`, tokens.adminA, { method: "DELETE" }));
   // Grupo sin historia ni docentes: primero la confirmación existente por plantillas, luego eliminar.
-  const pide = await api(`/admin/grupos-matriz/${ctx.g.g4}`, tokens.adminA, { method: "DELETE" });
+  await q(
+    `INSERT INTO plantilla_entregables (grupo_id, numero, categoria, fase, mes, semana_numero, entregable, descripcion_evidencia, horas, dias_inicio_desde_feb, dias_fin_desde_feb)
+     VALUES ($1, 11, 'Proyecto', 'Proyecto', 'Octubre', 1, $2, 'Cargar soporte', 2, 0, 4)`, [ctx.g.g6, `${M} Entrega G6`]
+  );
+  const pide = await api(`/admin/grupos-matriz/${ctx.g.g6}`, tokens.adminA, { method: "DELETE" });
   assert.equal(pide.status, 400);
   assert.equal(pide.data.tiene_plantillas, true);
-  assert.equal((await api(`/admin/grupos-matriz/${ctx.g.g4}?forzar=true`, tokens.adminA, { method: "DELETE" })).status, 200);
+  assert.equal((await api(`/admin/grupos-matriz/${ctx.g.g6}?forzar=true`, tokens.adminA, { method: "DELETE" })).status, 200);
   // Semestre solo con configuración: confirmación existente y luego eliminación.
   const confirma = await api(`/admin/semestres/${S2}`, tokens.adminA, { method: "DELETE" });
   assert.equal(confirma.status, 409);

@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { purgarAsignaciones } from "./helpers/purgar-asignaciones.js";
 
 process.env.JWT_SECRET ||= "pruebas-historicos-secreto-largo-0123456789abcdef";
 process.env.EMAIL_ENABLED = "false";
@@ -27,6 +28,7 @@ const skip = DB_OK ? false : "Estas pruebas con escritura solo corren con PGDATA
 
 const { pool } = await import("../../src/db.js");
 const { createSessionToken } = await import("../../src/middleware/auth.js");
+const { alinearHistorial } = await import("./helpers/alinear-historial.js");
 const { hoyBogota, sumarDias, SEMAFORO_UMBRALES } = await import("../../src/services/matrizService.js");
 
 const backendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -137,6 +139,9 @@ async function waitForServer() {
 async function cleanup() {
   const grupos = (await q(`SELECT id FROM grupos_matriz WHERE nombre LIKE $1`, [`${M}%`])).map((r) => r.id);
   const usuarios = (await q(`SELECT id FROM usuarios WHERE correo ILIKE $1`, [`${M}.%`])).map((r) => r.id);
+  // El historial de asignaciones es inmutable y RESTRICT: se purga (solo en pruebas) antes de retirar fixtures.
+  await purgarAsignaciones(pool, { usuarioLike: `${M}.%` });
+  for (const codigo of [...Object.values(SEM), ...Object.values(OVL)]) await purgarAsignaciones(pool, { semestre: codigo });
   await q(`DELETE FROM entregable_eventos WHERE plantilla_id IN (SELECT id FROM plantilla_entregables WHERE grupo_id = ANY($1::int[])) OR docente_id = ANY($2::int[]) OR actor_id = ANY($2::int[])`, [grupos, usuarios]);
   await q(`DELETE FROM proyectos WHERE titulo LIKE $1`, [`${M}%`]);
   await q(`DELETE FROM notificaciones WHERE usuario_id = ANY($1::int[])`, [usuarios]).catch(() => {});
@@ -207,6 +212,7 @@ before(async () => {
   ctx.u.admin = await mkUser("Admin", "admin", null);
   for (const [k, spec] of Object.entries(SPEC)) ctx.u[k] = await mkUser(k, "docente", spec);
   ctx.u.Sin = await mkUser("Sin", "docente", null); // docente sin grupo: no pertenece a ningún semestre
+  await alinearHistorial(pool); // el fixture escribe el espejo por SQL: el historial se alinea con él (como tras la migración)
   tokenAdmin = createSessionToken(ctx.u.admin);
 
   // Una iniciativa por docente, con el cronograma del semestre de su grupo; los entregables se crean con su estado.
@@ -628,6 +634,7 @@ test("AL-01. Un reporte de un semestre anterior cuyo docente hoy está en otro g
      VALUES ($1, 'Prueba', $2, 'docente', $3, 'activo', 'ANTIGUO', 'Norte', $4) RETURNING id`,
     [`${M}_Mov`, `${M}.Mov@test.local`, ctx.prog.P1, ctx.g.gA1]
   ))[0];
+  await alinearHistorial(pool);
   const p = await mkProyecto("Iniciativa de Mov", mov.id, INICIO.act);
   // Dato heredado (anterior a las protecciones del Bloque 1): reporte sobre una plantilla del semestre anterior.
   await insertarEntregable({ semana: await semanaId(p, 1), plantilla: ctx.tpl.gP1[3], docente: mov.id, estado: "enviado", fecha: sumarDias(INICIO.ant, 20) });
@@ -646,6 +653,7 @@ test("AL-01. Un reporte de un semestre anterior cuyo docente hoy está en otro g
   assert.equal(fila.reportes_enviados, 0, "su matriz vigente (semestre activo) no incluye el reporte del anterior");
   // Limpieza de este caso.
   await q(`DELETE FROM proyectos WHERE id = $1`, [p]);
+  await purgarAsignaciones(pool, { usuarioLike: `${M}.Mov@%` });
   await q(`DELETE FROM usuarios WHERE id = $1`, [mov.id]);
   assert.deepEqual(await huella(), antes, "estado restaurado");
 });

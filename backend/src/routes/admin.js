@@ -20,6 +20,12 @@ import {
 } from "../services/matrizService.js";
 import { aplicarRevisionAdmin, reabrirEntregable } from "../services/entregableWorkflowService.js";
 import {
+  cambiarGrupoTx,
+  listarIncidencias,
+  resolverIncidencia,
+  transicionarSemestre,
+} from "../services/asignacionDocenteService.js";
+import {
   construirAlcance,
   contarProyectosActivos,
   cteEntregablesDelSemestre,
@@ -34,7 +40,6 @@ import {
   describirResumen,
   docentesDeGrupos,
   errorHistorico,
-  exigirAsignacionSinHistorico,
   historicoDeCalendarioSemestre,
   historicoDeColaborador,
   historicoDeGrupos,
@@ -1221,6 +1226,44 @@ router.put("/semestres/:codigo", async (req, res) => {
   }
 });
 
+// Cambio de semestre: lista EXPLÍCITA de asignaciones (docente → grupo) del semestre ACTIVO, todo o nada. No activa semestres ni
+// elige grupos: las asignaciones anteriores se cierran (no se pierden) y cada cambio queda registrado con el motivo.
+router.post("/semestres/:codigo/asignaciones", async (req, res) => {
+  try {
+    const resultado = await transicionarSemestre(pool, {
+      semestre: req.params.codigo,
+      asignaciones: req.body?.asignaciones,
+      actorId: req.user.id,
+      motivo: req.body?.motivo,
+    });
+    res.json({ ok: true, ...resultado });
+  } catch (error) {
+    responderError(res, error, "Error en POST /admin/semestres/:codigo/asignaciones");
+  }
+});
+
+// Incidencias del historial de asignaciones (evidencia ambigua): se listan y se resuelven de forma explícita y trazable.
+router.get("/asignaciones/incidencias", async (req, res) => {
+  try {
+    const docenteId = req.query.docente_id == null ? null : Number(req.query.docente_id);
+    if (docenteId != null && (!Number.isInteger(docenteId) || docenteId <= 0)) {
+      throw new ErrorNegocio(400, "DOCENTE_INVALIDO", "docente_id inválido");
+    }
+    res.json({ incidencias: await listarIncidencias(pool, { estado: String(req.query.estado || "pendiente"), docenteId }) });
+  } catch (error) {
+    responderError(res, error, "Error en GET /admin/asignaciones/incidencias");
+  }
+});
+
+router.put("/asignaciones/incidencias/:id", async (req, res) => {
+  try {
+    const incidencia = await resolverIncidencia(pool, { id: req.params.id, estado: req.body?.estado, nota: req.body?.nota, actorId: req.user.id });
+    res.json({ ok: true, incidencia });
+  } catch (error) {
+    responderError(res, error, "Error en PUT /admin/asignaciones/incidencias/:id");
+  }
+});
+
 router.delete("/semestres/:codigo", async (req, res) => {
   const codigo = String(req.params.codigo || "").trim().toUpperCase();
   const forzar = String(req.query.forzar || "") === "true";
@@ -2052,13 +2095,11 @@ router.put("/docentes/:id/grupo-matriz", async (req, res) => {
         return res.status(409).json({ error: "El tipo del docente no coincide con el grupo matriz seleccionado" });
       }
     }
-    // Cambiar o quitar el grupo de un docente con reportes dejaría su historia fuera de la matriz: se bloquea.
-    if (Number(groupId ?? 0) !== Number(cur.rows[0].grupo_matriz_id ?? 0)) {
-      await exigirAsignacionSinHistorico(client, docenteId, groupId);
-    }
-    await client.query(`UPDATE usuarios SET grupo_matriz_id = $1 WHERE id = $2`, [groupId, docenteId]);
+    // Servicio único de asignaciones: B1 (semestre activo), protecciones históricas, incidencias, historial + espejo + registro (motivo
+    // obligatorio) en esta misma transacción. Un reenvío sin cambios no crea eventos.
+    const cambio = await cambiarGrupoTx(client, { docenteId, grupoId: groupId, actorId: req.user.id, motivo: req.body?.motivo });
     await client.query("COMMIT");
-    res.json({ ok: true });
+    res.json({ ok: true, cambio: cambio.cambio, ...(cambio.cambio ? { evento_id: cambio.evento_id } : {}) });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
     responderError(res, error, "Error en PUT /admin/docentes/:id/grupo-matriz");
@@ -2281,10 +2322,13 @@ router.put("/usuarios/:id", async (req, res) => {
         });
       }
     }
-    // Cambiar o quitar el grupo de un docente con reportes dejaría su historia fuera de la matriz: se bloquea.
+    // El grupo se cambia SOLO a través del servicio de asignaciones (historial + espejo + registro con motivo). Quitar el grupo (o dejar
+    // de ser docente) se hace antes de actualizar el usuario; asignar uno, después (el servicio valida con el rol y el tipo ya vigentes).
     const grupoFinal = rolDb === "docente" ? finalGroupId : null;
-    if (current.rol === "docente" && Number(grupoFinal ?? 0) !== Number(current.grupo_matriz_id ?? 0)) {
-      await exigirAsignacionSinHistorico(client, userId, grupoFinal);
+    const cambiaGrupo = Number(grupoFinal ?? 0) !== Number(current.grupo_matriz_id ?? 0);
+    const motivoGrupo = req.body?.motivo_cambio_grupo;
+    if (cambiaGrupo && grupoFinal === null) {
+      await cambiarGrupoTx(client, { docenteId: userId, grupoId: null, actorId: req.user.id, motivo: motivoGrupo });
     }
     const regionalValue = regional === undefined
       ? current.regional
@@ -2304,11 +2348,10 @@ router.put("/usuarios/:id", async (req, res) => {
         tipo_docente = $7,
         regional = $8,
         link_drive = $9,
-        grupo_matriz_id = $10,
         google_sub = CASE WHEN correo <> LOWER(TRIM($3)) THEN NULL ELSE google_sub END,
         foto_url = CASE WHEN correo <> LOWER(TRIM($3)) THEN NULL ELSE foto_url END,
         ultimo_acceso = CASE WHEN correo <> LOWER(TRIM($3)) THEN NULL ELSE ultimo_acceso END
-      WHERE id = $11
+      WHERE id = $10
         AND rol IN ('docente', 'admin')
       RETURNING id, nombre, apellido, correo, rol, programa_id, estado,
                 tipo_docente, regional, link_drive, grupo_matriz_id
@@ -2323,11 +2366,14 @@ router.put("/usuarios/:id", async (req, res) => {
         rolDb === "docente" ? teacherType : null,
         rolDb === "docente" ? regionalValue : null,
         rolDb === "docente" ? linkValue : null,
-        rolDb === "docente" ? finalGroupId : null,
         userId,
       ]
     );
     const u = r.rows[0];
+    if (cambiaGrupo && grupoFinal !== null) {
+      await cambiarGrupoTx(client, { docenteId: userId, grupoId: grupoFinal, actorId: req.user.id, motivo: motivoGrupo });
+      u.grupo_matriz_id = grupoFinal;
+    }
     let programaNombre = null;
     let escuelaNombre = null;
     if (u.programa_id) {
@@ -2446,7 +2492,7 @@ router.delete("/usuarios/:id", async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
-    if (error?.code === "23503") {
+    if (error?.code === "23503" || error?.code === "23001") {
       return res.status(409).json({
         error: "No se puede eliminar: el usuario tiene registros relacionados. Inactívalo en su lugar.",
         codigo: "HISTORICO_PROTEGIDO",
@@ -2498,37 +2544,43 @@ router.post("/usuarios", async (req, res) => {
     return res.status(400).json({ error: "grupo_matriz_id es inválido" });
   }
 
+  const client = await pool.connect();
   try {
+    await client.query("BEGIN");
     let programaId = null;
     if (programaNombre) {
-      const programa = await pool.query(
+      const programa = await client.query(
         "SELECT id FROM programas WHERE nombre = $1 LIMIT 1",
         [programaNombre]
       );
       if (programa.rowCount > 0) {
         programaId = programa.rows[0].id;
       } else {
+        await client.query("ROLLBACK");
         return res.status(400).json({ error: "El programa seleccionado no existe" });
       }
     }
     if (rol === "docente" && groupId !== null) {
-      const group = await pool.query(
+      const group = await client.query(
         "SELECT tipo_docente FROM grupos_matriz WHERE id = $1 AND activo = true",
         [groupId]
       );
       if (group.rowCount === 0) {
+        await client.query("ROLLBACK");
         return res.status(400).json({
           error: "El grupo matriz seleccionado no existe o está inactivo",
         });
       }
       if (group.rows[0].tipo_docente !== teacherType) {
+        await client.query("ROLLBACK");
         return res.status(409).json({
           error: "El tipo del docente no coincide con el grupo matriz seleccionado",
         });
       }
     }
 
-    const result = await pool.query(
+    // El usuario se crea SIN grupo y la asignación inicial pasa por el servicio único (historial + espejo + registro), en esta transacción.
+    const result = await client.query(
       `
       INSERT INTO usuarios (
         nombre,
@@ -2539,12 +2591,11 @@ router.post("/usuarios", async (req, res) => {
         estado,
         tipo_docente,
         regional,
-        link_drive,
-        grupo_matriz_id
+        link_drive
       )
-      VALUES ($1, $2, LOWER(TRIM($3)), $4, $5, 'activo', $6, $7, $8, $9)
+      VALUES ($1, $2, LOWER(TRIM($3)), $4, $5, 'activo', $6, $7, $8)
       RETURNING id, nombre, apellido, correo, rol, estado, programa_id,
-                tipo_docente, regional, link_drive, grupo_matriz_id
+                tipo_docente, regional, link_drive
       `,
       [
         String(nombres).trim(),
@@ -2555,11 +2606,19 @@ router.post("/usuarios", async (req, res) => {
         rol === "docente" ? teacherType : null,
         regional || null,
         normalizedLink.value,
-        rol === "docente" ? groupId : null,
       ]
     );
 
     const created = result.rows[0];
+    if (rol === "docente" && groupId !== null) {
+      await cambiarGrupoTx(client, {
+        docenteId: created.id,
+        grupoId: groupId,
+        actorId: req.user.id,
+        motivo: "Alta del docente con grupo inicial",
+      });
+    }
+    await client.query("COMMIT");
 
     let programaNombreCreado = null;
     let escuelaNombreCreada = null;
@@ -2590,11 +2649,15 @@ router.post("/usuarios", async (req, res) => {
       acceso: "El usuario debe ingresar con esta cuenta de Google",
     });
   } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
     if (error?.code === "23505") {
       return res.status(409).json({ error: "Ya existe un usuario con ese correo" });
     }
+    if (error instanceof ErrorNegocio) return responderError(res, error, "Error en POST /admin/usuarios");
     console.error("Error en /admin/usuarios", error);
     res.status(500).json({ error: "Error interno" });
+  } finally {
+    client.release();
   }
 });
 
@@ -2972,14 +3035,11 @@ router.put("/proyectos/:id/docentes", async (req, res) => {
       if (uRes.rowCount === 0) continue;
       if (uRes.rows[0].grupo_matriz_id != null) continue;
 
-      await client.query(
-        `
-        UPDATE usuarios
-        SET grupo_matriz_id = $1
-        WHERE id = $2 AND rol = 'docente' AND grupo_matriz_id IS NULL
-        `,
-        [row.grupo_matriz_id, row.id]
-      );
+      // Servicio único de asignaciones (historial + espejo + registro).
+      await cambiarGrupoTx(client, {
+        docenteId: row.id, grupoId: row.grupo_matriz_id, actorId: req.user.id,
+        motivo: `Asignación de grupo al vincular al docente con la iniciativa #${proyectoId}`,
+      });
     }
 
     await client.query("COMMIT");

@@ -1,6 +1,8 @@
 // Bloque 3 (3A/3B): evidencias por entregable con versiones, historial y permisos, contra PostgreSQL real
 // (solo proysocial_dev / proysocial_test). Datos sintéticos (prefijo TST_B3, semestre 2096A); se eliminan al terminar.
 // Ejecutar: PGDATABASE=proysocial_dev PGHOST=localhost DATABASE_URL= npm run test:integration
+import { conSemestreActivo } from "./helpers/semestre-activo.js";
+import { purgarAsignaciones } from "./helpers/purgar-asignaciones.js";
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -42,6 +44,7 @@ const q = (s, p) => pool.query(s, p);
 const contar = async (s, p = []) => Number((await q(s, p)).rows[0].n);
 
 async function cleanup() {
+  await purgarAsignaciones(pool, { usuarioLike: `${M}%`, semestre: SEM });
   await q(`DELETE FROM entregable_eventos WHERE docente_id IN (SELECT id FROM usuarios WHERE correo LIKE $1)`, [`${M}%`]);
   await q(`DELETE FROM proyectos WHERE titulo LIKE $1`, [`${M}%`]);
   await q(`UPDATE usuarios SET grupo_matriz_id = NULL WHERE correo LIKE $1`, [`${M}%`]);
@@ -103,7 +106,7 @@ before(async () => {
     },
   });
   assert.equal(imp.status, 200, JSON.stringify(imp.data));
-  const asig = await api(`/admin/docentes/${ctx.docente.id}/grupo-matriz`, T.admin, { method: "PUT", body: { grupo_matriz_id: imp.data.grupo_id } });
+  const asig = await conSemestreActivo(q, SEM, () => api(`/admin/docentes/${ctx.docente.id}/grupo-matriz`, T.admin, { method: "PUT", body: { grupo_matriz_id: imp.data.grupo_id, motivo: "Prueba de integración" } }));
   assert.equal(asig.status, 200, JSON.stringify(asig.data));
   const m = await api(`/docente/${ctx.docente.id}/matriz`, T.docente);
   ctx.tpl = Object.fromEntries(m.data.items.map((i) => [i.numero, i.plantilla_id]));

@@ -41,6 +41,13 @@ const migrationFiles = [
   "fase28_docente_grupo_matriz.sql",
 ];
 
+// Migraciones que NO se aplican por accidente: requieren una variable de entorno explícita porque deben desplegarse de forma
+// coordinada con el código que las usa (aplicación A+B del historial docente–grupo; ver docs/BACKEND_BLOQUE3B_FASE_B.md).
+// Sin la variable, el ejecutor la OMITE con un aviso y continúa; no falla ni la registra en schema_migrations.
+const migracionesConCompuerta = {
+  "fase28_docente_grupo_matriz.sql": "PROYSOCIAL_APLICAR_FASE28",
+};
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.resolve(here, "../migrations");
 
@@ -59,6 +66,12 @@ async function migrate() {
     );
     if (applied.rowCount > 0) {
       console.log(`Omitida: ${file}`);
+      continue;
+    }
+
+    const compuerta = migracionesConCompuerta[file];
+    if (compuerta && process.env[compuerta] !== "1") {
+      console.log(`Pendiente (NO aplicada): ${file}. Requiere aplicación coordinada con el código nuevo; defina ${compuerta}=1 para aplicarla.`);
       continue;
     }
 

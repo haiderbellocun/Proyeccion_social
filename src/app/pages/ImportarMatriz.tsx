@@ -366,7 +366,7 @@ export default function ImportarMatriz() {
       const res = await apiFetch(`${API_BASE}/admin/docentes/${docenteResultado}/grupo-matriz`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ grupo_matriz_id: resultado.grupo_id }),
+        body: JSON.stringify({ grupo_matriz_id: resultado.grupo_id, motivo: `Asignación desde Importar matriz (lote ${resultado.lote ?? "sin lote"})` }),
       });
       const d = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(d.error || "No se pudo asignar el docente");

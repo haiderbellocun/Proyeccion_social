@@ -5,6 +5,8 @@ import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { crearXlsx, hojaCronograma } from "../support/xlsxBuilder.js";
+import { conSemestreActivo } from "./helpers/semestre-activo.js";
+import { purgarAsignaciones } from "./helpers/purgar-asignaciones.js";
 
 process.env.JWT_SECRET ||= "pruebas-integracion-importacion-secreto-largo-0123456789";
 process.env.EMAIL_ENABLED = "false";
@@ -18,6 +20,8 @@ const DB_OK =
 const skip = DB_OK ? false : "Defina PGDATABASE=proysocial_dev (o proysocial_test), PGHOST=localhost y DATABASE_URL vacío";
 
 const { pool } = await import("../../src/db.js");
+const q = (s, p) => pool.query(s, p);
+const { alinearHistorial } = await import("./helpers/alinear-historial.js");
 const { createSessionToken } = await import("../../src/middleware/auth.js");
 const { hoyBogota, sumarDias } = await import("../../src/services/matrizService.js");
 
@@ -41,6 +45,8 @@ const api = async (path, token, options = {}) => {
 
 async function cleanup() {
   const q = (s, p) => pool.query(s, p);
+  await purgarAsignaciones(pool, { usuarioLike: `${M}%`, semestre: SEM });
+  await purgarAsignaciones(pool, { semestre: SEM2 });
   await q(`DELETE FROM entregable_eventos WHERE docente_id IN (SELECT id FROM usuarios WHERE correo LIKE $1)`, [`${M}%`]);
   await q(`DELETE FROM proyectos WHERE titulo LIKE $1`, [`${M}%`]);
   await q(`UPDATE usuarios SET grupo_matriz_id = NULL WHERE correo LIKE $1`, [`${M}%`]);
@@ -233,7 +239,8 @@ test("importa una plantilla válida, registra el lote y no duplica al repetir", 
 
 test("asignar la matriz a un docente genera su cronograma e indicadores, sin duplicar tareas", { skip }, async () => {
   const dest = { semestre: SEM, modo: "grupo_existente", grupo_id: ctx.grupo, asignar_docente_id: ctx.docente.id };
-  const r = await api("/admin/importaciones/confirmar", T.admin, { method: "POST", body: body(undefined, dest) });
+  // B1: la asignación ordinaria solo se admite en el semestre activo; el semestre del fixture se activa solo mientras se confirma.
+  const r = await conSemestreActivo(q, SEM, () => api("/admin/importaciones/confirmar", T.admin, { method: "POST", body: body(undefined, dest) }));
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.resumen.docente_asignado_id, ctx.docente.id);
   // Sin copiar tareas por docente: no hay entregables físicos hasta que el docente reporta
@@ -328,14 +335,17 @@ test("duplicados, semana distinta y filas defectuosas exigen decisión o confirm
 
 test("asignar a un docente que ya tiene otro grupo exige decisión; docentes inexistentes se rechazan", { skip }, async () => {
   await pool.query(`UPDATE usuarios SET grupo_matriz_id = $1 WHERE id = $2`, [ctx.grupo, ctx.otro.id]);
+  await alinearHistorial(pool);
   const g2 = (await pool.query(`SELECT id FROM grupos_matriz WHERE nombre = $1 AND semestre = $2`, [`${M} Grupo con errores`, SEM])).rows[0].id;
   const dest = { semestre: SEM, modo: "grupo_existente", grupo_id: g2, asignar_docente_id: ctx.otro.id };
-  const prev = await api("/admin/importaciones/validar", T.admin, { method: "POST", body: body(undefined, dest) });
-  assert.ok(prev.data.decisiones_requeridas.some((x) => x.id === "docente"));
-  const inex = await api("/admin/importaciones/validar", T.admin, { method: "POST", body: body(undefined, { ...dest, asignar_docente_id: 999999 }) });
-  assert.ok(inex.data.errores_globales.some((e) => e.codigo === "DOCENTE_INEXISTENTE"));
-  const mantener = await api("/admin/importaciones/validar", T.admin, { method: "POST", body: body(undefined, dest, { decisiones: { docente: "mantener" } }) });
-  assert.equal(mantener.data.decisiones_requeridas.some((x) => x.id === "docente"), false);
+  await conSemestreActivo(q, SEM, async () => {
+    const prev = await api("/admin/importaciones/validar", T.admin, { method: "POST", body: body(undefined, dest) });
+    assert.ok(prev.data.decisiones_requeridas.some((x) => x.id === "docente"), JSON.stringify({e: prev.data.errores_globales, d: prev.data.decisiones_requeridas, st: prev.status}));
+    const inex = await api("/admin/importaciones/validar", T.admin, { method: "POST", body: body(undefined, { ...dest, asignar_docente_id: 999999 }) });
+    assert.ok(inex.data.errores_globales.some((e) => e.codigo === "DOCENTE_INEXISTENTE"));
+    const mantener = await api("/admin/importaciones/validar", T.admin, { method: "POST", body: body(undefined, dest, { decisiones: { docente: "mantener" } }) });
+    assert.equal(mantener.data.decisiones_requeridas.some((x) => x.id === "docente"), false);
+  });
   assert.equal((await pool.query(`SELECT grupo_matriz_id FROM usuarios WHERE id = $1`, [ctx.otro.id])).rows[0].grupo_matriz_id, ctx.grupo, "la validación no reasigna");
 });
 

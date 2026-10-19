@@ -128,6 +128,9 @@ if (yaSembrado) {
   const carlos = await mkUser("Carlos", "Mendoza", "carlos.mendoza", "docente", grupoCarlos);
   const andres = await mkUser("Andres", "Torres", "andres.torres", "docente", grupoAndres);
   const laura = await mkUser("Laura", "Gomez", "laura.gomez", "docente", null);
+  // Historial de asignaciones (fase28, si está aplicada): los usuarios sintéticos con grupo se registran con el origen técnico
+  // «vigente_al_migrar» (mismo backfill conservador de la migración), para que el espejo y el historial no queden desfasados.
+  if ((await pool.query(`SELECT to_regclass('docente_grupo_matriz') AS t`)).rows[0].t) await pool.query(`SELECT docente_grupo_matriz_backfill()`);
 
   const mkIniciativa = async (docente, titulo, tipo) => {
     const p = (await pool.query(

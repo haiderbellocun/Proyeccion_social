@@ -31,10 +31,17 @@ export function describirResumen(r) {
   if (r.eventos) partes.push(plural(r.eventos, "evento de historial", "eventos de historial"));
   if (r.importaciones) partes.push(plural(r.importaciones, "importación de Excel", "importaciones de Excel"));
   if (r.docentes) partes.push(plural(r.docentes, "docente asignado", "docentes asignados"));
+  if (r.asignaciones) partes.push(plural(r.asignaciones, "asignación de docentes en el historial", "asignaciones de docentes en el historial"));
+  if (r.cambios_de_asignacion) partes.push(plural(r.cambios_de_asignacion, "cambio de asignación registrado por este administrador", "cambios de asignación registrados por este administrador"));
   if (r.excepciones) partes.push(plural(r.excepciones, "ajuste administrativo de entregable", "ajustes administrativos de entregables"));
   if (r.excepciones_movidas) partes.push(plural(r.excepciones_movidas, "entregable que cambiaría de iniciativa o semana", "entregables que cambiarían de iniciativa o semana"));
   if (partes.length === 0) return "";
   return partes.length === 1 ? partes[0] : `${partes.slice(0, -1).join(", ")} y ${partes[partes.length - 1]}`;
+}
+
+/** ¿Existe la tabla? (el historial de asignaciones se aplica de forma coordinada; antes de eso las cuentas lo ignoran). */
+async function tablaExiste(client, nombre) {
+  return Boolean((await client.query(`SELECT to_regclass($1) AS t`, [nombre])).rows[0].t);
 }
 
 /** Bloquea las plantillas de los grupos indicados (ids ordenados para evitar interbloqueos) y devuelve sus ids. */
@@ -72,12 +79,16 @@ export async function plantillasConHistorico(client, plantillaIds) {
   return new Set(r.rows.map((x) => Number(x.id)));
 }
 
-/** Historia de un grupo: la de sus plantillas, más las importaciones de Excel que lo crearon o actualizaron. */
+/** Historia de un grupo: la de sus plantillas, las importaciones de Excel que lo crearon o actualizaron y las asignaciones de docentes registradas. */
 export async function historicoDeGrupos(client, grupoIds, plantillaIds) {
   const base = await historicoDePlantillas(client, plantillaIds);
   const imp = await client.query(`SELECT COUNT(*)::int AS n FROM importaciones_matriz WHERE grupo_id = ANY($1::int[])`, [grupoIds]);
   const importaciones = n(imp.rows[0], "n");
-  return { ...base, importaciones, total: base.total + importaciones };
+  let asignaciones = 0;
+  if (await tablaExiste(client, "docente_grupo_matriz")) {
+    asignaciones = n((await client.query(`SELECT COUNT(*)::int AS n FROM docente_grupo_matriz WHERE grupo_id = ANY($1::int[])`, [grupoIds])).rows[0], "n");
+  }
+  return { ...base, importaciones, asignaciones, total: base.total + importaciones + asignaciones };
 }
 
 /** Docentes asignados a los grupos (relación académica vigente: no se desvincula para poder eliminar). */
@@ -93,7 +104,7 @@ export async function historicoDeSemestre(client, codigo, grupoIds, plantillaIds
   const imp = await client.query(`SELECT COUNT(*)::int AS n FROM importaciones_matriz WHERE semestre = $1 AND (grupo_id IS NULL OR NOT (grupo_id = ANY($2::int[])))`, [codigo, grupoIds]);
   const evidencias = Math.max(base.evidencias, n(ev.rows[0], "n"));
   const importaciones = base.importaciones + n(imp.rows[0], "n");
-  return { ...base, evidencias, importaciones, total: base.entregables + evidencias + base.eventos + importaciones };
+  return { ...base, evidencias, importaciones, total: base.entregables + evidencias + base.eventos + importaciones + (base.asignaciones ?? 0) };
 }
 
 /**
@@ -113,23 +124,16 @@ export async function historicoDeUsuario(client, usuarioId) {
   );
   const x = r.rows[0];
   const out = { entregables: n(x, "entregables"), evidencias: n(x, "evidencias"), eventos: n(x, "eventos"), importaciones: n(x, "importaciones") };
-  return { ...out, total: out.entregables + out.evidencias + out.eventos + out.importaciones };
-}
-
-/**
- * Reasignar a un docente a otro grupo (o quitarle el grupo) dejaría sus reportes vinculados a plantillas de otro grupo
- * fuera de su matriz y de los indicadores. Hasta contar con el modelo histórico de asignaciones, se bloquea.
- * Debe llamarse con la fila del docente ya bloqueada (`FOR UPDATE`).
- */
-export async function historicoDeAsignacion(client, docenteId, grupoDestino) {
-  const r = await client.query(
-    `SELECT COUNT(*)::int AS entregables
-     FROM proyecto_entregables e
-     JOIN plantilla_entregables t ON t.id = e.plantilla_id
-     WHERE e.docente_id = $1 AND t.grupo_id IS DISTINCT FROM $2::int`,
-    [docenteId, grupoDestino]
-  );
-  return { entregables: n(r.rows[0], "entregables") };
+  // Historial de asignaciones: sus filas (RESTRICT en PostgreSQL) y los cambios que hizo como administrador (autoría conservada).
+  if (await tablaExiste(client, "docente_grupo_matriz")) {
+    const a = await client.query(
+      `SELECT (SELECT COUNT(*) FROM docente_grupo_matriz WHERE docente_id = $1)::int AS asignaciones,
+              (SELECT COUNT(*) FROM docente_grupo_matriz_cambios WHERE docente_id = $1 OR cambiado_por = $1)::int AS cambios`, [usuarioId]
+    );
+    out.asignaciones = n(a.rows[0], "asignaciones");
+    out.cambios_de_asignacion = n(a.rows[0], "cambios");
+  }
+  return { ...out, total: out.entregables + out.evidencias + out.eventos + out.importaciones + (out.asignaciones ?? 0) + (out.cambios_de_asignacion ?? 0) };
 }
 
 /**
@@ -217,15 +221,3 @@ export async function historicoDeCalendarioSemestre(client, codigo, grupoIds, pl
   return { ...out, total: out.entregables + out.evidencias + out.eventos };
 }
 
-/** Lanza el 409 estándar si la asignación comprometería reportes anteriores. */
-export async function exigirAsignacionSinHistorico(client, docenteId, grupoDestino) {
-  const h = await historicoDeAsignacion(client, docenteId, grupoDestino);
-  if (h.entregables > 0) {
-    throw errorHistorico(
-      `No se puede cambiar el grupo de este docente: tiene ${describirResumen(h)} vinculados a su grupo actual y la reasignación los dejaría fuera de su matriz y de los indicadores. ` +
-        "Se habilitará cuando exista el historial de asignaciones por semestre.",
-      h,
-      "Mantén al docente en su grupo actual; para un nuevo periodo, crea el grupo del semestre siguiente cuando el historial de asignaciones esté disponible."
-    );
-  }
-}

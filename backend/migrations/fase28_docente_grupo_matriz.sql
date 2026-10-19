@@ -7,16 +7,19 @@
 --   - docente_grupo_matriz_backfill(): backfill conservador e idempotente, SOLO con evidencia verificable (grupo vigente, reportes y
 --     excepciones individuales: el código solo permite crearlos si el docente pertenecía al grupo). Nunca asigna por fechas,
 --     nombres ni semestre.
--- Aditiva e idempotente; no elimina ni modifica datos existentes. `usuarios.grupo_matriz_id` conserva su significado (grupo vigente)
--- y SIGUE siendo la fuente que usa la aplicación: en esta fase ningún endpoint lee ni escribe la tabla nueva.
+--   - docente_grupo_matriz_cambios: registro inmutable de cada cambio EFECTIVO de grupo (docente, grupo anterior y nuevo, semestre,
+--     fecha, administrador y motivo obligatorio). El backfill inicial no genera eventos: su `origen` técnico queda en cada fila.
+-- Aditiva e idempotente; no elimina ni modifica datos existentes. `usuarios.grupo_matriz_id` conserva su significado (grupo vigente).
+-- IMPORTANTE (aplicación coordinada A+B): esta migración debe aplicarse junto con el código que escribe el historial
+-- (asignacionDocenteService). Con el código anterior, cualquier reasignación dejaría la tabla desfasada.
+-- Un docente con historial NO puede eliminarse físicamente (ON DELETE RESTRICT): se inactiva.
 -- Reversión (manual, antes de que el código la use):  ver el bloque «REVERSIÓN» al final de este archivo.
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS docente_grupo_matriz (
   id            BIGSERIAL PRIMARY KEY,
-  -- CASCADE solo para conservar el comportamiento actual de DELETE /admin/usuarios (un docente sin historia puede eliminarse; sus
-  -- filas desaparecen con él, igual que sus excepciones). Con historia real (reportes) la eliminación ya la bloquea el backend.
-  docente_id    INT  NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  -- RESTRICT: un docente con asignaciones registradas no puede eliminarse físicamente (se inactiva). La trazabilidad no se pierde.
+  docente_id    INT  NOT NULL REFERENCES usuarios(id) ON DELETE RESTRICT,
   grupo_id      INT  NOT NULL REFERENCES grupos_matriz(id),
   vigente       BOOLEAN NOT NULL DEFAULT false,
   desde         TIMESTAMPTZ NULL,
@@ -29,10 +32,10 @@ CREATE TABLE IF NOT EXISTS docente_grupo_matriz (
   cerrado_por   INT  NULL REFERENCES usuarios(id) ON DELETE SET NULL,
   cerrado_en    TIMESTAMPTZ NULL,
   motivo_cierre TEXT NULL,
-  CONSTRAINT dgm_origen_valido CHECK (origen IN ('vigente_al_migrar', 'evidencia_reportes', 'evidencia_excepciones', 'asignacion_admin', 'importacion')),
+  CONSTRAINT dgm_origen_valido CHECK (origen IN ('vigente_al_migrar', 'evidencia_reportes', 'evidencia_excepciones', 'asignacion_admin', 'importacion', 'transicion_semestre', 'reconciliacion')),
   CONSTRAINT dgm_certeza_valida CHECK (certeza IN ('alta', 'media', 'registrada')),
   -- «registrada» = la hizo la aplicación (autor y fecha conocidos); «alta/media» = deducida por evidencia en el backfill.
-  CONSTRAINT dgm_certeza_coherente CHECK ((origen IN ('asignacion_admin', 'importacion')) = (certeza = 'registrada')),
+  CONSTRAINT dgm_certeza_coherente CHECK ((origen IN ('asignacion_admin', 'importacion', 'transicion_semestre', 'reconciliacion')) = (certeza = 'registrada')),
   CONSTRAINT dgm_vigente_sin_hasta CHECK (NOT vigente OR hasta IS NULL),
   CONSTRAINT dgm_periodo_valido CHECK (desde IS NULL OR hasta IS NULL OR hasta >= desde),
   -- Fechas desconocidas únicamente en registros heredados: lo creado por la aplicación debe traer inicio y, si está cerrado, fin.
@@ -51,7 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_dgm_grupo ON docente_grupo_matriz (grupo_id);
 CREATE TABLE IF NOT EXISTS docente_grupo_matriz_incidencias (
   id            BIGSERIAL PRIMARY KEY,
   tipo          TEXT NOT NULL CHECK (tipo IN ('dos_grupos_en_un_semestre', 'reportes_sin_plantilla', 'sin_evidencia')),
-  docente_id    INT  NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  docente_id    INT  NOT NULL REFERENCES usuarios(id) ON DELETE RESTRICT,
   semestre      TEXT NULL,
   detalle       JSONB NOT NULL,
   estado        TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'resuelta', 'descartada')),
@@ -113,11 +116,7 @@ $fn$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION dgm_proteger() RETURNS trigger AS $fn$
 BEGIN
   IF TG_OP = 'DELETE' THEN
-    -- Solo se admite el borrado en cascada de un docente que ya no existe (conserva el comportamiento actual de DELETE /admin/usuarios).
-    IF EXISTS (SELECT 1 FROM usuarios WHERE id = OLD.docente_id) THEN
-      RAISE EXCEPTION 'Una asignación histórica no se elimina' USING ERRCODE = '23514';
-    END IF;
-    RETURN OLD;
+    RAISE EXCEPTION 'Una asignación histórica no se elimina' USING ERRCODE = '23514';
   END IF;
   -- UPDATE: lo único que cambia es el CIERRE de la asignación vigente (o poner a NULL un autor eliminado, por la FK ON DELETE SET NULL).
   IF NEW.docente_id IS DISTINCT FROM OLD.docente_id OR NEW.grupo_id IS DISTINCT FROM OLD.grupo_id OR NEW.origen IS DISTINCT FROM OLD.origen
@@ -143,6 +142,52 @@ CREATE TRIGGER trg_dgm_validar BEFORE INSERT OR UPDATE ON docente_grupo_matriz F
 DROP TRIGGER IF EXISTS trg_dgm_proteger ON docente_grupo_matriz;
 CREATE TRIGGER trg_dgm_proteger BEFORE UPDATE OR DELETE ON docente_grupo_matriz FOR EACH ROW EXECUTE FUNCTION dgm_proteger();
 
+-- ───────────── Registro de cambios (auditoría de asignaciones) ─────────────
+CREATE TABLE IF NOT EXISTS docente_grupo_matriz_cambios (
+  id                BIGSERIAL PRIMARY KEY,
+  docente_id        INT  NOT NULL REFERENCES usuarios(id) ON DELETE RESTRICT,
+  grupo_anterior_id INT  NULL REFERENCES grupos_matriz(id),
+  grupo_nuevo_id    INT  NULL REFERENCES grupos_matriz(id),
+  semestre_anterior TEXT NULL,
+  semestre_nuevo    TEXT NULL,
+  cambiado_en       TIMESTAMPTZ NOT NULL,
+  -- RESTRICT: un administrador que hizo cambios no se elimina (se inactiva); la autoría no se pierde. NULL solo en la reconciliación técnica.
+  cambiado_por      INT  NULL REFERENCES usuarios(id) ON DELETE RESTRICT,
+  motivo            TEXT NOT NULL,
+  origen            TEXT NOT NULL CHECK (origen IN ('asignacion_admin', 'importacion', 'transicion_semestre', 'reconciliacion')),
+  fila_cerrada_id   BIGINT NULL REFERENCES docente_grupo_matriz(id),
+  fila_abierta_id   BIGINT NULL REFERENCES docente_grupo_matriz(id),
+  CONSTRAINT dgmc_motivo_obligatorio CHECK (char_length(btrim(motivo)) >= 5),
+  CONSTRAINT dgmc_cambio_real CHECK (grupo_anterior_id IS DISTINCT FROM grupo_nuevo_id),
+  CONSTRAINT dgmc_actor CHECK (origen = 'reconciliacion' OR cambiado_por IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_dgmc_docente ON docente_grupo_matriz_cambios (docente_id, cambiado_en DESC);
+
+CREATE OR REPLACE FUNCTION dgmc_inmutable() RETURNS trigger AS $fn$
+BEGIN
+  RAISE EXCEPTION 'El registro de cambios de asignación no se modifica ni se elimina' USING ERRCODE = '23514';
+END
+$fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_dgmc_inmutable ON docente_grupo_matriz_cambios;
+CREATE TRIGGER trg_dgmc_inmutable BEFORE UPDATE OR DELETE ON docente_grupo_matriz_cambios FOR EACH ROW EXECUTE FUNCTION dgmc_inmutable();
+
+-- Incidencias: solo cambia su resolución (estado, quién, cuándo y nota); nunca se eliminan.
+CREATE OR REPLACE FUNCTION dgm_incidencias_proteger() RETURNS trigger AS $fn$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'Una incidencia de asignación no se elimina: se resuelve o se descarta' USING ERRCODE = '23514'; END IF;
+  IF NEW.tipo IS DISTINCT FROM OLD.tipo OR NEW.docente_id IS DISTINCT FROM OLD.docente_id OR NEW.semestre IS DISTINCT FROM OLD.semestre
+     OR NEW.detalle IS DISTINCT FROM OLD.detalle OR NEW.detectada_en IS DISTINCT FROM OLD.detectada_en THEN
+    RAISE EXCEPTION 'Una incidencia solo cambia su resolución' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.estado <> 'pendiente' AND (NEW.estado IS DISTINCT FROM OLD.estado OR NEW.resuelta_en IS DISTINCT FROM OLD.resuelta_en OR NEW.nota IS DISTINCT FROM OLD.nota) THEN
+    RAISE EXCEPTION 'Una incidencia ya resuelta no se modifica' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END
+$fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_dgm_incidencias_proteger ON docente_grupo_matriz_incidencias;
+CREATE TRIGGER trg_dgm_incidencias_proteger BEFORE UPDATE OR DELETE ON docente_grupo_matriz_incidencias FOR EACH ROW EXECUTE FUNCTION dgm_incidencias_proteger();
+
 -- ───────────── Backfill conservador e idempotente ─────────────
 -- Solo evidencia verificable: grupo vigente (dato actual), reportes y excepciones individuales (creados únicamente si el docente
 -- pertenecía al grupo en ese momento). Una fila por (docente, grupo), con todas sus fuentes fusionadas.
@@ -152,6 +197,11 @@ CREATE OR REPLACE FUNCTION docente_grupo_matriz_backfill() RETURNS jsonb AS $fn$
 DECLARE
   v_filas_antes BIGINT; v_filas_despues BIGINT; v_inc_antes BIGINT; v_inc_despues BIGINT;
 BEGIN
+  -- El backfill es de CARGA INICIAL: si la aplicación ya registró cambios de asignación, el historial está en uso y repetir la
+  -- migración no debe añadir filas ni incidencias (reaplicación segura con datos existentes).
+  IF EXISTS (SELECT 1 FROM docente_grupo_matriz_cambios) THEN
+    RETURN jsonb_build_object('omitido', true, 'motivo', 'el historial ya está en uso (hay cambios registrados): el backfill solo corre en la carga inicial');
+  END IF;
   SELECT COUNT(*) INTO v_filas_antes FROM docente_grupo_matriz;
   SELECT COUNT(*) INTO v_inc_antes FROM docente_grupo_matriz_incidencias;
 
@@ -192,6 +242,8 @@ BEGIN
   INSERT INTO docente_grupo_matriz_incidencias (tipo, docente_id, semestre, detalle)
     SELECT 'sin_evidencia', u.id, NULL, jsonb_build_object('nota', 'Sin grupo vigente ni evidencia: no se infiere ninguna asignación')
     FROM usuarios u WHERE u.rol = 'docente' AND u.grupo_matriz_id IS NULL AND NOT EXISTS (SELECT 1 FROM _dgm_fuentes f WHERE f.docente_id = u.id)
+      -- Un docente que ya tiene historial administrado por la aplicación no es «sin evidencia» (el backfill es seguro de repetir).
+      AND NOT EXISTS (SELECT 1 FROM docente_grupo_matriz a WHERE a.docente_id = u.id)
     ON CONFLICT DO NOTHING;
 
   -- Una fila por (docente, grupo). Se excluye la evidencia NO vigente de los semestres en conflicto.
@@ -211,6 +263,9 @@ BEGIN
              'semestre', MAX(f.semestre),
              'vigencia', 'desconocida')
     FROM _dgm_fuentes f
+    -- Idempotencia con datos de la aplicación: si ya existe CUALQUIER fila del par (docente, grupo) (p. ej. una asignación registrada con
+    -- fechas), el backfill no añade otra «heredada» del mismo par.
+    WHERE NOT EXISTS (SELECT 1 FROM docente_grupo_matriz a WHERE a.docente_id = f.docente_id AND a.grupo_id = f.grupo_id)
     GROUP BY f.docente_id, f.grupo_id
     HAVING bool_or(f.fuente = 'vigente')
         OR NOT EXISTS (SELECT 1 FROM _dgm_conflictos c WHERE c.docente_id = f.docente_id AND c.semestre = MAX(f.semestre))
@@ -242,11 +297,16 @@ $verificacion$;
 -- ============================================================
 -- REVERSIÓN (manual; segura mientras ningún código use las tablas nuevas). NO se ejecuta con esta migración.
 --   BEGIN;
+--   DROP TRIGGER IF EXISTS trg_dgm_incidencias_proteger ON docente_grupo_matriz_incidencias;
+--   DROP TRIGGER IF EXISTS trg_dgmc_inmutable ON docente_grupo_matriz_cambios;
 --   DROP TRIGGER IF EXISTS trg_dgm_proteger ON docente_grupo_matriz;
 --   DROP TRIGGER IF EXISTS trg_dgm_validar  ON docente_grupo_matriz;
 --   DROP FUNCTION IF EXISTS docente_grupo_matriz_backfill();
+--   DROP FUNCTION IF EXISTS dgm_incidencias_proteger();
+--   DROP FUNCTION IF EXISTS dgmc_inmutable();
 --   DROP FUNCTION IF EXISTS dgm_proteger();
 --   DROP FUNCTION IF EXISTS dgm_validar();
+--   DROP TABLE IF EXISTS docente_grupo_matriz_cambios;
 --   DROP TABLE IF EXISTS docente_grupo_matriz_incidencias;
 --   DROP TABLE IF EXISTS docente_grupo_matriz;
 --   DELETE FROM schema_migrations WHERE nombre = 'fase28_docente_grupo_matriz.sql';

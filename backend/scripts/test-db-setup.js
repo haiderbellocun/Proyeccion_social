@@ -50,7 +50,8 @@ if (!existe || reset) {
 await admin.end();
 
 // Migraciones con el ejecutor de siempre, apuntando solo a proysocial_test
-const env = { ...process.env, PGDATABASE: TEST_DB, PGHOST: host, DATABASE_URL: "", INSTANCE_CONNECTION_NAME: "" };
+// La base de pruebas aplica TODAS las migraciones, incluida la fase28 (compuerta de migrate.js), para probar el código nuevo.
+const env = { ...process.env, PGDATABASE: TEST_DB, PGHOST: host, DATABASE_URL: "", INSTANCE_CONNECTION_NAME: "", PROYSOCIAL_APLICAR_FASE28: "1" };
 const mig = spawnSync(process.execPath, ["scripts/migrate.js"], { cwd: backendDir, env, stdio: "inherit" });
 if (mig.status !== 0) process.exit(mig.status ?? 1);
 

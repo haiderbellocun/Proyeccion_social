@@ -17,7 +17,7 @@ import {
 } from "./matrixImportService.js";
 import { indiceACol } from "./xlsxReader.js";
 import { ErrorNegocio, fechaDesdeColumnaDate, normalizarCalendario } from "./matrizService.js";
-import { exigirAsignacionSinHistorico } from "./historicosService.js";
+import { cambiarGrupoTx } from "./asignacionDocenteService.js";
 
 const TIPOS_DOCENTE = ["ANTIGUO", "NUEVO"];
 const LOCK_IMPORTACION = 74010023; // serializa importaciones: evita carreras sobre el mismo grupo
@@ -103,7 +103,13 @@ async function resolverDestino(db, destino = {}, decisiones = {}, { forUpdate = 
     else if (d.rows[0].estado !== "activo") errores.push(globalErr("DOCENTE_INACTIVO", "El docente seleccionado está inactivo"));
     else {
       out.docente = d.rows[0];
-      if (d.rows[0].grupo_matriz_id && !(out.grupo && d.rows[0].grupo_matriz_id === out.grupo.id)) {
+      // B1: solo se asigna a docentes a grupos del semestre ACTIVO (se avisa en la vista previa, no solo al confirmar).
+      const activo = (await db.query(`SELECT codigo FROM semestres WHERE activo = TRUE ORDER BY fecha_inicio DESC LIMIT 1`)).rows[0]?.codigo ?? null;
+      if (codigo && codigo !== activo) {
+        errores.push(globalErr("DOCENTE_SEMESTRE_NO_ACTIVO", `Solo se asigna un docente a grupos del semestre activo${activo ? ` (${activo})` : ""}; el destino es ${codigo}. Importa la matriz sin asignar docente, o cambia el semestre activo.`));
+        out.docente = null;
+      }
+      if (out.docente && d.rows[0].grupo_matriz_id && !(out.grupo && d.rows[0].grupo_matriz_id === out.grupo.id)) {
         if (decisiones.docente === "reasignar") avisos.push(globalWarn("DOCENTE_REASIGNADO", "El docente cambiará de grupo de matriz; su matriz anterior y sus reportes no se borran."));
         else if (decisiones.docente === "mantener") out.docente = null;
         else {
@@ -387,10 +393,12 @@ export async function confirmarImportacion(pool, params, { usuarioId }) {
 
     let docenteAsignado = null;
     if (asignaDocente) {
-      // Reasignar al docente con reportes vinculados a otro grupo dejaría su historia fuera de la matriz: se bloquea.
-      await client.query(`SELECT id FROM usuarios WHERE id = $1 FOR UPDATE`, [prep.destino.docente.id]);
-      await exigirAsignacionSinHistorico(client, prep.destino.docente.id, grupoId);
-      await client.query(`UPDATE usuarios SET grupo_matriz_id = $1 WHERE id = $2 AND rol = 'docente'`, [grupoId, prep.destino.docente.id]);
+      // Servicio único de asignaciones: historial + espejo + registro de cambios (con origen «importacion» y el lote como motivo), todo en esta
+      // transacción. Las protecciones históricas (reportes en el mismo semestre) y las incidencias las aplica el servicio.
+      await cambiarGrupoTx(client, {
+        docenteId: prep.destino.docente.id, grupoId, actorId: usuarioId, origen: "importacion",
+        motivo: `Importación de matriz «${truncar(nombre_archivo ?? "sin nombre", 120)}» (lote ${lote.rows[0].lote})`,
+      });
       docenteAsignado = prep.destino.docente.id;
     }
 

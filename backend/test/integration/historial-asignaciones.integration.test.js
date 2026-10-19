@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { purgarAsignaciones } from "./helpers/purgar-asignaciones.js";
+import { conSemestreActivo } from "./helpers/semestre-activo.js";
 
 process.env.JWT_SECRET ||= "pruebas-historicos-secreto-largo-0123456789abcdef";
 process.env.EMAIL_ENABLED = "false";
@@ -50,11 +52,14 @@ const conTx = async (fn) => {
 };
 
 async function cleanup() {
+  // El historial es inmutable y sus claves RESTRICT: se purga (solo en pruebas) antes de retirar fixtures.
+  await purgarAsignaciones(pool, { usuarioLike: `${M}.%` });
+  for (const sem of Object.values(SEM)) await purgarAsignaciones(pool, { semestre: sem });
   const g = (await q(`SELECT id FROM grupos_matriz WHERE nombre LIKE $1`, [`${M}%`])).map((r) => r.id);
   await q(`DELETE FROM entregable_eventos WHERE plantilla_id IN (SELECT id FROM plantilla_entregables WHERE grupo_id = ANY($1::int[]))`, [g]);
   await q(`DELETE FROM proyectos WHERE titulo LIKE $1`, [`${M}%`]);
   await q(`DELETE FROM docente_entregable_excepciones WHERE plantilla_id IN (SELECT id FROM plantilla_entregables WHERE grupo_id = ANY($1::int[]))`, [g]);
-  await q(`DELETE FROM usuarios WHERE correo ILIKE $1`, [`${M}.%`]); // arrastra sus filas del historial (CASCADE) e incidencias
+  await q(`DELETE FROM usuarios WHERE correo ILIKE $1`, [`${M}.%`]);
   await q(`DELETE FROM plantilla_entregables WHERE grupo_id = ANY($1::int[])`, [g]);
   await q(`DELETE FROM grupos_matriz WHERE id = ANY($1::int[])`, [g]);
   await q(`DELETE FROM semestres WHERE codigo = ANY($1::text[])`, [Object.values(SEM)]);
@@ -253,7 +258,7 @@ test("8. Duplicados, claves foráneas, rol y protección de grupos archivados", 
   } finally { await c.query("ROLLBACK").catch(() => {}); c.release(); }
 });
 
-test("9. Periodos anteriores protegidos: no se borra, no se reasigna, no se reabre; borrar un docente sin historia sí arrastra sus filas", { skip }, async () => {
+test("9. Periodos anteriores protegidos: no se borra, no se reasigna, no se reabre; un docente con historial NO se elimina físicamente (RESTRICT)", { skip }, async () => {
   const d = ctx.u.d1; // tiene una fila cerrada (2083B) y una vigente (2084A)
   const c = await pool.connect();
   try {
@@ -266,11 +271,15 @@ test("9. Periodos anteriores protegidos: no se borra, no se reasigna, no se reab
     }
     await c.query("ROLLBACK");
   } finally { await c.query("ROLLBACK").catch(() => {}); c.release(); }
-  // Comportamiento heredado: un docente sin historia (reportes) se elimina y arrastra sus filas, como arrastra sus excepciones.
-  const borrable = await user("Borrable");
-  await conTx(async (c2) => { await asignar(c2, borrable, ctx.g.b1); });
-  await q(`DELETE FROM usuarios WHERE id = $1`, [borrable]);
-  assert.equal((await q(`SELECT COUNT(*)::int n FROM docente_grupo_matriz WHERE docente_id = $1`, [borrable]))[0].n, 0);
+  // FK RESTRICT: un docente con asignaciones registradas no se elimina (se inactiva): ninguna fila histórica se pierde. Uno SIN historial sí.
+  const conHistorial = await user("ConHistorial");
+  await conTx(async (c2) => { await asignar(c2, conHistorial, ctx.g.b1); });
+  const err = await q(`DELETE FROM usuarios WHERE id = $1`, [conHistorial]).then(() => null, (e) => e);
+  assert.equal(err?.code, "23001", "RESTRICT");
+  assert.equal((await q(`SELECT COUNT(*)::int n FROM docente_grupo_matriz WHERE docente_id = $1`, [conHistorial]))[0].n, 1, "la fila histórica se conserva");
+  const sinHistorial = await user("SinHistorial");
+  await q(`DELETE FROM usuarios WHERE id = $1`, [sinHistorial]);
+  assert.equal((await q(`SELECT COUNT(*)::int n FROM usuarios WHERE id = $1`, [sinHistorial]))[0].n, 0);
 });
 
 // ───────────────────────── 10. Concurrencia ─────────────────────────
@@ -384,11 +393,16 @@ test("13. Reversión documentada y reaplicación de la migración CON datos exis
   const vigentesAntes = (await q(`SELECT docente_id, grupo_id FROM docente_grupo_matriz WHERE vigente AND docente_id = ANY($1::int[]) ORDER BY docente_id`, [Object.values(ctx.D)]));
   // Reversión (el bloque «REVERSIÓN» de la migración).
   await conTx(async (c) => {
+    await c.query(`DROP TRIGGER IF EXISTS trg_dgm_incidencias_proteger ON docente_grupo_matriz_incidencias`);
+    await c.query(`DROP TRIGGER IF EXISTS trg_dgmc_inmutable ON docente_grupo_matriz_cambios`);
     await c.query(`DROP TRIGGER IF EXISTS trg_dgm_proteger ON docente_grupo_matriz`);
     await c.query(`DROP TRIGGER IF EXISTS trg_dgm_validar ON docente_grupo_matriz`);
     await c.query(`DROP FUNCTION IF EXISTS docente_grupo_matriz_backfill()`);
+    await c.query(`DROP FUNCTION IF EXISTS dgm_incidencias_proteger()`);
+    await c.query(`DROP FUNCTION IF EXISTS dgmc_inmutable()`);
     await c.query(`DROP FUNCTION IF EXISTS dgm_proteger()`);
     await c.query(`DROP FUNCTION IF EXISTS dgm_validar()`);
+    await c.query(`DROP TABLE IF EXISTS docente_grupo_matriz_cambios`);
     await c.query(`DROP TABLE IF EXISTS docente_grupo_matriz_incidencias`);
     await c.query(`DROP TABLE IF EXISTS docente_grupo_matriz`);
     await c.query(`DELETE FROM schema_migrations WHERE nombre = 'fase28_docente_grupo_matriz.sql'`);
@@ -397,7 +411,7 @@ test("13. Reversión documentada y reaplicación de la migración CON datos exis
   assert.deepEqual(await q(`SELECT id, grupo_matriz_id FROM usuarios WHERE correo ILIKE $1 ORDER BY id`, [`${M}.%`]), espejoAntes, "usuarios.grupo_matriz_id intacto tras la reversión");
   assert.ok((await api("/admin/semestres")).status === 200 && (await api("/admin/metricas")).status === 200, "la aplicación sigue funcionando sin la tabla");
   // Reaplicación con el ejecutor estándar sobre una base con datos.
-  const m = spawnSync(process.execPath, ["scripts/migrate.js"], { cwd: backendDir, env: { ...process.env }, encoding: "utf8" });
+  const m = spawnSync(process.execPath, ["scripts/migrate.js"], { cwd: backendDir, env: { ...process.env, PROYSOCIAL_APLICAR_FASE28: "1" }, encoding: "utf8" });
   assert.equal(m.status, 0, m.stdout + m.stderr);
   assert.match(m.stdout, /Aplicada: fase28_docente_grupo_matriz\.sql/);
   const vigentesDespues = (await q(`SELECT docente_id, grupo_id FROM docente_grupo_matriz WHERE vigente AND docente_id = ANY($1::int[]) ORDER BY docente_id`, [Object.values(ctx.D)]));
@@ -412,28 +426,29 @@ test("13. Reversión documentada y reaplicación de la migración CON datos exis
 });
 
 // ───────────────────────── 14. Compatibilidad: ningún endpoint cambia todavía ─────────────────────────
-test("14. La tabla nueva no cambia el comportamiento de los endpoints (métricas, eliminación de docentes sin historia, reasignación)", { skip }, async () => {
+test("14. Compatibilidad con la Fase B: métricas intactas, docente con historial protegido y reasignación con doble escritura (historial + espejo)", { skip }, async () => {
   // Métricas idénticas antes y después de ejecutar el backfill.
   const antes = await api(`/admin/metricas?semestre=${SEM.b}`);
   await q(`SELECT docente_grupo_matriz_backfill()`);
   const despues = await api(`/admin/metricas?semestre=${SEM.b}`);
   assert.equal(antes.status, 200);
   assert.deepEqual({ ...despues.data, alcance: null }, { ...antes.data, alcance: null });
-  // Eliminar un docente sin historia con fila en el historial: 200, igual que antes (sus filas desaparecen con él).
-  const borrable = await user("Borrable2", ctx.g.b1);
-  await conTx(async (c) => { await asignar(c, borrable, ctx.g.b1); });
-  const del = await api(`/admin/usuarios/${borrable}`, { method: "DELETE" });
-  assert.equal(del.status, 200, JSON.stringify(del.data));
-  assert.equal((await q(`SELECT COUNT(*)::int n FROM docente_grupo_matriz WHERE docente_id = $1`, [borrable]))[0].n, 0);
-  // Reasignar un docente sin historia por la ruta actual funciona y TODAVÍA no escribe el historial (la doble escritura es la Fase B).
+  // Un docente CON historial no se elimina por la API (409 coherente) y sus filas se conservan.
+  const protegido = await user("Protegido", ctx.g.b1);
+  await conTx(async (c) => { await asignar(c, protegido, ctx.g.b1); });
+  const del = await api(`/admin/usuarios/${protegido}`, { method: "DELETE" });
+  assert.equal(del.status, 409, JSON.stringify(del.data));
+  assert.equal((await q(`SELECT COUNT(*)::int n FROM docente_grupo_matriz WHERE docente_id = $1`, [protegido]))[0].n, 1);
+  // Reasignar por la ruta del servicio: historial y espejo cambian juntos, con motivo y registro del cambio (semestre activo: B1).
   const movible = await user("Movible", ctx.g.b1);
   await q(`SELECT docente_grupo_matriz_backfill()`);
   const ant = (await q(`SELECT grupo_id FROM docente_grupo_matriz WHERE docente_id = $1 AND vigente`, [movible]))[0].grupo_id;
-  const put = await api(`/admin/docentes/${movible}/grupo-matriz`, { method: "PUT", body: { grupo_matriz_id: ctx.g.b2 } });
+  assert.equal(ant, ctx.g.b1);
+  const put = await conSemestreActivo(q, SEM.b, () => api(`/admin/docentes/${movible}/grupo-matriz`, { method: "PUT", body: { grupo_matriz_id: ctx.g.b2, motivo: "Prueba de integración" } }));
   assert.equal(put.status, 200, JSON.stringify(put.data));
   assert.equal((await q(`SELECT grupo_matriz_id FROM usuarios WHERE id = $1`, [movible]))[0].grupo_matriz_id, ctx.g.b2, "el espejo cambia");
-  assert.equal((await q(`SELECT grupo_id FROM docente_grupo_matriz WHERE docente_id = $1 AND vigente`, [movible]))[0].grupo_id, ant, "la tabla NO se actualiza todavía");
-  // La deriva es detectable con una consulta (y es la razón de aplicar las Fases A y B juntas en cada base).
+  assert.equal((await q(`SELECT grupo_id FROM docente_grupo_matriz WHERE docente_id = $1 AND vigente`, [movible]))[0].grupo_id, ctx.g.b2, "el historial cambia en la misma transacción");
+  assert.equal((await q(`SELECT COUNT(*)::int n FROM docente_grupo_matriz_cambios WHERE docente_id = $1`, [movible]))[0].n, 1, "un evento registrado");
   const deriva = await q(`SELECT u.id FROM usuarios u LEFT JOIN docente_grupo_matriz a ON a.docente_id = u.id AND a.vigente WHERE u.rol = 'docente' AND u.correo ILIKE $1 AND u.grupo_matriz_id IS DISTINCT FROM a.grupo_id`, [`${M}.%`]);
-  assert.ok(deriva.some((r) => r.id === movible), "la consulta de deriva detecta al docente reasignado");
+  assert.ok(!deriva.some((r) => r.id === movible), "sin deriva para el docente reasignado");
 });
