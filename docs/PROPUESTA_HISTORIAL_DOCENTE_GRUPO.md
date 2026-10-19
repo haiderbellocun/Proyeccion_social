@@ -1,5 +1,7 @@
 # Propuesta técnica · Historial docente–grupo (AL-01)
 
+> **Actualización (Bloque 3A):** el §4 de esta propuesta (`UNIQUE (docente_id, semestre)`) quedó **superado**: contradice el cambio de grupo dentro de un mismo semestre. El modelo recomendado, las ocho decisiones y el plan están en [BACKEND_BLOQUE3_PREPARACION_HISTORIAL.md](BACKEND_BLOQUE3_PREPARACION_HISTORIAL.md).
+
 **Estado: PROPUESTA. No se implementó nada** (ni tabla, ni migración, ni cambios de código). Requiere tu decisión sobre las preguntas de la §9 y autorización de esquema.
 
 ## 1. Problema
