@@ -101,7 +101,8 @@ try {
   comparar(`Reportes y métricas — ${at.nombre}`, "Aprobado", fa?.[ixm("Aprobado")], pc(at.porcentaje_aprobado));
   await foto(p, "metricas-1440");
   await primeraFila(p, "Docentes con menor avance"); await pausa(600); await foto(p, "metricas-inspector-1440", { completa: false });
-  await abrir(p, "/admin/reportes"); await selValor(p, "Filtrar por semestre", SEM2); await pausa(500);
+  await abrir(p, "/admin/reportes"); await selValor(p, "Filtrar por semestre", SEM2);
+  await esperar(p, `new RegExp('corresponden al semestre ${SEM2}').test(document.querySelector('.b2-aviso-sem')?.textContent||'')`, "métricas del otro semestre", 8000); await pausa(500);
   await E(p, "document.querySelector('.b2-ana-met-vacios input').click()"); await pausa(800); await foto(p, "metricas-filtrado-1440");
 
   /* ── 1280 y 820 ── */

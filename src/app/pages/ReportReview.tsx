@@ -97,15 +97,31 @@ export default function ReportReview() {
   const [limit] = useState(20);
   const [total, setTotal] = useState(0);
 
+  // Conteos de la bandeja (chips y resumen). Con un semestre elegido salen de /admin/metricas acotado a ESE semestre (igual que la
+  // lista filtrada); con «Todos» salen de la propia bandeja (todos los semestres), de modo que siempre coinciden con la lista.
+  const solicitudMetricas = useRef(0);
   const loadMetricas = useCallback(async () => {
+    const mia = ++solicitudMetricas.current;
     try {
-      const res = await fetch(`${API_BASE_URL}/admin/metricas`);
-      if (!res.ok) throw new Error("Error al cargar métricas");
-      setMetricas(await res.json().catch(() => ({})));
+      let datos: AdminMetricas;
+      if (selectedSemester === "Todos") {
+        const total = async (estado: string) => {
+          const res = await fetch(`${API_BASE_URL}/admin/reportes-revision?estado=${estado}&page=1&limit=1`);
+          if (!res.ok) throw new Error("Error al cargar los conteos");
+          return Number((await res.json()).pagination?.total ?? 0);
+        };
+        const [pendientes, con_observaciones, aprobados] = await Promise.all([total("enviado"), total("observado"), total("aprobado")]);
+        datos = { resumen: { pendientes, con_observaciones, aprobados } } as AdminMetricas;
+      } else {
+        const res = await fetch(`${API_BASE_URL}/admin/metricas?semestre=${encodeURIComponent(selectedSemester)}`);
+        if (!res.ok) throw new Error("Error al cargar métricas");
+        datos = await res.json().catch(() => ({}));
+      }
+      if (mia === solicitudMetricas.current) setMetricas(datos);
     } catch {
-      setMetricas(null);
+      if (mia === solicitudMetricas.current) setMetricas(null);
     }
-  }, []);
+  }, [selectedSemester]);
 
   useEffect(() => {
     (async () => {

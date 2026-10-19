@@ -67,6 +67,7 @@ interface Payload {
   docentes: DocenteAvance[];
   totales: Totales;
   hoy?: string;
+  alcance?: { semestre: string | null; activo: boolean; estado_periodo: string; vacio: boolean; advertencias: string[] };
 }
 
 interface SemestreDetalle { codigo: string; fecha_inicio: string; fecha_fin: string }
@@ -496,8 +497,8 @@ export default function AvanceConsolidado() {
       />
       <div className="b2-ana-av-f"><Barra contador={data ? (hayFiltros ? `${filtrados.length} de ${docentes.length} docentes` : `${docentes.length} docentes`) : undefined}>
         <Buscar value={buscar} onChange={setBuscar} placeholder="Buscar docente, programa o regional" etiqueta="Buscar docente" />
-        <Filtro value={semestre} onChange={(v) => { setSemestre(v); setGrupoId(""); setSel(null); }} etiqueta="Semestre" ancho={140}>
-          <option value="">Todos los semestres</option>
+        <Filtro value={semestre || data?.alcance?.semestre || ""} onChange={(v) => { setSemestre(v); setGrupoId(""); setSel(null); }} etiqueta="Semestre" ancho={140}>
+          {/* Un semestre a la vez: sin parámetro el backend usa el activo, así que no hay opción «Todos» (mezclaría periodos). */}
           {semestresList.map((s) => <option key={s} value={s}>{s}</option>)}
         </Filtro>
         <Filtro value={grupoId} onChange={(v) => { setGrupoId(v); setSel(null); }} etiqueta="Grupo" ancho={210}>

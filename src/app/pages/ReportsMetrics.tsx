@@ -11,12 +11,22 @@ import { Bullet } from "../components/b2/Bullet";
 import { IIndicadores, IRefrescar } from "../components/b2/icons";
 import "../components/b2/b2-ana-metricas.css";
 
+interface Alcance {
+  semestre: string | null;
+  activo: boolean;
+  estado_periodo: "en_curso" | "cerrado" | "futuro" | "sin_calendario" | "sin_semestre";
+  calendario: { fecha_inicio: string; fecha_fin: string; num_semanas: number } | null;
+  vacio: boolean;
+  advertencias: string[];
+}
 interface MetricasPayload {
-  resumen: { total_reportes: number; aprobados: number; pendientes: number; con_observaciones: number; porcentaje_aprobacion: number };
+  alcance?: Alcance;
+  resumen: { total_reportes: number; aprobados: number; pendientes: number; con_observaciones: number; porcentaje_aprobacion: number | null };
   por_mes: { mes: string; total: number; aprobados: number; observados: number; pendientes: number }[];
   por_grupo: {
     grupo_id: number;
     grupo_nombre: string;
+    semestre?: string | null;
     tipo_docente: "ANTIGUO" | "NUEVO";
     total_docentes: number;
     entregables_completados: number;
@@ -44,7 +54,6 @@ interface MetricasPayload {
 }
 type Grupo = MetricasPayload["por_grupo"][number];
 type Atrasado = MetricasPayload["top_atrasados"][number];
-interface SemestreDetalle { codigo: string; fecha_inicio: string; fecha_fin: string }
 
 const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const hoyBogota = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
@@ -86,81 +95,75 @@ export default function ReportsMetrics() {
   const session = useCurrentUser();
   const navigate = useNavigate();
   const [data, setData] = useState<MetricasPayload | null>(null);
-  const [semDe, setSemDe] = useState<Record<number, string>>({});
   const [semActivo, setSemActivo] = useState("");
-  const [calendario, setCalendario] = useState<SemestreDetalle | null>(null);
   const [semestres, setSemestres] = useState<string[]>([]);
+  const [semParam, setSemParam] = useState(""); // "" = el semestre activo (valor por omisión del backend)
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [recarga, setRecarga] = useState(0);
   const solicitud = useRef(0);
-  const filtroInicial = useRef(false);
+  const semAnterior = useRef("");
 
-  const [semFiltro, setSemFiltro] = useState("");
   const [conVacios, setConVacios] = useState(false);
   const [orden, setOrden] = useState<Orden>({ clave: "nombre", dir: "asc" });
   const [sel, setSel] = useState<Seleccion>(null);
 
+  // Lista de semestres del selector (una vez y al actualizar).
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const sm = await fetch(`${API_BASE}/admin/semestres`);
+        if (!sm.ok || !vivo) return;
+        const j = await sm.json();
+        if (!vivo) return;
+        setSemActivo(String(j.activo?.codigo ?? ""));
+        setSemestres(Array.isArray(j.semestres) ? j.semestres.map(String) : []);
+      } catch { /* sin lista: el selector solo muestra el semestre consultado */ }
+    })();
+    return () => { vivo = false; };
+  }, [recarga]);
+
+  // Métricas del semestre elegido. Solo cuenta la última solicitud: la respuesta tardía de un semestre anterior se descarta
+  // y, al cambiar de semestre, se limpian los datos para no mostrar cifras de uno bajo el nombre de otro.
   useEffect(() => {
     const mia = ++solicitud.current;
     const vigente = () => mia === solicitud.current;
+    if (semAnterior.current !== semParam) { semAnterior.current = semParam; setData(null); }
     (async () => {
       try {
         setCargando(true);
         setError(null);
-        const [met, gm, sm] = await Promise.all([
-          fetch(`${API_BASE}/admin/metricas`),
-          fetch(`${API_BASE}/admin/grupos-matriz`).catch(() => null),
-          fetch(`${API_BASE}/admin/semestres`).catch(() => null),
-        ]);
-        if (!met.ok) throw new Error("Error métricas");
+        const met = await fetch(`${API_BASE}/admin/metricas${semParam ? `?semestre=${encodeURIComponent(semParam)}` : ""}`);
+        if (!met.ok) {
+          const cuerpo = await met.json().catch(() => ({}));
+          throw new Error(typeof cuerpo.error === "string" ? cuerpo.error : "Error métricas");
+        }
         const payload = (await met.json()) as MetricasPayload;
-        const mapa: Record<number, string> = {};
-        try {
-          if (gm?.ok) for (const g of ((await gm.json()).grupos ?? []) as { id: number; semestre?: string | null }[]) if (g.semestre) mapa[Number(g.id)] = String(g.semestre);
-        } catch { /* sin cruce: el semestre se muestra como «—» */ }
-        let activo = "";
-        let cal: SemestreDetalle | null = null;
-        let lista: string[] = [];
-        try {
-          if (sm?.ok) {
-            const s = await sm.json();
-            activo = String(s.activo?.codigo ?? "");
-            lista = Array.isArray(s.semestres) ? s.semestres.map(String) : [];
-            cal = ((s.detalle ?? []) as SemestreDetalle[]).find((d) => d.codigo === activo) ?? null;
-          }
-        } catch { /* sin calendario */ }
         if (!vigente()) return;
         setData(payload);
-        setSemDe(mapa);
-        setSemActivo(activo);
-        setCalendario(cal);
-        setSemestres(lista);
-        if (!filtroInicial.current) {
-          filtroInicial.current = true;
-          const existentes = new Set([...Object.values(mapa), ...lista]);
-          setSemFiltro(activo && existentes.has(activo) ? activo : "");
-        }
       } catch (e) {
         if (!vigente()) return;
         console.error(e);
         notify.error("No se pudo cargar las métricas. Intente más tarde.");
-        setError("No se pudieron cargar las métricas.");
+        setError(e instanceof Error && e.message !== "Error métricas" ? e.message : "No se pudieron cargar las métricas.");
         setData(null);
       } finally {
         if (vigente()) setCargando(false);
       }
     })();
-  }, [recarga]);
+  }, [recarga, semParam]);
 
   const fechaTitulo = useMemo(
     () => new Date().toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", year: "numeric" }),
     []
   );
 
-  const opcionesSem = useMemo(() => [...new Set([...Object.values(semDe), ...semestres])].sort().reverse(), [semDe, semestres]);
+  const semMostrado = data?.alcance?.semestre ?? semParam;
+  const opcionesSem = useMemo(() => [...new Set([...(semMostrado ? [semMostrado] : []), ...semestres])].sort().reverse(), [semMostrado, semestres]);
 
-  /* ───────── por mes (semestre activo) ───────── */
+  /* ───────── por mes (semestre consultado) ───────── */
+  const calendario = data?.alcance?.calendario ?? null;
   const categoriasMes = useMemo<Categoria[]>(() => {
     const hoy = hoyBogota();
     const iniciosMes: { idx: number; primero: string }[] = [];
@@ -193,10 +196,7 @@ export default function ReportsMetrics() {
   const hayMes = (data?.por_mes ?? []).some((r) => r.total > 0);
 
   /* ───────── por grupo ───────── */
-  const gruposSem = useMemo(
-    () => (data?.por_grupo ?? []).filter((g) => !semFiltro || semDe[g.grupo_id] === semFiltro),
-    [data?.por_grupo, semFiltro, semDe]
-  );
+  const gruposSem = useMemo(() => data?.por_grupo ?? [], [data?.por_grupo]);
   const gruposConDocentes = gruposSem.filter((g) => g.total_docentes > 0);
   const ocultos = gruposSem.length - gruposConDocentes.length;
   const gruposVisibles = conVacios ? gruposSem : gruposConDocentes;
@@ -205,7 +205,7 @@ export default function ReportsMetrics() {
     const dir = orden.dir === "asc" ? 1 : -1;
     const v = (g: Grupo): number | string => {
       switch (orden.clave) {
-        case "semestre": return semDe[g.grupo_id] ?? "";
+        case "semestre": return g.semestre ?? "";
         case "tipo": return g.tipo_docente;
         case "docentes": return g.total_docentes;
         case "reportados": return g.entregables_completados;
@@ -221,12 +221,12 @@ export default function ReportsMetrics() {
       const c = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y), "es");
       return c !== 0 ? dir * c : a.grupo_nombre.localeCompare(b.grupo_nombre, "es");
     });
-  }, [gruposVisibles, orden, semDe]);
+  }, [gruposVisibles, orden]);
   const alternarOrden = (clave: string) => setOrden((o) => (o.clave === clave ? { clave, dir: o.dir === "asc" ? "desc" : "asc" } : { clave, dir: clave === "nombre" || clave === "semestre" || clave === "tipo" ? "asc" : "desc" }));
 
   const colsGrupo: Col<Grupo>[] = [
     { id: "nombre", titulo: "Grupo", ancho: "minmax(220px, 1fr)", orden: "nombre", celda: (g) => <span className="b2-tt" title={g.grupo_nombre}>{g.grupo_nombre}</span> },
-    { id: "semestre", titulo: "Semestre", ancho: "88px", prioridad: 2, orden: "semestre", celda: (g) => semDe[g.grupo_id] ?? "—" },
+    { id: "semestre", titulo: "Semestre", ancho: "88px", prioridad: 2, orden: "semestre", celda: (g) => g.semestre ?? "—" },
     { id: "tipo", titulo: "Tipo", ancho: "86px", prioridad: 2, orden: "tipo", celda: (g) => <Tag tono={g.tipo_docente === "NUEVO" ? "primario" : "neutro"}>{g.tipo_docente === "NUEVO" ? "Nuevo" : "Antiguo"}</Tag> },
     { id: "docentes", titulo: "Docentes", ancho: "76px", num: true, orden: "docentes", celda: (g) => n0(g.total_docentes) },
     { id: "reportados", titulo: "Reportados", ancho: "92px", prioridad: 2, num: true, orden: "reportados", celda: (g) => n0(g.entregables_completados) },
@@ -253,7 +253,7 @@ export default function ReportsMetrics() {
 
   const r = data?.resumen;
   const exportaTablaGrupos = gruposSem.map((g) => [
-    g.grupo_nombre, semDe[g.grupo_id] ?? "—", g.total_docentes, g.total_docentes > 0 ? pct(g.porcentaje) : "—", g.total_docentes > 0 ? pct(g.porcentaje_aprobado) : "—", g.total_docentes > 0 ? pct(g.porcentaje_esperado) : "—",
+    g.grupo_nombre, g.semestre ?? "—", g.total_docentes, g.total_docentes > 0 ? pct(g.porcentaje) : "—", g.total_docentes > 0 ? pct(g.porcentaje_aprobado) : "—", g.total_docentes > 0 ? pct(g.porcentaje_esperado) : "—",
   ]);
 
   const inspector = docSel ? (
@@ -283,7 +283,7 @@ export default function ReportsMetrics() {
     </div>
   ) : grpSel ? (
     <div className="b2-insp-c">
-      <p className="b2-insp-sup">Grupo de matriz · {semDe[grpSel.grupo_id] ?? "sin semestre"}</p>
+      <p className="b2-insp-sup">Grupo de matriz · {grpSel.semestre ?? "sin semestre"}</p>
       <h2 className="b2-insp-h">{grpSel.grupo_nombre}</h2>
       <div className="b2-insp-estado"><Tag tono={grpSel.tipo_docente === "NUEVO" ? "primario" : "neutro"}>{grpSel.tipo_docente === "NUEVO" ? "Nuevo" : "Antiguo"}</Tag></div>
       {grpSel.total_docentes > 0 ? (
@@ -294,7 +294,7 @@ export default function ReportsMetrics() {
       ) : <p className="b2-insp-p">Este grupo no tiene docentes asignados; por eso no tiene avance.</p>}
       <h3 className="b2-insp-sub">Datos</h3>
       <Dl rows={[
-        ["Semestre", semDe[grpSel.grupo_id] ?? "—"],
+        ["Semestre", grpSel.semestre ?? "—"],
         ["Docentes", n0(grpSel.total_docentes)],
         ["Reportados", `${n0(grpSel.entregables_completados)} de ${n0(grpSel.entregables_total)}`],
         ["Aprobados", n0(grpSel.entregables_aprobados)],
@@ -304,7 +304,7 @@ export default function ReportsMetrics() {
         ["% esperado", grpSel.total_docentes > 0 ? pct(grpSel.porcentaje_esperado) : "—"],
       ]} />
       <div className="b2-insp-acc">
-        <button type="button" className="b2-btn b2-btn-primary" onClick={() => navigate(`/admin/sistema?tab=plantillas${semDe[grpSel.grupo_id] ? `&semestre=${encodeURIComponent(semDe[grpSel.grupo_id])}` : ""}&grupo=${grpSel.grupo_id}`)}>Ver plantillas del grupo</button>
+        <button type="button" className="b2-btn b2-btn-primary" onClick={() => navigate(`/admin/sistema?tab=plantillas${grpSel.semestre ? `&semestre=${encodeURIComponent(grpSel.semestre)}` : ""}&grupo=${grpSel.grupo_id}`)}>Ver plantillas del grupo</button>
         <button type="button" className="b2-btn b2-btn-ghost" onClick={() => setSel(null)}>Cerrar</button>
       </div>
     </div>
@@ -317,7 +317,14 @@ export default function ReportsMetrics() {
       titulo="Reportes y métricas"
       icono={<IIndicadores width={20} height={20} />}
       subtitulo={<><span className="b2-ana-met-fecha">{fechaTitulo}</span>{session?.correo ? ` · ${session.correo}` : ""}</>}
-      acciones={<button type="button" className="b2-btn" onClick={alActualizar} disabled={cargando}><IRefrescar width={15} height={15} />Actualizar</button>}
+      acciones={
+        <>
+          <Filtro value={semMostrado} onChange={setSemParam} etiqueta="Filtrar por semestre" ancho={190}>
+            {opcionesSem.map((sm) => <option key={sm} value={sm}>{sm}{sm === semActivo ? " (activo)" : ""}</option>)}
+          </Filtro>
+          <button type="button" className="b2-btn" onClick={alActualizar} disabled={cargando}><IRefrescar width={15} height={15} />Actualizar</button>
+        </>
+      }
       inspectorAbierto={!!inspector}
       inspectorEtiqueta={sel ? `${sel.t}-${sel.id}` : "metricas"}
       onCerrarInspector={() => setSel(null)}
@@ -332,20 +339,24 @@ export default function ReportsMetrics() {
       {data && (
         <>
           <Indicadores items={[
-            { k: "Total de reportes", v: n0(r?.total_reportes), titulo: "Todos los entregables completados registrados" },
+            { k: "Total de reportes", v: n0(r?.total_reportes), titulo: "Entregables completados registrados en el semestre" },
             { k: "Aprobados", v: n0(r?.aprobados) },
             { k: "Pendientes de revisión", v: n0(r?.pendientes) },
             { k: "Con observaciones", v: n0(r?.con_observaciones) },
             { k: "% de aprobación", v: pct(r?.porcentaje_aprobacion), titulo: "Aprobados sobre el total de reportes" },
           ]} />
-          <p className="b2-aviso-sem">Resumen: todos los reportes registrados. «Por mes» corresponde al semestre activo{semActivo ? ` (${semActivo})` : ""}, según la fecha de envío.</p>
+          <p className="b2-aviso-sem">
+            Todas las cifras corresponden al semestre {semMostrado}
+            {data.alcance?.estado_periodo === "cerrado" ? " (cerrado: cifras históricas)" : data.alcance?.estado_periodo === "futuro" ? " (aún no inicia)" : semMostrado === semActivo ? " (activo)" : ""}.
+            {" "}«Por mes» se cuenta según la fecha de envío.{(data.alcance?.advertencias ?? []).map((a) => ` ${a}`).join("")}
+          </p>
 
           <div className="b2-ch-grid b2-ana-met-fila">
             <Figura
               pregunta="¿Cuántos reportes se enviaron cada mes?"
-              nota={`Semestre activo${semActivo ? ` ${semActivo}` : ""}, por fecha de envío. Un mes futuro aún no es exigible.`}
+              nota={`Semestre ${semMostrado}, por fecha de envío. Un mes futuro aún no es exigible.`}
               leyenda={[{ s: "apr", label: "Aprobados" }, { s: "obs", label: "Observados" }, { s: "pen", label: "Pendientes" }]}
-              vacio={hayMes ? undefined : <Vacio titulo="Aún no hay reportes en el semestre activo">Aparecerán aquí cuando los docentes envíen entregables.</Vacio>}
+              vacio={hayMes ? undefined : <Vacio titulo="Aún no hay reportes en este semestre">Aparecerán aquí cuando los docentes envíen entregables.</Vacio>}
               tabla={{ cabeceras: ["Mes", "Aprobados", "Observados", "Pendientes", "Total"], filas: (data.por_mes ?? []).map((m) => [m.mes, m.aprobados, m.observados, m.pendientes, m.total]) }}
             >
               <ColumnasAgrupadas categorias={categoriasMes} max={maxMes} unidad="" etiqueta="Reportes por mes: aprobados, observados y pendientes" alto={200} />
@@ -353,7 +364,7 @@ export default function ReportsMetrics() {
             <div className="b2-ch-col">
               <Figura
                 pregunta="¿Cómo se reparte la revisión?"
-                nota="Todos los reportes registrados."
+                nota="Reportes del semestre."
                 tabla={{ cabeceras: ["Estado", "Reportes"], filas: [["Aprobados", r?.aprobados ?? 0], ["Pendientes de revisión", r?.pendientes ?? 0], ["Con observaciones", r?.con_observaciones ?? 0]] }}
               >
                 <ApiladaH etiqueta="Estado de la revisión" segmentos={[
@@ -398,10 +409,6 @@ export default function ReportsMetrics() {
             <h2>¿Cómo cumple cada grupo?</h2>
             <p>Reportado, aprobado y esperado a la fecha por grupo de matriz. Solo se dibujan los grupos con docentes; los demás quedan en la tabla de datos.</p>
             <Barra contador={`${gruposVisibles.length} ${gruposVisibles.length === 1 ? "grupo" : "grupos"}`}>
-              <Filtro value={semFiltro} onChange={setSemFiltro} etiqueta="Filtrar por semestre" ancho={190}>
-                <option value="">Todos los semestres</option>
-                {opcionesSem.map((s) => <option key={s} value={s}>{s}{s === semActivo ? " (activo)" : ""}</option>)}
-              </Filtro>
               <label className="b2-chk b2-ana-met-vacios">
                 <input type="checkbox" checked={conVacios} onChange={(e) => setConVacios(e.target.checked)} />
                 Incluir grupos sin docentes{ocultos > 0 ? ` (${ocultos})` : ""}
@@ -430,7 +437,7 @@ export default function ReportsMetrics() {
                 filas={gruposConDocentes.map((g) => ({
                   id: g.grupo_id,
                   etiqueta: g.grupo_nombre,
-                  sub: `${semDe[g.grupo_id] ?? "—"} · ${g.tipo_docente === "NUEVO" ? "Nuevo" : "Antiguo"}`,
+                  sub: `${g.semestre ?? "—"} · ${g.tipo_docente === "NUEVO" ? "Nuevo" : "Antiguo"}`,
                   rep: g.porcentaje,
                   apr: g.porcentaje_aprobado,
                   esp: g.porcentaje_esperado,
@@ -451,7 +458,7 @@ export default function ReportsMetrics() {
               vacio={<Vacio titulo="Sin grupos con matriz">Cuando existan grupos con docentes y entregables se mostrará su cumplimiento.</Vacio>}
               filaMovil={(g) => ({
                 titulo: g.grupo_nombre,
-                lineas: [`${semDe[g.grupo_id] ?? "—"} · ${g.tipo_docente === "NUEVO" ? "Nuevo" : "Antiguo"} · ${n0(g.total_docentes)} docentes`, g.total_docentes > 0 ? `Reportado ${pct(g.porcentaje)} · Aprobado ${pct(g.porcentaje_aprobado)} · Esperado ${pct(g.porcentaje_esperado)}` : "Sin docentes asignados"],
+                lineas: [`${g.semestre ?? "—"} · ${g.tipo_docente === "NUEVO" ? "Nuevo" : "Antiguo"} · ${n0(g.total_docentes)} docentes`, g.total_docentes > 0 ? `Reportado ${pct(g.porcentaje)} · Aprobado ${pct(g.porcentaje_aprobado)} · Esperado ${pct(g.porcentaje_esperado)}` : "Sin docentes asignados"],
                 lado: g.total_docentes > 0 ? <b>{pct(g.porcentaje)}</b> : <Tag>Sin docentes</Tag>,
               })}
             />

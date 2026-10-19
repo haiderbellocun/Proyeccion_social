@@ -195,20 +195,12 @@ try {
       ok(`avance inspector «${txt}» → ${esp}`, (await ruta(p)).startsWith(esp), await ruta(p));
     }
 
-    // — «Todos los semestres»: docente sin grupo/matriz —
+    // — un solo semestre a la vez (Bloque 2): sin «Todos los semestres»; sin parámetro el backend usa el semestre activo —
     await irA(p, "/admin/avance");
-    await selValor(p, "Semestre", ""); await esperar(p, `document.querySelectorAll('.b2-ana [role=table] .b2-tabla-r').length>${docs.length}`, "más docentes", 8000); await pausa(500);
+    ok("avance: el selector de semestre no ofrece «Todos los semestres» (mezclaría periodos)", await E(p, `const s=document.querySelector('select[aria-label="Semestre"]'); return !!s && s.value===${JSON.stringify(SEM)} && ![...s.options].some(o=>/Todos los semestres/.test(o.textContent)||o.value==='')`));
     const Tt = (await api(p, "/admin/avance-consolidado")).d;
-    t = await filasTabla(p, "Avance por docente");
-    const sg = Tt.docentes.filter((d) => d.grupo_id == null);
-    ok(`avance «Todos los semestres»: ${Tt.docentes.length} docentes (incluye ${sg.length} sin grupo/matriz)`, t.filas.length === Tt.docentes.length, `${t.filas.length}`);
-    if (sg.length) {
-      const fl = t.filas.find((f) => f[0].startsWith(sg[0].nombre));
-      ok(`avance docente sin matriz (${sg[0].nombre}): estado «Sin grupo» y bala «Sin matriz»`, !!fl && fl[t.cabeceras.indexOf("Estado")] === "Sin grupo" && fl.join(" ").includes("Sin matriz"), JSON.stringify(fl));
-      ok("avance: chip «Sin grupo o sin matriz» cuenta a los docentes sin matriz", await E(p, `return [...document.querySelectorAll('.b2-chips button')].some(b=>b.textContent.includes('Sin grupo o sin matriz')&&b.textContent.includes(${JSON.stringify(String(sg.length))}))`));
-      const Kt = await leerKpis(p, 'section[aria-label="Indicadores del consolidado"] dl');
-      ok("avance «Todos los semestres»: indicadores = totales de la API", Kt?.["Docentes"] === n0(Tt.totales.docentes) && Kt?.["Reportado prom."] === pc(Tt.totales.promedio_global) && Kt?.["Aprobado prom."] === pc(Tt.totales.promedio_aprobado), JSON.stringify(Kt));
-    }
+    ok(`avance sin parámetro = semestre activo ${SEM}: ${docs.length} docentes, todos con grupo del semestre`, Tt.alcance?.semestre === SEM && Tt.alcance?.origen === "semestre_activo" && Tt.docentes.length === docs.length && Tt.docentes.every((d) => d.grupo_id != null), `${Tt.alcance?.semestre} ${Tt.docentes.length}`);
+    ok("avance: la API no devuelve un consolidado mezclado (los docentes sin grupo se informan en alcance, no en la tabla)", typeof Tt.alcance?.docentes_sin_grupo === "number" && Tt.totales.docentes === Tt.docentes.length);
     // — semestre vacío —
     await selValor(p, "Semestre", SEM2); await pausa(1500); await cargaAna(p);
     const A2 = (await api(p, `/admin/avance-consolidado?semestre=${SEM2}`)).d;
@@ -305,9 +297,8 @@ try {
   await seccion(p, "metricas", "Reportes y métricas", async () => {
     await irA(p, "/admin/reportes");
     const M = (await api(p, "/admin/metricas")).d;
-    const GM = (await api(p, "/admin/grupos-matriz")).d.grupos;
-    const semDe = Object.fromEntries(GM.map((g) => [g.id, g.semestre]));
-    ok("métricas: título «Reportes y métricas» y nota de alcance", await E(p, "return document.querySelector('.b2-ana h1')?.textContent.trim()==='Reportes y métricas' && /semestre activo/.test(document.querySelector('.b2-aviso-sem')?.textContent||'')"));
+    ok("métricas: título «Reportes y métricas» y nota de alcance con el semestre consultado", await E(p, `return document.querySelector('.b2-ana h1')?.textContent.trim()==='Reportes y métricas' && /corresponden al semestre ${SEM} \\(activo\\)/.test(document.querySelector('.b2-aviso-sem')?.textContent||'')`));
+    ok("métricas: la API acota al semestre activo y todos sus grupos son de ese semestre", M.alcance?.semestre === SEM && M.por_grupo.length > 0 && M.por_grupo.every((g) => g.semestre === SEM), `${M.alcance?.semestre}`);
     const r = M.resumen;
     const K = await leerKpis(p, ".b2-ana .b2-inds");
     ok(`métricas indicadores = API (${r.total_reportes}/${r.aprobados}/${r.pendientes}/${r.con_observaciones}/${pc(r.porcentaje_aprobacion)})`, K?.["Total de reportes"] === n0(r.total_reportes) && K?.["Aprobados"] === n0(r.aprobados) && K?.["Pendientes de revisión"] === n0(r.pendientes) && K?.["Con observaciones"] === n0(r.con_observaciones) && K?.["% de aprobación"] === pc(r.porcentaje_aprobacion), JSON.stringify(K));
@@ -322,22 +313,38 @@ try {
     const futuro = (mes) => { const idx = MESES.indexOf(mes.toLowerCase()); const [yi, mi] = cal.fi.slice(0, 7).split("-").map(Number); const [yf, mf] = cal.ff.slice(0, 7).split("-").map(Number); const c = []; for (let y = yi, m = mi; y < yf || (y === yf && m <= mf); m++) { if (m > 12) { m = 1; y++; } if (m - 1 === idx) c.push({ y, m }); if (y === yf && m === mf) break; } return c.length === 1 && `${c[0].y}-${String(c[0].m).padStart(2, "0")}-01` > hoy; };
     ok("métricas por mes: solo los meses cuyo primer día es posterior a hoy se atenúan (Noviembre y Diciembre en el semestre activo)", cats.every((c) => c.futuro === futuro(c.mes)), cats.map((c) => `${c.mes}:${c.futuro}`).join(" "));
     // por grupo (semestre activo por defecto)
-    const conDocs = (s) => M.por_grupo.filter((g) => (!s || semDe[g.grupo_id] === s) && g.total_docentes > 0);
+    const conDocs = (s) => M.por_grupo.filter((g) => (!s || g.semestre === s) && g.total_docentes > 0);
     let bala = await imgs(p, 'ul[aria-label="Cumplimiento por grupo"] .b2-bl');
     ok(`métricas grupos (semestre ${SEM}): ${conDocs(SEM).length} grupos con docentes, valores = API`, bala.length === conDocs(SEM).length && conDocs(SEM).every((g) => bala.includes(`${g.grupo_nombre}: reportado ${pc(g.porcentaje)}, aprobado ${pc(g.porcentaje_aprobado)}, esperado ${pc(g.porcentaje_esperado)}`)), bala[0]);
     ok("métricas grupos: el filtro de semestre parte del semestre activo", (await valorSel(p, "Filtrar por semestre")) === SEM);
     const lab = (s) => E(p, "return document.querySelector('.b2-ana-met-vacios')?.innerText.trim()");
-    const ocultos = (s) => M.por_grupo.filter((g) => (!s || semDe[g.grupo_id] === s) && g.total_docentes === 0).length;
+    const ocultos = (s) => M.por_grupo.filter((g) => (!s || g.semestre === s) && g.total_docentes === 0).length;
     ok(`métricas grupos: «Incluir grupos sin docentes» muestra el conteo de ocultos (${ocultos(SEM)})`, (await lab()) === `Incluir grupos sin docentes${ocultos(SEM) ? ` (${ocultos(SEM)})` : ""}`, await lab());
-    await selValor(p, "Filtrar por semestre", ""); await pausa(600);
-    ok(`métricas grupos «Todos los semestres»: ocultos = ${ocultos("")} (grupos sin docentes de todos los semestres)`, (await lab()) === `Incluir grupos sin docentes${ocultos("") ? ` (${ocultos("")})` : ""}`, await lab());
-    await selValor(p, "Filtrar por semestre", SEM2); await pausa(600);
-    ok(`métricas grupos ${SEM2}: ningún grupo con docentes → estado vacío explicativo`, conDocs(SEM2).length === 0 ? await E(p, "return /Ningún grupo de este semestre tiene docentes/.test(document.querySelector('.b2-ana').innerText)") : true, `${conDocs(SEM2).length} con docentes`);
+    ok("métricas: el selector de semestre no ofrece «Todos los semestres»", await E(p, `const s=document.querySelector('select[aria-label="Filtrar por semestre"]'); return !!s && ![...s.options].some(o=>/Todos los semestres/.test(o.textContent)||o.value==='')`));
+    // Otro semestre: la página vuelve a pedir /admin/metricas?semestre=… y todo el contenido pertenece a ese periodo.
+    const M2 = (await api(p, `/admin/metricas?semestre=${SEM2}`)).d;
+    await selValor(p, "Filtrar por semestre", SEM2); await esperar(p, `new RegExp('corresponden al semestre ${SEM2}').test(document.querySelector('.b2-aviso-sem')?.textContent||'')`, "métricas del otro semestre", 8000); await pausa(700);
+    ok(`métricas ${SEM2}: la API devuelve solo grupos del semestre pedido (${M2.por_grupo.length}) y el conteo de ocultos de la pantalla coincide`, M2.alcance?.semestre === SEM2 && M2.por_grupo.every((g) => g.semestre === SEM2) && (await lab()) === `Incluir grupos sin docentes${M2.por_grupo.length ? ` (${M2.por_grupo.length})` : ""}`, await lab());
+    const K2s = await leerKpis(p, ".b2-ana .b2-inds");
+    ok(`métricas ${SEM2}: los indicadores son los de ese semestre (${M2.resumen.total_reportes} reportes), sin valores heredados del activo`, K2s?.["Total de reportes"] === n0(M2.resumen.total_reportes) && K2s?.["% de aprobación"] === pc(M2.resumen.porcentaje_aprobacion) && M2.resumen.total_reportes !== r.total_reportes, JSON.stringify(K2s));
+    ok(`métricas ${SEM2}: ningún grupo con docentes → estado vacío explicativo`, M2.por_grupo.every((g) => g.total_docentes === 0) ? await E(p, "return /Ningún grupo de este semestre tiene docentes/.test(document.querySelector('.b2-ana').innerText)") : true, `${M2.por_grupo.filter((g) => g.total_docentes > 0).length} con docentes`);
     await E(p, "const c=document.querySelector('.b2-ana-met-vacios input'); c.click()"); await pausa(700);
     let tg = await filasTabla(p, "Cumplimiento por grupo de matriz");
-    const delSem2 = M.por_grupo.filter((g) => semDe[g.grupo_id] === SEM2);
-    ok(`métricas «Incluir grupos sin docentes» en ${SEM2}: ${delSem2.length} filas, todas rotuladas con su semestre del cruce con grupos-matriz`, tg.filas.length === delSem2.length && tg.filas.every((f) => f[tg.cabeceras.indexOf("Semestre")] === SEM2), `${tg.filas.length} filas`);
-    await E(p, "const c=document.querySelector('.b2-ana-met-vacios input'); c.click()"); await selValor(p, "Filtrar por semestre", SEM); await pausa(500);
+    ok(`métricas «Incluir grupos sin docentes» en ${SEM2}: ${M2.por_grupo.length} filas, todas del semestre ${SEM2}`, tg.filas.length === M2.por_grupo.length && tg.filas.every((f) => f[tg.cabeceras.indexOf("Semestre")] === SEM2), `${tg.filas.length} filas`);
+    await E(p, "const c=document.querySelector('.b2-ana-met-vacios input'); c.click()"); await selValor(p, "Filtrar por semestre", SEM); await esperar(p, `new RegExp('corresponden al semestre ${SEM} ').test(document.querySelector('.b2-aviso-sem')?.textContent||'')`, "métricas del activo", 8000); await pausa(600);
+    const Kvuelta = await leerKpis(p, ".b2-ana .b2-inds");
+    ok(`métricas: al volver a ${SEM} los indicadores vuelven a ser los del semestre activo`, Kvuelta?.["Total de reportes"] === n0(r.total_reportes), JSON.stringify(Kvuelta));
+    // cambio rápido de semestre con la respuesta del primero retrasada: no debe sobrescribir al segundo
+    await irA(p, "/admin/reportes");
+    await selValor(p, "Filtrar por semestre", SEM2); await esperar(p, `new RegExp('corresponden al semestre ${SEM2}').test(document.querySelector('.b2-aviso-sem')?.textContent||'')`, "otro semestre", 8000); await pausa(500);
+    await instalarFetch(p, [{ incluye: `/admin/metricas?semestre=${SEM}`, retraso: 2800 }]);
+    await selValor(p, "Filtrar por semestre", SEM); await pausa(250);
+    await selValor(p, "Filtrar por semestre", SEM2);
+    await pausa(4500);
+    const K3 = await leerKpis(p, ".b2-ana .b2-inds");
+    ok(`métricas respuesta tardía: tras volver a ${SEM2} la respuesta atrasada de ${SEM} no sobrescribe los indicadores ni el aviso`, K3?.["Total de reportes"] === n0(M2.resumen.total_reportes) && (await valorSel(p, "Filtrar por semestre")) === SEM2 && await E(p, `return new RegExp('corresponden al semestre ${SEM2}').test(document.querySelector('.b2-aviso-sem')?.textContent||'')`), JSON.stringify(K3));
+    await instalarFetch(p, []);
+    await irA(p, "/admin/reportes");
     tg = await filasTabla(p, "Cumplimiento por grupo de matriz");
     const g0 = conDocs(SEM)[0];
     const fg = tg.filas.find((f) => f[0] === g0.grupo_nombre);
@@ -374,9 +381,9 @@ try {
     await irA(p, "/admin/reportes");
     await E(p, "document.querySelector('[role=table][aria-label=\"Cumplimiento por grupo de matriz\"] .b2-tabla-r').click()"); await pausa(700);
     const tg2 = await inspTexto(p);
-    ok("métricas inspector de grupo: nombre, semestre y avance = API", tg2.includes(g0.grupo_nombre) && tg2.includes(`Semestre ${semDe[g0.grupo_id]}`) && tg2.includes(pc(g0.porcentaje)), tg2.slice(0, 220));
+    ok("métricas inspector de grupo: nombre, semestre y avance = API", tg2.includes(g0.grupo_nombre) && tg2.includes(`Semestre ${g0.semestre}`) && tg2.includes(pc(g0.porcentaje)), tg2.slice(0, 220));
     await E(p, "[...document.querySelectorAll('aside.b2-insp[data-open=\"true\"] .b2-btn')].find(x=>x.textContent.trim()==='Ver plantillas del grupo').click()"); await pausa(1000);
-    ok("métricas inspector de grupo «Ver plantillas del grupo» con semestre y grupo", (await ruta(p)).startsWith(`/admin/sistema?tab=plantillas&semestre=${semDe[g0.grupo_id]}&grupo=${g0.grupo_id}`), await ruta(p));
+    ok("métricas inspector de grupo «Ver plantillas del grupo» con semestre y grupo", (await ruta(p)).startsWith(`/admin/sistema?tab=plantillas&semestre=${g0.semestre}&grupo=${g0.grupo_id}`), await ruta(p));
     // actualizar
     await irA(p, "/admin/reportes");
     await clic(p, "Actualizar"); await pausa(1500); await cargaAna(p);

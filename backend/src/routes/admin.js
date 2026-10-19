@@ -20,6 +20,13 @@ import {
 } from "../services/matrizService.js";
 import { aplicarRevisionAdmin, reabrirEntregable } from "../services/entregableWorkflowService.js";
 import {
+  construirAlcance,
+  contarProyectosActivos,
+  cteEntregablesDelSemestre,
+  leerSemestreParam,
+  resolverSemestre,
+} from "../services/semestreAlcance.js";
+import {
   ENTREGABLE_CON_AVANCE_SQL,
   LOCK_ADMINISTRADORES,
   bloquearHistoriaDeProyecto,
@@ -150,50 +157,53 @@ function validateSemesterFields(body) {
   return { codigo, fechaInicio, fechaFin, numeroSemanas };
 }
 
-// Dashboard admin (expuesto: stats, progreso_semanal, cumplimiento_por_programa, docentes_recientes)
-router.get("/dashboard", async (_req, res) => {
+// Dashboard admin (expuesto: stats, progreso_semanal, cumplimiento_por_programa, docentes_recientes).
+// Bloque 2 (CR-01): TODO el panel mide un único semestre: `?semestre=AAAAA|AAAAB` o, sin parámetro, el semestre activo. Las
+// tarjetas, el semáforo, el progreso semanal, los programas y los docentes salen del mismo periodo (ver semestreAlcance.js).
+router.get("/dashboard", async (req, res) => {
   const client = await pool.connect();
   try {
     const hoy = hoyBogota();
-    const semesterR = await client.query(`
-      SELECT codigo, fecha_inicio, fecha_fin, numero_semanas
-      FROM semestres
-      WHERE activo = TRUE
-      ORDER BY fecha_inicio DESC
-      LIMIT 1
-    `);
-    const calendarioActivo = normalizarCalendario(semesterR.rows[0] || null);
-    const docentes = await loadMatrixForDocentes(client, { hoy });
-    const proyectosActivosR = await client.query(
-      `SELECT COUNT(*)::int AS total FROM proyectos WHERE estado = 'en_ejecucion'`
-    );
+    const semestre = await resolverSemestre(client, leerSemestreParam(req.query));
+    const calendarioActivo = semestre.calendario;
+    const docentes = semestre.codigo ? await loadMatrixForDocentes(client, { semestre: semestre.codigo, hoy }) : [];
+    const proyectosActivos = await contarProyectosActivos(client, semestre.fila);
 
-    // Conteos globales de entregables registrados (incluye los que no pertenecen a una plantilla).
-    const reportesR = await client.query(`
-      SELECT
-        COUNT(*) FILTER (
-          WHERE estado_revision = 'aprobado'
-             OR (COALESCE(completado, false) AND estado_revision = 'enviado')
-        )::int AS enviados,
-        COUNT(*) FILTER (WHERE COALESCE(completado, false) AND estado_revision = 'enviado')::int AS pendientes_revision,
-        COUNT(*) FILTER (WHERE estado_revision = 'aprobado')::int AS aprobados,
-        COUNT(*) FILTER (WHERE estado_revision = 'observado')::int AS observados
-      FROM proyecto_entregables
-    `);
+    // Conteos de entregables registrados en el semestre (incluye los que no pertenecen a una plantilla; ver alcance.criterio).
+    const params = [semestre.codigo];
+    const reportesR = semestre.codigo
+      ? await client.query(
+          `WITH ${cteEntregablesDelSemestre(1)}
+           SELECT
+             COUNT(*)::int AS total,
+             COUNT(*) FILTER (
+               WHERE estado_revision = 'aprobado'
+                  OR (COALESCE(completado, false) AND estado_revision = 'enviado')
+             )::int AS enviados,
+             COUNT(*) FILTER (WHERE COALESCE(completado, false) AND estado_revision = 'enviado')::int AS pendientes_revision,
+             COUNT(*) FILTER (WHERE estado_revision = 'aprobado')::int AS aprobados,
+             COUNT(*) FILTER (WHERE estado_revision = 'observado')::int AS observados
+           FROM ent`,
+          params
+        )
+      : { rows: [{}] };
 
-    const semanaRows = await client.query(`
-      SELECT
-        s.numero AS semana,
-        COUNT(e.id) FILTER (
-          WHERE e.estado_revision = 'aprobado'
-             OR (COALESCE(e.completado, false) AND e.estado_revision = 'enviado')
-        )::int AS enviados,
-        COUNT(e.id) FILTER (WHERE e.estado_revision = 'aprobado')::int AS aprobados
-      FROM proyecto_semanas s
-      LEFT JOIN proyecto_entregables e ON e.proyecto_semana_id = s.id
-      GROUP BY s.numero
-      ORDER BY s.numero
-    `);
+    const semanaRows = semestre.codigo
+      ? await client.query(
+          `WITH ${cteEntregablesDelSemestre(1)}
+           SELECT
+             semana,
+             COUNT(id) FILTER (
+               WHERE estado_revision = 'aprobado'
+                  OR (COALESCE(completado, false) AND estado_revision = 'enviado')
+             )::int AS enviados,
+             COUNT(id) FILTER (WHERE estado_revision = 'aprobado')::int AS aprobados
+           FROM ent
+           GROUP BY semana
+           ORDER BY semana`,
+          params
+        )
+      : { rows: [] };
     const semanaMap = new Map();
     for (const r of semanaRows.rows || []) {
       semanaMap.set(Number(r.semana), {
@@ -268,12 +278,15 @@ router.get("/dashboard", async (_req, res) => {
     }));
 
     const conPlantilla = porDocente.filter((d) => d.items.length > 0);
+    // Sin docentes con matriz el promedio no es calculable: null (no 0).
     const promedio = (campo) =>
-      conPlantilla.length ? round1(conPlantilla.reduce((s, d) => s + d.m[campo], 0) / conPlantilla.length) : 0;
+      conPlantilla.length ? round1(conPlantilla.reduce((s, d) => s + d.m[campo], 0) / conPlantilla.length) : null;
     const docentes_atrasados = docentes_recientes.filter((d) => d.estado === "atrasado").length;
     const rep0 = reportesR.rows[0] || {};
+    const alcance = await construirAlcance(client, semestre, { hoy, vacio: docentes.length === 0 && Number(rep0.total ?? 0) === 0 });
 
     res.json({
+      alcance,
       stats: {
         total_docentes: docentes.length,
         reportes_enviados: Number(rep0.enviados ?? 0),
@@ -281,7 +294,7 @@ router.get("/dashboard", async (_req, res) => {
         reportes_aprobados: Number(rep0.aprobados ?? 0),
         reportes_observados: Number(rep0.observados ?? 0),
         docentes_atrasados,
-        proyectos_activos: proyectosActivosR.rows[0]?.total ?? 0,
+        proyectos_activos: proyectosActivos,
         avance_reportado_promedio: promedio("pct_reportado"),
         avance_aprobado_promedio: promedio("pct_aprobado"),
         avance_esperado_promedio: promedio("pct_esperado"),
@@ -296,7 +309,7 @@ router.get("/dashboard", async (_req, res) => {
       cumplimiento_por_programa,
       docentes_recientes,
       docentes: docentes.length,
-      proyectos_activos: proyectosActivosR.rows[0]?.total,
+      proyectos_activos: proyectosActivos,
       reportes: { enviados: Number(rep0.enviados ?? 0), aprobados: Number(rep0.aprobados ?? 0) },
     });
   } catch (error) {
@@ -497,71 +510,73 @@ router.post("/notificaciones", async (req, res) => {
   }
 });
 
-router.get("/metricas", async (_req, res) => {
+// Métricas de reportes. Bloque 2 (CR-01): mide UN semestre (`?semestre=` o, sin parámetro, el activo). Los totales, los meses,
+// los grupos, las regionales y el ranking salen de la misma población; no se calcula nada global para filtrar después.
+router.get("/metricas", async (req, res) => {
   const client = await pool.connect();
   try {
-    const resumenR = await client.query(`
-      SELECT
-        COUNT(*) FILTER (WHERE COALESCE(completado, false) = true)::int AS total_reportes,
-        COUNT(*) FILTER (
-          WHERE COALESCE(completado, false) = true
-            AND COALESCE(estado_revision, 'enviado') = 'aprobado'
-        )::int AS aprobados,
-        COUNT(*) FILTER (
-          WHERE COALESCE(completado, false) = true
-            AND COALESCE(estado_revision, 'enviado') = 'enviado'
-        )::int AS pendientes,
-        COUNT(*) FILTER (
-          WHERE COALESCE(completado, false) = true
-            AND COALESCE(estado_revision, 'enviado') = 'observado'
-        )::int AS con_observaciones
-      FROM proyecto_entregables
-    `);
+    const hoy = hoyBogota();
+    const semestre = await resolverSemestre(client, leerSemestreParam(req.query));
+    const params = [semestre.codigo];
+
+    const resumenR = semestre.codigo
+      ? await client.query(
+          `WITH ${cteEntregablesDelSemestre(1)}
+           SELECT
+             COUNT(*) FILTER (WHERE COALESCE(completado, false) = true)::int AS total_reportes,
+             COUNT(*) FILTER (
+               WHERE COALESCE(completado, false) = true
+                 AND COALESCE(estado_revision, 'enviado') = 'aprobado'
+             )::int AS aprobados,
+             COUNT(*) FILTER (
+               WHERE COALESCE(completado, false) = true
+                 AND COALESCE(estado_revision, 'enviado') = 'enviado'
+             )::int AS pendientes,
+             COUNT(*) FILTER (
+               WHERE COALESCE(completado, false) = true
+                 AND COALESCE(estado_revision, 'enviado') = 'observado'
+             )::int AS con_observaciones,
+             COUNT(*)::int AS entregables_registrados
+           FROM ent`,
+          params
+        )
+      : { rows: [{}] };
 
     const row0 = resumenR.rows[0] || {};
     const totalReportes = Number(row0.total_reportes || 0);
     const aprobados = Number(row0.aprobados || 0);
     const pendientes = Number(row0.pendientes || 0);
     const observados = Number(row0.con_observaciones || 0);
-    const porcentaje_aprobacion =
-      totalReportes > 0 ? round1((aprobados / totalReportes) * 100) : 0;
+    // Sin reportes el porcentaje de aprobación no es calculable: null (no 0).
+    const porcentaje_aprobacion = totalReportes > 0 ? round1((aprobados / totalReportes) * 100) : null;
 
-    const porMesR = await client.query(`
-      WITH periodo AS (
-        SELECT fecha_inicio, fecha_fin
-        FROM semestres
-        WHERE activo = TRUE
-        ORDER BY fecha_inicio DESC
-        LIMIT 1
-      ),
-      meses AS (
-        SELECT generate_series(
-          date_trunc('month', fecha_inicio),
-          date_trunc('month', fecha_fin),
-          INTERVAL '1 month'
-        )::date AS mes_inicio
-        FROM periodo
-      )
-      SELECT
-        m.mes_inicio,
-        COUNT(e.id)::int AS total,
-        COUNT(e.id) FILTER (
-          WHERE COALESCE(e.estado_revision, 'enviado') = 'aprobado'
-        )::int AS aprobados,
-        COUNT(e.id) FILTER (
-          WHERE COALESCE(e.estado_revision, 'enviado') = 'observado'
-        )::int AS observados,
-        COUNT(e.id) FILTER (
-          WHERE COALESCE(e.estado_revision, 'enviado') = 'enviado'
-        )::int AS pendientes
-      FROM meses m
-      LEFT JOIN proyecto_entregables e
-        ON COALESCE(e.completado, false) = true
-       AND COALESCE(e.fecha_real_entrega, e.fecha_completado) >= m.mes_inicio
-       AND COALESCE(e.fecha_real_entrega, e.fecha_completado) < m.mes_inicio + INTERVAL '1 month'
-      GROUP BY m.mes_inicio
-      ORDER BY m.mes_inicio
-    `);
+    const porMesR = semestre.codigo
+      ? await client.query(
+          `WITH ${cteEntregablesDelSemestre(1)},
+           meses AS (
+             SELECT generate_series(
+               date_trunc('month', fecha_inicio),
+               date_trunc('month', fecha_fin),
+               INTERVAL '1 month'
+             )::date AS mes_inicio
+             FROM sem
+           )
+           SELECT
+             m.mes_inicio,
+             COUNT(e.id)::int AS total,
+             COUNT(e.id) FILTER (WHERE COALESCE(e.estado_revision, 'enviado') = 'aprobado')::int AS aprobados,
+             COUNT(e.id) FILTER (WHERE COALESCE(e.estado_revision, 'enviado') = 'observado')::int AS observados,
+             COUNT(e.id) FILTER (WHERE COALESCE(e.estado_revision, 'enviado') = 'enviado')::int AS pendientes
+           FROM meses m
+           LEFT JOIN ent e
+             ON COALESCE(e.completado, false) = true
+            AND COALESCE(e.fecha_real_entrega, e.fecha_completado) >= m.mes_inicio
+            AND COALESCE(e.fecha_real_entrega, e.fecha_completado) < m.mes_inicio + INTERVAL '1 month'
+           GROUP BY m.mes_inicio
+           ORDER BY m.mes_inicio`,
+          params
+        )
+      : { rows: [] };
 
     const por_mes = (porMesR.rows || []).map((r) => ({
       mes: monthLabelFromDate(r.mes_inicio),
@@ -571,35 +586,39 @@ router.get("/metricas", async (_req, res) => {
       pendientes: Number(r.pendientes || 0),
     }));
 
-    const hoy = hoyBogota();
-    const docentesMatriz = await loadMatrixForDocentes(client, { hoy });
+    const docentesMatriz = semestre.codigo ? await loadMatrixForDocentes(client, { semestre: semestre.codigo, hoy }) : [];
     const porDocente = docentesMatriz
       .map(({ docente, items }) => ({ docente, items, m: calcularMetricas(items, hoy) }))
       .filter((d) => d.items.length > 0);
 
-    const gruposR = await client.query(`
-      SELECT id AS grupo_id, nombre AS grupo_nombre, COALESCE(tipo_docente, 'ANTIGUO') AS tipo_docente
-      FROM grupos_matriz
-      ORDER BY nombre
-    `);
+    const gruposR = semestre.codigo
+      ? await client.query(
+          `SELECT id AS grupo_id, nombre AS grupo_nombre, COALESCE(tipo_docente, 'ANTIGUO') AS tipo_docente, semestre
+           FROM grupos_matriz
+           WHERE semestre = $1
+           ORDER BY nombre`,
+          params
+        )
+      : { rows: [] };
     const por_grupo = (gruposR.rows || []).map((g) => {
       const miembros = porDocente.filter((d) => d.docente.grupo_id === Number(g.grupo_id));
       const total = miembros.reduce((s, d) => s + d.m.total, 0);
       const reportados = miembros.reduce((s, d) => s + d.m.reportados, 0);
-      const aprobados = miembros.reduce((s, d) => s + d.m.aprobados, 0);
+      const aprobadosG = miembros.reduce((s, d) => s + d.m.aprobados, 0);
       const esperado = miembros.reduce((s, d) => s + d.m.esperado, 0);
       return {
         grupo_id: Number(g.grupo_id),
         grupo_nombre: g.grupo_nombre || "",
+        semestre: g.semestre || null,
         tipo_docente: g.tipo_docente === "NUEVO" ? "NUEVO" : "ANTIGUO",
         total_docentes: miembros.length,
         entregables_completados: reportados, // alias histórico = reportados
         entregables_reportados: reportados,
-        entregables_aprobados: aprobados,
+        entregables_aprobados: aprobadosG,
         entregables_esperados: esperado,
         entregables_total: total,
         porcentaje: total > 0 ? round1((reportados / total) * 100) : 0,
-        porcentaje_aprobado: total > 0 ? round1((aprobados / total) * 100) : 0,
+        porcentaje_aprobado: total > 0 ? round1((aprobadosG / total) * 100) : 0,
         porcentaje_esperado: total > 0 ? round1((esperado / total) * 100) : 0,
       };
     });
@@ -645,7 +664,12 @@ router.get("/metricas", async (_req, res) => {
         semaforo: m.semaforo,
       }));
 
+    const alcance = await construirAlcance(client, semestre, {
+      hoy,
+      vacio: docentesMatriz.length === 0 && Number(row0.entregables_registrados ?? 0) === 0,
+    });
     res.json({
+      alcance,
       resumen: {
         total_reportes: totalReportes,
         aprobados,
@@ -659,8 +683,7 @@ router.get("/metricas", async (_req, res) => {
       top_atrasados,
     });
   } catch (error) {
-    console.error("Error en /admin/metricas", error);
-    res.status(500).json({ error: "Error interno" });
+    responderError(res, error, "Error en /admin/metricas");
   } finally {
     client.release();
   }
@@ -4286,18 +4309,20 @@ router.delete(
   }
 );
 
+// Bloque 2 (CR-01): un único semestre (`?semestre=` o, sin parámetro, el activo); `grupo_id` inválido responde 400.
 router.get("/avance-consolidado", async (req, res) => {
-  const semestreQ = req.query.semestre;
   const grupoIdQ = req.query.grupo_id;
-  const semestre =
-    semestreQ != null && String(semestreQ).trim() !== "" ? String(semestreQ).trim() : null;
-  const grupoIdNum =
-    grupoIdQ != null && String(grupoIdQ).trim() !== "" ? Number(String(grupoIdQ).trim()) : null;
-  const grupoId = grupoIdNum != null && !Number.isNaN(grupoIdNum) ? grupoIdNum : null;
-
   try {
+    let grupoId = null;
+    if (grupoIdQ != null && String(grupoIdQ).trim() !== "") {
+      grupoId = Number(String(grupoIdQ).trim());
+      if (!Number.isInteger(grupoId) || grupoId <= 0) {
+        throw new ErrorNegocio(400, "GRUPO_INVALIDO", "grupo_id debe ser un entero positivo.");
+      }
+    }
     const hoy = hoyBogota();
-    const docentes = await loadMatrixForDocentes(pool, { semestre, grupoId, hoy });
+    const semestre = await resolverSemestre(pool, leerSemestreParam(req.query));
+    const docentes = semestre.codigo ? await loadMatrixForDocentes(pool, { semestre: semestre.codigo, grupoId, hoy }) : [];
 
     const meses = [];
     const docentesPayload = docentes.map(({ docente, calendario, items }) => {
@@ -4354,8 +4379,9 @@ router.get("/avance-consolidado", async (req, res) => {
     });
 
     const n = docentesPayload.length;
+    // Sin población el promedio no es calculable: null (no 0).
     const avg = (arr) =>
-      arr.length === 0 ? 0 : round1(arr.reduce((a, b) => a + b, 0) / arr.length);
+      arr.length === 0 ? null : round1(arr.reduce((a, b) => a + b, 0) / arr.length);
     const conGrupo = docentesPayload.filter((d) => d.total_entregables > 0);
 
     const por_mes = meses.map((mes) => {
@@ -4366,12 +4392,14 @@ router.get("/avance-consolidado", async (req, res) => {
       return { mes, porcentaje: avg(vals) };
     });
 
+    const alcance = await construirAlcance(pool, semestre, { hoy, vacio: n === 0 });
     res.json({
+      alcance,
       meses,
       docentes: docentesPayload,
       totales: {
         docentes: n,
-        promedio_global: n > 0 ? round1(docentesPayload.reduce((s, d) => s + d.avance_global, 0) / n) : 0,
+        promedio_global: n > 0 ? round1(docentesPayload.reduce((s, d) => s + d.avance_global, 0) / n) : null,
         promedio_aprobado: avg(conGrupo.map((d) => d.avance_aprobado)),
         promedio_esperado: avg(conGrupo.map((d) => d.avance_esperado)),
         con_retraso: docentesPayload.filter((d) => d.entregables_vencidos > 0).length,

@@ -319,7 +319,7 @@ export default function AdminDashboard() {
                       <div><dt>Aprobado</dt><dd>{num1(stats?.avance_aprobado_promedio)}</dd><span className="b2-kpi-s">promedio</span></div>
                       <div><dt>En riesgo</dt><dd className={(sem?.rojo ?? 0) > 0 ? "b2-txt-danger" : undefined}>{sem?.rojo ?? "—"}</dd><span className="b2-kpi-s">de {stats?.total_docentes ?? "—"} docentes</span></div>
                     </dl>
-                    <p className="b2-nota">{stats?.proyectos_activos ?? "—"} iniciativas activas · {stats?.total_docentes ?? "—"} docentes registrados</p>
+                    <p className="b2-nota">{stats?.proyectos_activos ?? "—"} iniciativas activas · {stats?.total_docentes ?? "—"} docentes en el semestre</p>
                   </>
                 )}
               </section>

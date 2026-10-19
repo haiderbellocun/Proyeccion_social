@@ -412,7 +412,7 @@ test("los indicadores de la API coinciden con los datos almacenados y entre pant
   const dash = (await api(`/docente/${ctx.d1.id}/dashboard-stats`, tokens.d1)).data;
   assert.equal(dash.stats.completed, m.resumen.reportados);
   assert.equal(dash.indicadores.aprobados, m.resumen.aprobados);
-  const adminDash = (await api(`/admin/dashboard`, tokens.admin)).data;
+  const adminDash = (await api(`/admin/dashboard?semestre=${ctx.semestre}`, tokens.admin)).data;
   const d = adminDash.docentes_recientes.find((x) => x.id === ctx.d1.id);
   assert.equal(d.porcentaje_aprobado, m.resumen.pct_aprobado);
   assert.equal(d.vencidos, m.resumen.vencidos);
