@@ -96,8 +96,15 @@ try {
   for (const u of noDocentesConGrupo) conflictos.push({ tipo: "usuario_no_docente_con_grupo", usuario_id: u.id, rol: u.rol });
   for (const p of lista) if (p.reportes > 0 && reportes.find((r) => r.docente_id === p.docente_id && r.grupo_id === p.grupo_id)?.grupo_activo === false) conflictos.push({ tipo: "grupo_archivado_con_reportes", docente_id: p.docente_id, grupo_id: p.grupo_id, nota: "No es un conflicto: el grupo archivado conserva su historia (la FK impide borrarlo)." });
 
+  // Mismas reglas que docente_grupo_matriz_backfill() (migración fase28): la evidencia NO vigente de un semestre en conflicto no se
+  // asigna; la asignación VIGENTE (dato actual) se inserta siempre.
   const conflictivo = new Set(conflictos.filter((c) => c.tipo === "dos_grupos_en_un_semestre").flatMap((c) => c.grupos.map((g) => clave(c.docente_id, g.grupo_id))));
-  const demostrables = lista.filter((p) => p.prueba.length > 0 && !conflictivo.has(clave(p.docente_id, p.grupo_id)));
+  for (const p of lista) {
+    p.origen = p.vigente ? "vigente_al_migrar" : p.reportes > 0 ? "evidencia_reportes" : "evidencia_excepciones";
+    p.certeza = p.vigente || p.reportes > 0 ? "alta" : "media";
+    p.vigencia = "desconocida"; // desde/hasta NULL: ninguna fecha se inventa
+  }
+  const demostrables = lista.filter((p) => p.prueba.length > 0 && (p.vigente || !conflictivo.has(clave(p.docente_id, p.grupo_id))));
   const soloVigente = demostrables.filter((p) => p.vigente && p.reportes === 0 && p.excepciones === 0);
   const vigenteConReportes = demostrables.filter((p) => p.vigente && (p.reportes > 0 || p.excepciones > 0));
   const historicas = demostrables.filter((p) => !p.vigente);
@@ -122,6 +129,7 @@ try {
     de_las_filas_ya_cubiertas_por_mas_de_una_fuente: demostrables.filter((p) => p.prueba.length > 1).length,
   };
   out.asignaciones = demostrables;
+  out.filas_que_insertaria = demostrables.map((p) => ({ docente_id: p.docente_id, grupo_id: p.grupo_id, semestre: p.semestre, vigente: p.vigente, origen: p.origen, certeza: p.certeza, fuentes: p.prueba, vigencia: p.vigencia }));
   out.conflictos = conflictos;
   out.no_reconstruibles = { docentes_sin_grupo_ni_evidencia: sinEvidencia.map((d) => ({ id: d.id, nombre: d.nombre, estado: d.estado })), semestres_sin_poblacion_demostrable: semestres.filter((s) => !lista.some((p) => p.semestre === s.codigo)).map((s) => s.codigo) };
   out.semestres = semestres.map((s) => ({ ...s, asignaciones_demostrables: demostrables.filter((p) => p.semestre === s.codigo).length }));
@@ -144,7 +152,7 @@ if (json) {
   console.log(`Vista previa del backfill — base ${out.base.d} (solo lectura)`);
   console.log(JSON.stringify(r, null, 2));
   console.log("\nAsignaciones demostrables:");
-  for (const p of out.asignaciones) console.log(`  docente ${p.docente_id} (${p.docente}) → grupo ${p.grupo_id} [${p.semestre}] prueba=${p.prueba.join("+")} reportes=${p.reportes} (aprobados ${p.aprobados}) excepciones=${p.excepciones} eventos=${p.eventos} evidencias=${p.evidencias}${p.vigente ? " VIGENTE" : ""}`);
+  for (const p of out.asignaciones) console.log(`  docente ${p.docente_id} (${p.docente}) → grupo ${p.grupo_id} [${p.semestre}] fuente=${p.prueba.join("+")} certeza=${p.certeza} origen=${p.origen} vigencia=${p.vigencia}${p.vigente ? " VIGENTE" : ""} · reportes=${p.reportes} (aprobados ${p.aprobados}) excepciones=${p.excepciones} eventos=${p.eventos} evidencias=${p.evidencias}`);
   console.log("\nConflictos (requieren decisión humana; no se asignan):", out.conflictos.length ? JSON.stringify(out.conflictos, null, 2) : "ninguno");
   console.log("\nNo reconstruibles:", JSON.stringify(out.no_reconstruibles, null, 2));
   console.log("\nSemestres:", JSON.stringify(out.semestres));

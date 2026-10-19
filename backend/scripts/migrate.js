@@ -38,6 +38,7 @@ const migrationFiles = [
   "fase25_importacion_trazabilidad.sql",
   "fase26_evidencias.sql",
   "fase27_acceso_evidencias.sql",
+  "fase28_docente_grupo_matriz.sql",
 ];
 
 const here = path.dirname(fileURLToPath(import.meta.url));
