@@ -80,7 +80,18 @@ Todas en `proysocial_test`, con datos `TST_H`, comparando el **estado completo**
 | Unitarias del backend | 61 de 61 |
 | Integración existente en `proysocial_dev` | 52 de 52 (más 20 omitidas por la protección) |
 | Integración existente en `proysocial_test` (auth, bloque1, evidencias, importación) | 49 de 49 |
-| E2E de Administración (332) y demás suites de navegador | **No se ejecutaron** (ver §10) |
+| E2E `historicos` (API real en :4000 + interfaz; 54 comprobaciones) | 54 de 54 |
+| E2E Administración | 332 de 332 |
+| E2E Shell/navegación (`regresion-shell`) | 70 OK + 1 esperada (error de consola provocado a propósito) |
+| E2E Matrices/evidencias (`matrices`) | 86 OK + 1 esperada |
+| E2E Revisión de evidencias (`revision-evidencias`) | 61 de 61 |
+| E2E Portal docente (`docente`) | 112 de 112 en la ejecución definitiva (ver nota) |
+
+Notas de ejecución:
+- Las suites se ejecutaron **de forma secuencial** con `e2e/run.mjs` (cierre garantizado de Chrome de pruebas, sin tocar el Chrome personal ni otras aplicaciones). Tras cada suite: 0 procesos huérfanos y sin fixtures residuales.
+- Por memoria muy ajustada, el ejecutor interrumpió suites en intentos anteriores (Administración una vez, Docente dos); cada interrupción dejó, como mucho, un fixture identificable (TSTE5) que se limpió y la BD se comparó con la línea base.
+- Para los dos últimos intentos de `docente` se bajó el umbral de interrupción a 300 MB (`E2E_ABORT_FREE_MB=300`); la memoria libre se mantuvo > 1 GB.
+- En un intento de `docente` hubo **1 FALLA**: «consola sin errores inesperados — Error: dashboard-stats (TeacherDashboard.tsx)». Es el `console.error` del escenario de fallo de red simulado de la propia suite; **no se reprodujo** en la repetición (112/112) y no involucra rutas de históricos. Se registra como observación de estabilidad de la suite (el filtro de consola de `docente.mjs` no excluye ese mensaje de forma determinista); no se modificó la suite.
 
 ## 6. Estado de `proysocial_dev`
 Sin cambios: 5 usuarios, 2 semestres (2026B activo), 18 grupos, 2032 plantillas, 10 proyectos, 33 entregables, 33 evidencias, 57 eventos; sin fixtures. No se recreó ni se borró; solo se leyó y se ejecutó contra ella la integración existente (que crea y limpia sus propios datos).
@@ -93,7 +104,8 @@ Comandos: `npm run test:db:setup` (idempotente) y `npm run test:integration:prot
 ## 8. Compatibilidad con el frontend
 - Todas las pantallas de Administración ya muestran `error` del backend en las operaciones afectadas; solo había un caso genérico (eliminar usuario con 409), corregido. La actualización masiva informa cuántas plantillas con reportes se conservaron.
 - Sin cambios de diseño, vistas ni rutas. La identidad B2 no cambia.
-- **Importante:** el servidor de desarrollo del usuario (PID 856, puerto 4000) sigue ejecutando el código **anterior** hasta que se reinicie (`npm run dev:local`). No se reinició para no interrumpirlo.
+- **Reinicio del backend de desarrollo:** se reinició de forma controlada (PID 856 → 37400, puerto 4000), tras verificar que era el backend de ProySocial y que usa `proysocial_dev`. Ahora ejecuta el código con las protecciones. Los servidores Vite del usuario (5173, 5174) no se tocaron.
+- **Verificación en la API real y en la interfaz:** los 409 `HISTORICO_PROTEGIDO` (plantillas, grupos, semestres, forzado ignorado, edición de plantillas con reportes, docentes con historial) y las operaciones legítimas (inactivar conserva reportes, último administrador, eliminar entidades sin historia) se validaron con la suite `historicos`; la interfaz muestra los mensajes del backend.
 
 ## 9. Cambios de comportamiento a tener presentes
 1. Operaciones que antes se permitían con confirmación ahora devuelven 409 cuando hay historia.
@@ -103,7 +115,13 @@ Comandos: `npm run test:db:setup` (idempotente) y `npm run test:integration:prot
 5. Eliminar un docente con historia o responsable de iniciativas: primero se informa la historia (409), luego la regla existente de iniciativas (400).
 
 ## 10. Riesgos y limitaciones pendientes
-- **E2E no ejecutado:** el ejecutor interrumpió la suite de Administración por memoria (601 MB libres de 16 GB, con el Chrome personal ocupando ≈ 5,8 GB), conforme al criterio acordado; no escribió nada. Revisión estática: ninguna de sus acciones debería chocar con las nuevas reglas (los fixtures no tienen historia). **Pendiente** correr, con memoria suficiente y tras reiniciar el backend: `npm run e2e -- administracion docente regresion-shell`.
+- **Actualización (Bloque 1.1):** las cuatro vías abiertas de la lista siguiente quedaron cerradas; ver [BACKEND_BLOQUE1_1_CIERRE_HISTORICOS.md](BACKEND_BLOQUE1_1_CIERRE_HISTORICOS.md).
+- **Vías de elusión revisadas** (ediciones individuales, fechas, horas, excepciones, actualizaciones masivas, importaciones/reasignaciones). Cerradas: actualización masiva (solo plantillas sin historia), excepción individual que movería un reporte (409), importación/reasignación de docentes con historia (bloqueada). **Siguen abiertas como limitaciones, sin cambiar reglas porque requieren autorización de negocio** (las sondas de `historicos.mjs` las confirman):
+  1. Eliminar una iniciativa con entregable en borrador/enviado mediante `forzar` (modificación destructiva potencial de reportes de ese proyecto).
+  2. Cambiar fechas de un semestre con reportes ya cargados.
+  3. Quitar un colaborador de un proyecto con reportes.
+  4. Cambiar el responsable de un proyecto con reportes.
+  Son modificaciones de datos de proyecto, no de plantillas/grupos/semestres/usuarios; se proponen para un bloque posterior con decisión explícita de negocio.
 - **Importación (validación previa):** la protección de reasignación actúa al confirmar; la vista previa aún no la anticipa como error.
 - **Fechas y textos por excepción individual** sobre entregables ya reportados siguen siendo editables (solo se bloqueó mover el reporte). Pendiente para el versionado de plantillas / auditoría (Bloque 5).
 - **Auditoría de acciones administrativas** (quién borró o cambió qué): no incluida (ME-06).
@@ -120,5 +138,8 @@ No se accedió a producción ni se asumió que tenga la estructura o los datos d
 6. **Política de despliegue:** el flujo actual despliega y migra en cada push a `main` sin pruebas; revisar antes de publicar este bloque.
 7. **Datos existentes:** consultar si ya hay plantillas, grupos o usuarios que estos 409 dejarán «congelados» (esperado) y confirmar con negocio el procedimiento de inactivación.
 
-## 12. Siguiente paso
+## 12. Cierre y clasificación
+**COMPLETADO CON OBSERVACIONES.** Todas las protecciones del Bloque 1 están implementadas y verificadas (unitarias 61/61; integración en `proysocial_test` 49/49 y 20/20 nuevas; E2E: historicos 54, administración 332, shell 70, matrices 86, revisión de evidencias 61, docente 112, sin fallas reales en la ejecución definitiva). `proysocial_dev` conserva sus datos (5 usuarios, 2 semestres, 18 grupos, 2032 plantillas, 10 proyectos, 33 entregables [20 aprobados / 9 enviados / 4 observados], 33 evidencias, 57 eventos; sin fixtures TST*) y `proysocial_test` está aislada. Observaciones: las 4 vías de elusión de §10 (requieren autorización), el fallo intermitente de consola de `docente` (no reproducido) y que las protecciones residen solo en el backend.
+
+## 13. Siguiente paso
 Detenido al finalizar el Bloque 1. El siguiente bloque aprobado es **CR-01 (métricas por semestre)**; no se ha iniciado.

@@ -251,5 +251,7 @@ try {
   await pool.end();
 }
 const errs = p.consola.filter((x) => !/favicon|Download the React DevTools|Failed to fetch/.test(x));
-ok("consola sin errores inesperados", errs.length === 0, errs[0]?.slice(0, 160));
+// Diagnóstico: si hay errores de consola, se muestran también las respuestas HTTP >= 400 de la sesión (una petición fallida real
+// se distingue así del rechazo simulado de fetch, que no genera respuesta).
+ok("consola sin errores inesperados", errs.length === 0, errs.length ? `${errs[0]?.slice(0, 160)} | HTTP>=400: ${p.fallos.join(" ; ") || "ninguna"}` : "");
 console.log(res.join("\n"));

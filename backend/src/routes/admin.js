@@ -20,14 +20,19 @@ import {
 } from "../services/matrizService.js";
 import { aplicarRevisionAdmin, reabrirEntregable } from "../services/entregableWorkflowService.js";
 import {
+  ENTREGABLE_CON_AVANCE_SQL,
   LOCK_ADMINISTRADORES,
+  bloquearHistoriaDeProyecto,
   bloquearPlantillasDeGrupos,
   describirResumen,
   docentesDeGrupos,
   errorHistorico,
   exigirAsignacionSinHistorico,
+  historicoDeCalendarioSemestre,
+  historicoDeColaborador,
   historicoDeGrupos,
   historicoDePlantillas,
+  historicoDeProyecto,
   historicoDeSemestre,
   historicoDeUsuario,
   plantillasConHistorico,
@@ -1116,12 +1121,38 @@ router.put("/semestres/:codigo", async (req, res) => {
   try {
     await client.query("BEGIN");
     const current = await client.query(
-      "SELECT codigo FROM semestres WHERE codigo = $1 FOR UPDATE",
+      "SELECT codigo, fecha_inicio, fecha_fin, numero_semanas FROM semestres WHERE codigo = $1 FOR UPDATE",
       [codigoActual]
     );
     if (current.rowCount === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Semestre no encontrado" });
+    }
+
+    // Código, fechas y número de semanas definen el calendario con el que se interpretan los reportes (semana académica,
+    // vencimientos, cumplimiento). Con historia no pueden cambiar; reenviar los mismos valores es una operación nula.
+    // Estos cuatro son los únicos campos editables del semestre (el estado «activo» tiene su propio endpoint).
+    const actual = current.rows[0];
+    const cambios = [];
+    if (codigoNuevo !== actual.codigo) cambios.push("el código");
+    if (fechaInicio !== toDateOnlyISO(actual.fecha_inicio)) cambios.push("la fecha de inicio");
+    if (fechaFin !== toDateOnlyISO(actual.fecha_fin)) cambios.push("la fecha de fin");
+    if (numeroSemanas !== Number(actual.numero_semanas)) cambios.push("el número de semanas");
+    if (cambios.length > 0) {
+      const gruposSem = (
+        await client.query(`SELECT id FROM grupos_matriz WHERE semestre = $1 ORDER BY id FOR UPDATE`, [codigoActual])
+      ).rows.map((r) => Number(r.id));
+      if (gruposSem.length > 0) {
+        const plantillaIds = await bloquearPlantillasDeGrupos(client, gruposSem);
+        const h = await historicoDeCalendarioSemestre(client, codigoActual, gruposSem, plantillaIds);
+        if (h.total > 0) {
+          throw errorHistorico(
+            `No se puede cambiar ${cambios.join(", ")} del semestre ${codigoActual}: ${describirResumen(h)} se interpretan con ese calendario.`,
+            h,
+            "Un semestre con reportes conserva su calendario. Para el siguiente periodo, crea o clona un semestre nuevo."
+          );
+        }
+      }
     }
 
     const maxWeek = await client.query(
@@ -1156,6 +1187,7 @@ router.put("/semestres/:codigo", async (req, res) => {
     res.json({ semestre: updated.rows[0] });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
+    if (error instanceof ErrorNegocio) return responderError(res, error, "Error en PUT /admin/semestres/:codigo");
     if (error?.code === "23505") {
       return res.status(409).json({ error: `El semestre ${codigoNuevo} ya existe` });
     }
@@ -2781,7 +2813,7 @@ router.put("/proyectos/:id/docentes", async (req, res) => {
     await client.query("BEGIN");
 
     const project = await client.query(
-      "SELECT id FROM proyectos WHERE id = $1 FOR UPDATE",
+      "SELECT id FROM proyectos WHERE id = $1 FOR NO KEY UPDATE",
       [proyectoId]
     );
     if (project.rowCount === 0) {
@@ -2851,9 +2883,45 @@ router.put("/proyectos/:id/docentes", async (req, res) => {
       }
     }
 
-    await client.query("DELETE FROM proyecto_docentes WHERE proyecto_id = $1", [
-      proyectoId,
-    ]);
+    // Quitar a un colaborador con participación histórica (reportes, evidencias o eventos en esta iniciativa) se rechaza:
+    // la lista enviada reemplaza a la actual, así que se comprueba cada colaborador que dejaría de figurar.
+    const actuales = await client.query(
+      "SELECT docente_id FROM proyecto_docentes WHERE proyecto_id = $1 ORDER BY docente_id",
+      [proyectoId]
+    );
+    const nuevos = new Set(lista.map((row) => row.id));
+    const retirados = actuales.rows.map((r) => Number(r.docente_id)).filter((id) => !nuevos.has(id));
+    if (retirados.length > 0) {
+      await bloquearHistoriaDeProyecto(client, proyectoId);
+      const conHistoria = [];
+      for (const docenteId of retirados) {
+        const h = await historicoDeColaborador(client, proyectoId, docenteId);
+        if (h.total > 0) conHistoria.push({ docente_id: docenteId, ...h });
+      }
+      if (conHistoria.length > 0) {
+        const total = conHistoria.reduce(
+          (acc, h) => ({
+            entregables: acc.entregables + h.entregables,
+            evidencias: acc.evidencias + h.evidencias,
+            eventos: acc.eventos + h.eventos,
+          }),
+          { entregables: 0, evidencias: 0, eventos: 0 }
+        );
+        throw errorHistorico(
+          `No se puede retirar ${conHistoria.length === 1 ? "al colaborador" : "a los colaboradores"} de la iniciativa: ${describirResumen(total)} de su participación quedarían sin su vínculo.`,
+          { ...total, total: total.entregables + total.evidencias + total.eventos, colaboradores: conHistoria },
+          "Mantén al colaborador en la iniciativa; sus reportes se conservan con su participación original."
+        );
+      }
+    }
+
+    // Solo se borran los colaboradores retirados (sin historia, comprobado arriba); los que continúan no se tocan.
+    if (retirados.length > 0) {
+      await client.query(
+        "DELETE FROM proyecto_docentes WHERE proyecto_id = $1 AND docente_id = ANY($2::int[])",
+        [proyectoId, retirados]
+      );
+    }
 
     for (const row of lista) {
       await client.query(
@@ -2894,7 +2962,8 @@ router.put("/proyectos/:id/docentes", async (req, res) => {
     await client.query("COMMIT");
     res.json({ ok: true });
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query("ROLLBACK").catch(() => {});
+    if (error instanceof ErrorNegocio) return responderError(res, error, "Error en /admin/proyectos/:id/docentes (PUT)");
     console.error("Error en /admin/proyectos/:id/docentes (PUT)", {
       mensaje: (error && error.message) || String(error),
       body: req.body,
@@ -2910,17 +2979,7 @@ router.put("/proyectos/:id/docentes", async (req, res) => {
 //    con un docente) NUNCA se elimina ni se modifica, aunque ya no figure en la lista enviada;
 //  - los entregables "vacíos" (programados pero sin ningún reporte) se sincronizan: se actualizan
 //    horas, se agregan los nuevos y se retiran los que el administrador quitó de la lista.
-const ENTREGABLE_CON_AVANCE_SQL = `(
-  COALESCE(pe.completado, FALSE)
-  OR pe.url_evidencia IS NOT NULL
-  OR pe.descripcion_reporte IS NOT NULL
-  OR pe.actividad_reportada IS NOT NULL
-  OR pe.plantilla_id IS NOT NULL
-  OR pe.docente_id IS NOT NULL
-  OR pe.revisado_en IS NOT NULL
-  OR COALESCE(pe.num_envios, 0) > 0
-  OR pe.estado_revision IN ('borrador', 'observado', 'aprobado')
-)`;
+// (La condición «con avance» vive en historicosService.js: ENTREGABLE_CON_AVANCE_SQL, alias `pe`.)
 
 router.post("/proyectos/:id/entregables-semanales", async (req, res) => {
   const proyectoId = Number(req.params.id);
@@ -3279,7 +3338,7 @@ router.put("/proyectos/:id", async (req, res) => {
   try {
     await client.query("BEGIN");
     const currentResult = await client.query(
-      "SELECT * FROM proyectos WHERE id = $1 FOR UPDATE",
+      "SELECT * FROM proyectos WHERE id = $1 FOR NO KEY UPDATE",
       [proyectoId]
     );
     if (currentResult.rowCount === 0) {
@@ -3327,6 +3386,29 @@ router.put("/proyectos/:id", async (req, res) => {
     if (!Number.isInteger(teacherId) || teacherId <= 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "Docente responsable no válido" });
+    }
+    // La historia de la iniciativa se bloquea y se cuenta una sola vez por transacción (mismo orden de bloqueos del
+    // Bloque 1.1: participantes, semanas y entregables) y solo si algún campo protegido va a cambiar.
+    let historiaProyecto = null;
+    const historiaDeLaIniciativa = async () => {
+      if (!historiaProyecto) {
+        await bloquearHistoriaDeProyecto(client, proyectoId);
+        historiaProyecto = await historicoDeProyecto(client, proyectoId);
+      }
+      return historiaProyecto;
+    };
+    const cambiaResponsable = teacherId !== Number(current.docente_responsable_id);
+    if (cambiaResponsable) {
+      // La atribución de los reportes (permisos, matriz e indicadores) depende del responsable. Sin un historial de
+      // responsables por periodo, solo puede cambiarse si la iniciativa no tiene historia.
+      const historia = await historiaDeLaIniciativa();
+      if (historia.total > 0) {
+        throw errorHistorico(
+          `No se puede cambiar el docente responsable: ${describirResumen(historia)} de esta iniciativa quedarían atribuidos a otra persona.`,
+          historia,
+          "Mantén al responsable actual. Si debe dejar la iniciativa, cámbiala a 'suspendido' o 'finalizado'; el cambio de responsable se habilitará con el historial de responsables por periodo."
+        );
+      }
     }
     const teacherExists = await client.query(
       "SELECT id FROM usuarios WHERE id = $1 AND rol = 'docente' AND estado = 'activo'",
@@ -3377,6 +3459,27 @@ router.put("/proyectos/:id", async (req, res) => {
     if (horasTotales !== null && (!Number.isFinite(Number(horasTotales)) || Number(horasTotales) < 0)) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "horasTotales no es válido" });
+    }
+
+    // Fecha de inicio, número de semanas y programa definen el calendario de los reportes (semanas y vencimientos) y su
+    // clasificación en los indicadores por programa. Con historia no pueden cambiar; reenviar los mismos valores es una
+    // operación nula. Se comprueba antes de cualquier escritura: un rechazo no deja cambios parciales.
+    const camposHistoricos = [];
+    if (toDateOnlyISO(current.fecha_inicio) !== fechaInicio) camposHistoricos.push("la fecha de inicio");
+    if (Number(current.semanas) !== semanas) camposHistoricos.push("el número de semanas");
+    if (Number(current.programa_id) !== Number(programaId)) camposHistoricos.push("el programa académico");
+    if (camposHistoricos.length > 0) {
+      const historia = await historiaDeLaIniciativa();
+      if (historia.total > 0) {
+        const razon = camposHistoricos.includes("el programa académico")
+          ? "reclasificaría esos reportes en otro programa en los indicadores"
+          : "reprogramaría sus semanas y vencimientos";
+        throw errorHistorico(
+          `No se puede cambiar ${camposHistoricos.join(", ")} de la iniciativa: ${describirResumen(historia)} ya reportados ${razon}.`,
+          historia,
+          "Puedes editar el título, la descripción, el tipo, el estado, la fecha de fin estimada y las horas. Para un nuevo periodo, crea una iniciativa nueva."
+        );
+      }
     }
 
     const scheduleChanged =
@@ -3476,6 +3579,7 @@ router.put("/proyectos/:id", async (req, res) => {
     res.json({ ok: true, proyecto: updated.rows[0] });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
+    if (error instanceof ErrorNegocio) return responderError(res, error, "Error en PUT /admin/proyectos/:id");
     console.error("Error en PUT /admin/proyectos/:id", error);
     res.status(500).json({ error: "Error interno al actualizar la iniciativa" });
   } finally {
@@ -3484,8 +3588,8 @@ router.put("/proyectos/:id", async (req, res) => {
 });
 
 router.delete("/proyectos/:id", async (req, res) => {
+  // `forzar` (u otra variante) se ignora a propósito: la historia de una iniciativa nunca se elimina.
   const proyectoId = Number(req.params.id);
-  const forzar = String(req.query.forzar || "") === "true";
   if (!Number.isInteger(proyectoId) || proyectoId <= 0) {
     return res.status(400).json({ error: "id de proyecto inválido" });
   }
@@ -3494,7 +3598,7 @@ router.delete("/proyectos/:id", async (req, res) => {
   try {
     await client.query("BEGIN");
     const project = await client.query(
-      "SELECT id, titulo FROM proyectos WHERE id = $1 FOR UPDATE",
+      "SELECT id, titulo FROM proyectos WHERE id = $1 FOR NO KEY UPDATE",
       [proyectoId]
     );
     if (project.rowCount === 0) {
@@ -3502,20 +3606,23 @@ router.delete("/proyectos/:id", async (req, res) => {
       return res.status(404).json({ error: "Iniciativa no encontrada" });
     }
 
+    // Se bloquean semanas y entregables y luego se cuenta en la misma transacción: un reporte que se esté cargando
+    // en este instante queda serializado con la comprobación (ver historicosService).
+    await bloquearHistoriaDeProyecto(client, proyectoId);
+    const historia = await historicoDeProyecto(client, proyectoId);
+    if (historia.total > 0) {
+      throw errorHistorico(
+        `No se puede eliminar la iniciativa «${project.rows[0].titulo}»: ${describirResumen(historia)} dependen de ella.`,
+        historia,
+        "Cámbiala a 'finalizado' o 'suspendido' para conservar su historial."
+      );
+    }
+
     const related = await client.query(
       `
       SELECT
         COUNT(DISTINCT ps.id)::int AS semanas,
         COUNT(DISTINCT pe.id)::int AS entregables,
-        COUNT(DISTINCT pe.id) FILTER (
-          WHERE COALESCE(pe.completado, FALSE)
-             OR pe.url_evidencia IS NOT NULL
-             OR pe.descripcion_reporte IS NOT NULL
-             OR pe.actividad_reportada IS NOT NULL
-        )::int AS reportes,
-        COUNT(DISTINCT pe.id) FILTER (
-          WHERE pe.estado_revision IN ('aprobado', 'observado') OR pe.revisado_en IS NOT NULL
-        )::int AS revisados,
         COUNT(DISTINCT pd.docente_id)::int AS colaboradores
       FROM proyectos p
       LEFT JOIN proyecto_semanas ps ON ps.proyecto_id = p.id
@@ -3525,30 +3632,12 @@ router.delete("/proyectos/:id", async (req, res) => {
       `,
       [proyectoId]
     );
-    const counts = related.rows[0];
-    if (counts.revisados > 0) {
-      // Reportes revisados (aprobados u observados) son historia institucional: no se eliminan con la iniciativa.
-      await client.query("ROLLBACK");
-      return res.status(409).json({
-        error:
-          "La iniciativa tiene reportes revisados (aprobados u observados) y no puede eliminarse. Cámbiala a 'finalizado' o 'suspendido'.",
-        resumen: counts,
-      });
-    }
-    if (counts.reportes > 0 && !forzar) {
-      await client.query("ROLLBACK");
-      return res.status(409).json({
-        error: "La iniciativa contiene reportes o evidencias. Confirma la eliminación permanente.",
-        requiere_confirmacion: true,
-        resumen: counts,
-      });
-    }
-
     await client.query("DELETE FROM proyectos WHERE id = $1", [proyectoId]);
     await client.query("COMMIT");
-    res.json({ ok: true, eliminado: project.rows[0], resumen: counts });
+    res.json({ ok: true, eliminado: project.rows[0], resumen: related.rows[0] });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
+    if (error instanceof ErrorNegocio) return responderError(res, error, "Error en DELETE /admin/proyectos/:id");
     console.error("Error en DELETE /admin/proyectos/:id", error);
     res.status(500).json({ error: "Error interno al eliminar la iniciativa" });
   } finally {

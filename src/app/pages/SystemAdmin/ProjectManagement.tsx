@@ -471,7 +471,8 @@ export default function ProjectManagement({ cabecera }: { cabecera: ReactNode })
         }),
       });
       if (!res.ok) {
-        notify.error("No se pudo guardar la asignación.");
+        const data = await res.json().catch(() => ({}));
+        notify.error(data.error || "No se pudo guardar la asignación.");
         return;
       }
       setInsp({ modo: "ver", id: projectId });

@@ -17,7 +17,7 @@ import { huellaFuentes, limpiarHuerfanos, memoriaLibreMB } from "./lib/entorno.m
 const aqui = path.dirname(fileURLToPath(import.meta.url));
 const dirSuites = path.join(aqui, "suites");
 // Orden de ejecución: primero solo lectura, luego las que escriben fixtures temporales.
-const ORDEN = ["regresion-shell", "matrices", "revision", "revision-evidencias", "importador", "docente", "responsive-docente", "administracion", "indicadores", "capturas-indicadores"];
+const ORDEN = ["regresion-shell", "matrices", "revision", "revision-evidencias", "importador", "docente", "responsive-docente", "administracion", "historicos", "indicadores", "capturas-indicadores"];
 const disponibles = fs.readdirSync(dirSuites).filter((f) => f.endsWith(".mjs")).map((f) => f.replace(/\.mjs$/, ""));
 const ordenadas = [...ORDEN.filter((s) => disponibles.includes(s)), ...disponibles.filter((s) => !ORDEN.includes(s)).sort()];
 

@@ -237,13 +237,103 @@ await sesion(390, "admin@proysocial.local", async (p) => {
   ok("390 admin: inspector como hoja inferior", await E(p, "const r=document.querySelector('.b2-insp').getBoundingClientRect(); return document.querySelector('.b2-insp').dataset.open==='true' && Math.abs(r.bottom-innerHeight)<2 && r.width>=innerWidth-2"));
   ok("390 admin: etiquetas inferiores completas y táctiles ≥ 40 px", await E(p, "return [...document.querySelectorAll('.b2-bnav a')].every(a=>a.getBoundingClientRect().height>=40) && [...document.querySelectorAll('.b2-bnav a span')].every(s=>s.scrollWidth<=s.clientWidth+1)"));
 });
-await sesion(390, "maria.rodriguez@proysocial.local", async (p) => {
-  await ir(p, "/docente/matriz");
-  ok("390 docente: sin desborde", await sinDesborde(p));
-  ok("390 docente: lista móvil y semana actual", await E(p, "return !!document.querySelector('.b2-ml') && document.querySelector('.b2-ml-tag')?.textContent==='Semana actual'"));
-  await E(p, "document.querySelector('[aria-label=\"Periodo anterior\"]').click()"); await pausa(300);
-  await E(p, "document.querySelector('.b2-ml-i')?.click()"); await pausa(600);
-  ok("390 docente: inspector con acciones del flujo real", await E(p, "return document.querySelector('.b2-insp').dataset.open==='true' && !!document.querySelector('.b2-insp .b2-acc-form')"));
-  ok("390 docente: botones del inspector ≥ 40 px", await E(p, "return [...document.querySelectorAll('.b2-insp .b2-btn')].every(b=>b.getBoundingClientRect().height>=36)"));
-});
+// ───────── Móvil (390 px): periodos con y sin entregables, elegidos con la API real (sin semanas fijas) ─────────
+// La lista móvil muestra los entregables cuyo rango de fechas calculadas toca la semana consultada. Los escenarios se eligen
+// con las mismas fechas del backend (calendario del semestre activo, America/Bogota): nunca se supone que el periodo anterior
+// tenga entregables ni se fija un número de semana. Si ningún docente de prueba ofrece el escenario, la prueba FALLA indicando
+// que falta el escenario (no se marca como aprobada sin haber validado el inspector).
+const DOCENTES_MOVIL = ["maria.rodriguez@proysocial.local", "carlos.mendoza@proysocial.local", "andres.torres@proysocial.local"];
+async function datosApi(correo) {
+  const lg = await (await fetch(`${API}/auth/dev/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ correo }) })).json();
+  const h = { Authorization: `Bearer ${lg.token}` };
+  const m = await (await fetch(`${API}/docente/${lg.user.id}/matriz`, { headers: h })).json();
+  const st = await (await fetch(`${API}/docente/${lg.user.id}/matriz-stats`, { headers: h })).json();
+  const sa = st.semana_actual ?? m.semana_actual;
+  const items = m.items ?? [];
+  if (!sa?.fecha_inicio_semestre || !sa?.fecha_fin_semestre || sa.numero == null || !items.length) return { correo, sinCalendario: true };
+  const ini = sa.fecha_inicio_semestre;
+  const NS = Math.max(sa.total_semanas || 0, Math.ceil((dias(ini, sa.fecha_fin_semestre) + 1) / 7));
+  const delSemana = (w) => items
+    .filter((i) => i.fecha_inicio_calculada && i.fecha_fin_calculada && dias(ini, i.fecha_fin_calculada) >= (w - 1) * 7 && dias(ini, i.fecha_inicio_calculada) <= (w - 1) * 7 + 6)
+    .sort((x, y) => (x.fecha_fin_calculada ?? "").localeCompare(y.fecha_fin_calculada ?? ""));
+  const semanas = Array.from({ length: NS }, (_, k) => k + 1);
+  const cerca = (ws) => ws.sort((x, y) => Math.abs(x - sa.numero) - Math.abs(y - sa.numero) || x - y);
+  const conItems = cerca(semanas.filter((w) => delSemana(w).length > 0));
+  const vacias = cerca(semanas.filter((w) => delSemana(w).length === 0));
+  return { correo, semHoy: sa.numero, hoy: sa.hoy, NS, delSemana, conItems, vacias };
+}
+const semanaMostrada = (p) => E(p, "return Number(document.querySelector('.b2-ml-per strong').textContent.replace(/\\D/g, ''))");
+async function irASemana(p, destino) {
+  for (let k = 0; k < 40; k += 1) {
+    const cur = await semanaMostrada(p);
+    if (cur === destino) return true;
+    await E(p, `document.querySelector('[aria-label="${cur < destino ? "Periodo siguiente" : "Periodo anterior"}"]').click()`); await pausa(150);
+  }
+  return false;
+}
+const escenarios = [];
+for (const correo of DOCENTES_MOVIL) escenarios.push(await datosApi(correo));
+const conEntregables = escenarios.find((e) => !e.sinCalendario && e.conItems.length > 0);
+const conVacio = escenarios.find((e) => !e.sinCalendario && e.vacias.length > 0 && e.semHoy != null);
+
+if (!conEntregables) {
+  ok("390 docente: inspector con acciones del flujo real", false, "FALTA ESCENARIO: ningún docente de prueba tiene entregables con fechas en el semestre activo");
+} else {
+  const { correo, semHoy, delSemana } = conEntregables;
+  // Prefiere un periodo distinto del actual (ejercita la navegación); si solo hoy tiene entregables, usa hoy.
+  const destino = conEntregables.conItems.find((w) => w !== semHoy) ?? semHoy;
+  const esperados = delSemana(destino);
+  await sesion(390, correo, async (p) => {
+    await ir(p, "/docente/matriz");
+    ok("390 docente: sin desborde", await sinDesborde(p));
+    ok("390 docente: lista móvil y semana actual", await E(p, `return !!document.querySelector('.b2-ml') && document.querySelector('.b2-ml-tag')?.textContent==='Semana actual' && Number(document.querySelector('.b2-ml-per strong').textContent.replace(/\\D/g,''))===${semHoy}`));
+    ok(`390 docente: navega al periodo con entregables (semana ${destino}, elegida desde la API)`, await irASemana(p, destino) && (await semanaMostrada(p)) === destino);
+    ok("390 docente: el periodo consultado se identifica", await E(p, `return document.querySelector('.b2-ml-tag').textContent===${JSON.stringify(destino === semHoy ? "Semana actual" : "Consultando")}`));
+    const nombres = await E(p, "return [...document.querySelectorAll('.b2-ml-i .b2-ml-n')].map(n=>n.textContent.trim())");
+    ok(`390 docente: la lista del periodo coincide con la API (${esperados.length} entregables, mismo orden)`, JSON.stringify(nombres) === JSON.stringify(esperados.map((i) => i.entregable.trim())), `UI=${nombres.length} API=${esperados.length}`);
+    const limites = await E(p, "return [...document.querySelectorAll('.b2-ml-i .b2-ml-f')].map(n=>n.textContent)");
+    ok("390 docente: la fecha límite de cada entregable coincide con la API", limites.length === esperados.length && esperados.every((i, k) => limites[k].includes(corta(i.fecha_fin_calculada))), limites.slice(0, 2).join(" | "));
+    for (let k = 0; k < Math.min(esperados.length, 6); k += 1) {
+      const it = esperados[k];
+      await E(p, `document.querySelectorAll('.b2-ml-i')[${k}].click()`); await pausa(500);
+      const abierto = await E(p, `const i=document.querySelector('.b2-insp'); return i.dataset.open==='true' && i.textContent.includes(${JSON.stringify(it.entregable.trim())}) && !!i.querySelector('.b2-acc-form')`);
+      const txt = await E(p, "return document.querySelector('.b2-insp .b2-acc-form')?.innerText ?? ''");
+      const btn = (re) => E(p, `return [...document.querySelectorAll('.b2-insp .b2-btn')].some(b=>${re}.test(b.textContent))`);
+      let acciones;
+      if (it.estado === "aprobado") acciones = /no puede modificarse/.test(txt) && !(await btn("/Enviar para revisión/")) && !(await btn("/Retirar envío/"));
+      else if (it.estado === "enviado") acciones = /Envío en revisión/.test(txt) && (await btn("/Retirar envío/")) && !(await btn("/Enviar para revisión/"));
+      else if (it.estado === "observado") acciones = /Corregir y reenviar/.test(txt) && (await btn("/Reenviar corrección/"));
+      else acciones = /Enviar evidencia/.test(txt) && (await btn("/Enviar para revisión/"));
+      ok(`390 docente: inspector del entregable ${k + 1}/${Math.min(esperados.length, 6)} (estado real «${it.estado}»): abre y ofrece las acciones de su estado`, abierto && acciones, `${it.estado} · ${txt.slice(0, 60).replace(/\s+/g, " ")}`);
+    }
+    ok("390 docente: botones del inspector ≥ 36 px", await E(p, "const b=[...document.querySelectorAll('.b2-insp .b2-btn')]; return b.length>0 && b.every(x=>x.getBoundingClientRect().height>=36)"));
+  });
+}
+
+if (!conVacio) {
+  ok("390 docente: periodo sin entregables", false, "FALTA ESCENARIO: ningún docente de prueba tiene un periodo del semestre sin entregables");
+} else {
+  const { correo, semHoy, vacias, delSemana, NS } = conVacio;
+  const vacia = vacias.find((w) => w !== semHoy) ?? vacias[0];
+  await sesion(390, correo, async (p) => {
+    await ir(p, "/docente/matriz");
+    ok(`390 docente: navega a un periodo sin entregables (semana ${vacia}, elegida desde la API)`, await irASemana(p, vacia) && (await semanaMostrada(p)) === vacia);
+    await pausa(300);
+    ok("390 docente: periodo vacío muestra su estado vacío", await E(p, "const v=document.querySelector('.b2-ml-vacio'); return !!v && /No hay entregables esta semana/.test(v.textContent)"));
+    ok("390 docente: periodo vacío sin entregables ni acciones de entregables inexistentes", await E(p, "return document.querySelectorAll('.b2-ml-i').length===0 && !document.querySelector('.b2-insp[data-open=\"true\"] .b2-acc-form') && ![...document.querySelectorAll('.b2-ml-list .b2-btn')].some(b=>/Enviar|Retirar|Reenviar/.test(b.textContent))"));
+    ok("390 docente: periodo vacío sin desborde y sin aviso de error", (await sinDesborde(p)) && await E(p, "return !document.querySelector('.b2-alert[role=alert]')"));
+    // Navegar a otro periodo (el contiguo disponible).
+    const sentido = vacia < NS ? "Periodo siguiente" : "Periodo anterior";
+    const otra = vacia < NS ? vacia + 1 : vacia - 1;
+    await E(p, `document.querySelector('[aria-label="${sentido}"]').click()`); await pausa(300);
+    ok(`390 docente: puede navegar a otro periodo (semana ${otra})`, (await semanaMostrada(p)) === otra);
+    const hay = delSemana(otra).length;
+    ok("390 docente: el otro periodo muestra su contenido real (entregables o estado vacío, según la API)", await E(p, `return ${hay > 0} ? document.querySelectorAll('.b2-ml-i').length===${hay} : (document.querySelectorAll('.b2-ml-i').length===0 && !!document.querySelector('.b2-ml-vacio'))`));
+    // «Volver a hoy» desde un periodo distinto del actual.
+    await irASemana(p, vacia === semHoy ? (vacia < NS ? vacia + 1 : vacia - 1) : vacia);
+    ok("390 docente: «Volver a hoy» aparece fuera del periodo actual", await E(p, "return !!document.querySelector('.b2-ml-hoy .b2-btn-primary') && document.querySelector('.b2-ml-tag').textContent==='Consultando'"));
+    await E(p, "document.querySelector('.b2-ml-hoy .b2-btn-primary').click()"); await pausa(300);
+    ok("390 docente: «Volver a hoy» regresa a la semana actual", await E(p, `return document.querySelector('.b2-ml-tag').textContent==='Semana actual' && Number(document.querySelector('.b2-ml-per strong').textContent.replace(/\\D/g,''))===${semHoy} && !document.querySelector('.b2-ml-hoy')`));
+  });
+}
 console.log(res.join("\n"));

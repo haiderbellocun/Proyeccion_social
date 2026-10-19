@@ -31,6 +31,7 @@ export function describirResumen(r) {
   if (r.eventos) partes.push(plural(r.eventos, "evento de historial", "eventos de historial"));
   if (r.importaciones) partes.push(plural(r.importaciones, "importación de Excel", "importaciones de Excel"));
   if (r.docentes) partes.push(plural(r.docentes, "docente asignado", "docentes asignados"));
+  if (r.excepciones) partes.push(plural(r.excepciones, "ajuste administrativo de entregable", "ajustes administrativos de entregables"));
   if (r.excepciones_movidas) partes.push(plural(r.excepciones_movidas, "entregable que cambiaría de iniciativa o semana", "entregables que cambiarían de iniciativa o semana"));
   if (partes.length === 0) return "";
   return partes.length === 1 ? partes[0] : `${partes.slice(0, -1).join(", ")} y ${partes[partes.length - 1]}`;
@@ -129,6 +130,91 @@ export async function historicoDeAsignacion(client, docenteId, grupoDestino) {
     [docenteId, grupoDestino]
   );
   return { entregables: n(r.rows[0], "entregables") };
+}
+
+/**
+ * Entregable de una iniciativa con avance real (reporte, evidencia, revisión, vínculo con la matriz o con un docente).
+ * Las filas «vacías» del cronograma (programadas, sin ningún reporte) no son historia. Alias de la tabla: `pe`.
+ */
+export const ENTREGABLE_CON_AVANCE_SQL = `(
+  COALESCE(pe.completado, FALSE)
+  OR pe.url_evidencia IS NOT NULL
+  OR pe.descripcion_reporte IS NOT NULL
+  OR pe.actividad_reportada IS NOT NULL
+  OR pe.plantilla_id IS NOT NULL
+  OR pe.docente_id IS NOT NULL
+  OR pe.revisado_en IS NOT NULL
+  OR COALESCE(pe.num_envios, 0) > 0
+  OR pe.estado_revision IN ('borrador', 'observado', 'aprobado')
+)`;
+
+/**
+ * Bloquea las semanas y los entregables de una iniciativa (orden fijo para evitar interbloqueos). Un reporte nuevo toma un
+ * bloqueo compartido sobre su semana (clave foránea) y uno existente se actualiza con `FOR UPDATE`: ambos quedan serializados
+ * con la comprobación que sigue. Llamar con la fila de `proyectos` ya bloqueada.
+ */
+export async function bloquearHistoriaDeProyecto(client, proyectoId) {
+  // Primero los participantes (responsable y colaboradores, ordenados por id): quien reporta toma `FOR UPDATE` sobre su propia
+  // fila de usuario ANTES de validar que pertenece a la iniciativa, así que este bloqueo serializa «retirarlo / cambiar al
+  // responsable» con «reportar»: o su reporte ya está confirmado y se ve al contar, o espera y encuentra el vínculo cambiado.
+  await client.query(
+    `SELECT u.id FROM usuarios u
+     WHERE u.id = (SELECT docente_responsable_id FROM proyectos WHERE id = $1)
+        OR u.id IN (SELECT docente_id FROM proyecto_docentes WHERE proyecto_id = $1)
+     ORDER BY u.id FOR UPDATE`,
+    [proyectoId]
+  );
+  await client.query(`SELECT id FROM proyecto_semanas WHERE proyecto_id = $1 ORDER BY id FOR UPDATE`, [proyectoId]);
+  await client.query(
+    `SELECT pe.id FROM proyecto_entregables pe JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id
+     WHERE ps.proyecto_id = $1 ORDER BY pe.id FOR UPDATE OF pe`,
+    [proyectoId]
+  );
+}
+
+const ENTREGABLES_DE_PROYECTO = `(SELECT pe.id FROM proyecto_entregables pe JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id WHERE ps.proyecto_id = $1)`;
+
+/** Historia que depende de una iniciativa: entregables con avance, evidencias (incluye versiones), eventos y ajustes administrativos. */
+export async function historicoDeProyecto(client, proyectoId) {
+  const r = await client.query(
+    `SELECT
+       (SELECT COUNT(*) FROM proyecto_entregables pe JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id
+         WHERE ps.proyecto_id = $1 AND ${ENTREGABLE_CON_AVANCE_SQL})::int AS entregables,
+       (SELECT COUNT(*) FROM entregable_evidencias WHERE proyecto_id = $1 OR entregable_id IN ${ENTREGABLES_DE_PROYECTO})::int AS evidencias,
+       (SELECT COUNT(*) FROM entregable_eventos WHERE entregable_id IN ${ENTREGABLES_DE_PROYECTO})::int AS eventos,
+       (SELECT COUNT(*) FROM docente_entregable_excepciones WHERE proyecto_id = $1)::int AS excepciones`,
+    [proyectoId]
+  );
+  const x = r.rows[0];
+  const out = { entregables: n(x, "entregables"), evidencias: n(x, "evidencias"), eventos: n(x, "eventos"), excepciones: n(x, "excepciones") };
+  return { ...out, total: out.entregables + out.evidencias + out.eventos + out.excepciones };
+}
+
+/** Participación histórica de un colaborador en una iniciativa: lo que reportó, subió o le quedó registrado en ella. */
+export async function historicoDeColaborador(client, proyectoId, docenteId) {
+  const r = await client.query(
+    `SELECT
+       (SELECT COUNT(*) FROM proyecto_entregables pe JOIN proyecto_semanas ps ON ps.id = pe.proyecto_semana_id
+         WHERE ps.proyecto_id = $1 AND pe.docente_id = $2)::int AS entregables,
+       (SELECT COUNT(*) FROM entregable_evidencias
+         WHERE docente_id = $2 AND (proyecto_id = $1 OR entregable_id IN ${ENTREGABLES_DE_PROYECTO}))::int AS evidencias,
+       (SELECT COUNT(*) FROM entregable_eventos
+         WHERE (docente_id = $2 OR actor_id = $2) AND entregable_id IN ${ENTREGABLES_DE_PROYECTO})::int AS eventos`,
+    [proyectoId, docenteId]
+  );
+  const x = r.rows[0];
+  const out = { entregables: n(x, "entregables"), evidencias: n(x, "evidencias"), eventos: n(x, "eventos") };
+  return { ...out, total: out.entregables + out.evidencias + out.eventos };
+}
+
+/**
+ * Historia que depende del calendario de un semestre (fechas, número de semanas y código): reportes, evidencias y eventos de sus
+ * grupos. Las importaciones de Excel y los grupos sin reportes no dependen del calendario, así que no cuentan.
+ */
+export async function historicoDeCalendarioSemestre(client, codigo, grupoIds, plantillaIds) {
+  const h = await historicoDeSemestre(client, codigo, grupoIds, plantillaIds);
+  const out = { entregables: h.entregables, evidencias: h.evidencias, eventos: h.eventos };
+  return { ...out, total: out.entregables + out.evidencias + out.eventos };
 }
 
 /** Lanza el 409 estándar si la asignación comprometería reportes anteriores. */

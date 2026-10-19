@@ -453,30 +453,23 @@ test("editar el cronograma (entregables-semanales) conserva reportes, evidencias
   assert.equal(Number((await pool.query(`SELECT COUNT(*)::int n FROM proyecto_entregables WHERE proyecto_semana_id = $1`, [ctx.projC.semanas[1]])).rows[0].n), 0);
 });
 
-test("cambiar semanas/fecha de una iniciativa no destruye semanas con reportes", { skip }, async () => {
+test("cambiar semanas/fecha de una iniciativa con reportes se rechaza y no destruye ni reprograma nada (Bloque 1.2)", { skip }, async () => {
   const id = ctx.projA.id; // tiene el reporte de P1 (semana 1) y P2 (semana 2)
   const reportes = async () => Number((await pool.query(`SELECT COUNT(*)::int n FROM proyecto_entregables e JOIN proyecto_semanas s ON s.id = e.proyecto_semana_id WHERE s.proyecto_id = $1 AND e.docente_id IS NOT NULL`, [id])).rows[0].n);
+  const calendario = async () => JSON.stringify((await pool.query(`SELECT numero, fecha_inicio::text, fecha_fin::text FROM proyecto_semanas WHERE proyecto_id = $1 ORDER BY numero`, [id])).rows);
   const antes = await reportes();
+  const cal = await calendario();
   assert.ok(antes >= 2, `esperaba reportes en el proyecto A (hay ${antes})`);
 
-  // Reducir por debajo de una semana con reportes: rechazado.
-  const reducir = await api(`/admin/proyectos/${id}`, tokens.admin, { method: "PUT", body: { semanas: 1, forzar_cronograma: true } });
-  assert.equal(reducir.status, 409, JSON.stringify(reducir.data));
-  assert.ok(reducir.data.semanas_con_reportes.includes(2));
-  assert.equal(await reportes(), antes);
-
-  // Reprogramar (misma cantidad de semanas, otra fecha) con la confirmación antigua: se conservan.
-  const mover = await api(`/admin/proyectos/${id}`, tokens.admin, { method: "PUT", body: { fechaInicio: sumarDias(ctx.hoy, -14), forzar_cronograma: true } });
-  assert.equal(mover.status, 200, JSON.stringify(mover.data));
-  assert.equal(await reportes(), antes);
-  const ini = (await pool.query(`SELECT to_char(fecha_inicio,'YYYY-MM-DD') f FROM proyecto_semanas WHERE proyecto_id = $1 AND numero = 1`, [id])).rows[0].f;
-  assert.equal(ini, sumarDias(ctx.hoy, -14));
-
-  // Ampliar: conserva y agrega.
-  const ampliar = await api(`/admin/proyectos/${id}`, tokens.admin, { method: "PUT", body: { semanas: 18 } });
-  assert.equal(ampliar.status, 200);
-  assert.equal(await reportes(), antes);
-  assert.equal(Number((await pool.query(`SELECT COUNT(*)::int n FROM proyecto_semanas WHERE proyecto_id = $1`, [id])).rows[0].n), 18);
+  // Reducir, reprogramar y ampliar: desde el Bloque 1.2 los tres cambios se rechazan con HISTORICO_PROTEGIDO
+  // (antes se reprogramaba «en el lugar»). Los reportes y el calendario permanecen intactos.
+  for (const body of [{ semanas: 1, forzar_cronograma: true }, { fechaInicio: sumarDias(ctx.hoy, -14), forzar_cronograma: true }, { semanas: 18 }]) {
+    const r = await api(`/admin/proyectos/${id}`, tokens.admin, { method: "PUT", body });
+    assert.equal(r.status, 409, JSON.stringify(r.data));
+    assert.equal(r.data.codigo, "HISTORICO_PROTEGIDO");
+    assert.equal(await reportes(), antes);
+    assert.equal(await calendario(), cal);
+  }
 });
 
 test("una iniciativa con reportes revisados no puede eliminarse", { skip }, async () => {
