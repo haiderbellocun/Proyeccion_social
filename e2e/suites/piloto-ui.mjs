@@ -223,6 +223,37 @@ try {
   await q(`UPDATE usuarios SET estado = 'activo' WHERE id = $1`, [ctx.u.A.id]);
   ok("sesión revocada durante el uso: al siguiente movimiento vuelve al inicio de sesión (no queda una pantalla rota)", await E(p, "return location.pathname === '/' && !localStorage.getItem('proysocial:token')"), await p.eval("location.pathname"));
 
+  // ───────── Navegación móvil (390×844): sin desbordes y con navegación inferior ─────────
+  await p.tamano(390, 844);
+  await sesion(ctx.u.A, ctx.tok.A);
+  for (const r of ["/docente", "/docente/matriz", "/docente/evidencias", "/docente/historial", "/docente/perfil"]) {
+    await ir(r, 2000);
+    ok(`móvil docente ${r}: sin desborde horizontal y con contenido`, await E(p, "return document.documentElement.scrollWidth <= innerWidth + 2 && document.body.innerText.trim().length > 40"));
+  }
+  ok("móvil docente: hay navegación inferior o menú accesible", await E(p, "return !!document.querySelector('.b2-bnav, .b2-hd')"));
+  await sesion(ctx.admin, ctx.tok.admin);
+  for (const r of ["/admin", "/admin/revision", "/admin/indicadores", "/admin/sistema"]) {
+    await ir(r, 2000);
+    ok(`móvil admin ${r}: sin desborde horizontal y con contenido`, await E(p, "return document.documentElement.scrollWidth <= innerWidth + 2 && document.body.innerText.trim().length > 40"));
+  }
+  await p.tamano(1440, 900);
+
+  // ───────── Fallos de API: la pantalla no se queda cargando para siempre ni muestra JSON crudo ─────────
+  await sesion(ctx.u.A, ctx.tok.A);
+  await ir("/docente", 2200);
+  await E(p, "window.__fetchOriginal = window.fetch; window.fetch = (u, i) => Promise.resolve(new Response(JSON.stringify({ error: 'Error interno' }), { status: 500, headers: { 'Content-Type': 'application/json' } })); return true");
+  await E(p, "const a=[...document.querySelectorAll('a')].find(x=>x.getAttribute('href')==='/docente/matriz'); if(a) a.click(); return !!a"); await pausa(3500);
+  const texto = await p.texto();
+  ok("API con error 500: «Mi matriz» sale del estado de carga (no queda cargando)", !/Cargando…?\s*$/m.test(texto) && !(await E(p, "return !!document.querySelector('[aria-busy=true]')")));
+  ok("API con error 500: no se muestra JSON ni trazas al usuario", !/\{"error"|Error:|at \w+ \(/.test(texto));
+  ok("API con error 500: la pantalla sigue siendo la aplicación (navegación visible)", await E(p, "return !!document.querySelector('.b2-hd, .b2-root')"));
+  await E(p, "window.fetch = window.__fetchOriginal; return true");
+  await E(p, "window.fetch = (u, i) => Promise.reject(new TypeError('Failed to fetch')); return true");
+  await E(p, "const a=[...document.querySelectorAll('a')].find(x=>x.getAttribute('href')==='/docente/evidencias'); if(a) a.click(); return !!a"); await pausa(3500);
+  const t2 = await p.texto();
+  ok("sin conexión con la API: la pantalla de evidencias informa el problema y no se queda cargando", !/\{"error"|TypeError|Failed to fetch/.test(t2) && await E(p, "return !!document.querySelector('.b2-root') && !document.querySelector('[aria-busy=true]')"));
+  await E(p, "window.fetch = window.__fetchOriginal; return true");
+
   // ───────── Docente sin matriz, permisos y sesión ─────────
   await sesion(ctx.u.C, ctx.tok.C);
   await ir("/docente/matriz");

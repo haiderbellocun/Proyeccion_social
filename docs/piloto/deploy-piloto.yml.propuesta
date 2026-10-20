@@ -1,0 +1,168 @@
+# PROPUESTA — NO está en .github/workflows y NO se ejecuta. Para activarla, cópiala (tú) a .github/workflows/deploy-piloto.yml tras revisarla.
+# Despliegue MANUAL y EXCLUSIVO del ambiente PILOTO. No toca el workflow de producción (deploy-cloud-run.yml) ni sus variables.
+#
+# Aislamiento por diseño:
+#  · solo `workflow_dispatch` (nunca por push), con confirmación escrita;
+#  · usa un GitHub Environment llamado «piloto» (variables y secretos PROPIOS; no hereda los de producción);
+#  · una puerta de seguridad aborta si el servicio, la base o los secretos no llevan «piloto» en el nombre, o coinciden con los de producción;
+#  · imagen, jobs y grupo de concurrencia con nombre propio.
+# Orden en base nueva: migrar (con fase28) → primer administrador → (opcional) datos sintéticos → desplegar. No hay ventana con código antiguo.
+name: Deploy PILOT to Cloud Run (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmar:
+        description: 'Escribe "piloto" para confirmar que esto despliega SOLO el ambiente de piloto'
+        required: true
+      aplicar_fase28:
+        description: 'Aplicar la migración 28 (historial docente–grupo). Debe estar activo en el piloto'
+        type: boolean
+        default: true
+      sembrar_datos:
+        description: 'Ejecutar la siembra de datos sintéticos (idempotente)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: proysocial-piloto
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: piloto
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+      CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}            # p. ej. proysocial-piloto
+      CLOUD_SQL_INSTANCE: ${{ vars.CLOUD_SQL_INSTANCE }}          # PROJECT:REGION:INSTANCIA (preferible: instancia propia del piloto)
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}        # cuenta de servicio de EJECUCIÓN del piloto
+      DB_NAME: ${{ vars.DB_NAME }}                                # p. ej. proysocial_piloto
+      DB_USER: ${{ vars.DB_USER }}
+      DB_PASSWORD_SECRET: ${{ vars.DB_PASSWORD_SECRET }}          # p. ej. proysocial-piloto-db-password
+      JWT_SECRET_NAME: ${{ vars.JWT_SECRET_NAME }}                # p. ej. proysocial-piloto-jwt-secret
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}              # cliente OAuth PROPIO del piloto
+      GOOGLE_DOMAIN: ${{ vars.GOOGLE_DOMAIN }}                    # dominio(s) institucional(es), separados por coma
+      SESSION_TTL: ${{ vars.SESSION_TTL || '8h' }}
+      EMAIL_ENABLED: ${{ vars.EMAIL_ENABLED || 'false' }}         # 'false' por defecto: sin envío de correos (explícito)
+      SMTP_HOST: ${{ vars.SMTP_HOST }}
+      SMTP_PORT: ${{ vars.SMTP_PORT || '587' }}
+      SMTP_SECURE: ${{ vars.SMTP_SECURE || 'false' }}
+      SMTP_USER: ${{ vars.SMTP_USER }}
+      SMTP_FROM: ${{ vars.SMTP_FROM }}
+      SMTP_PASS_SECRET: ${{ vars.SMTP_PASS_SECRET }}
+      # Referencias de PRODUCCIÓN (opcionales) solo para que la puerta de seguridad compare y se niegue a coincidir.
+      PROD_CLOUD_RUN_SERVICE: ${{ vars.PROD_CLOUD_RUN_SERVICE }}
+      PROD_DB_NAME: ${{ vars.PROD_DB_NAME }}
+      PROD_CLOUD_SQL_INSTANCE: ${{ vars.PROD_CLOUD_SQL_INSTANCE }}
+    steps:
+      - name: Puerta de seguridad del piloto
+        shell: bash
+        run: |
+          [[ "${{ inputs.confirmar }}" == "piloto" ]] || { echo "Confirmación incorrecta: escribe exactamente «piloto»." >&2; exit 1; }
+          for n in GCP_PROJECT_ID GCP_REGION GAR_REPOSITORY CLOUD_RUN_SERVICE CLOUD_SQL_INSTANCE GCP_SERVICE_ACCOUNT DB_NAME DB_USER DB_PASSWORD_SECRET JWT_SECRET_NAME GOOGLE_CLIENT_ID GOOGLE_DOMAIN; do
+            [[ -n "${!n}" ]] || { echo "Falta la variable del Environment «piloto»: $n" >&2; exit 1; }
+          done
+          [[ "$CLOUD_RUN_SERVICE" == *piloto* ]] || { echo "CLOUD_RUN_SERVICE debe contener «piloto»." >&2; exit 1; }
+          [[ "$DB_NAME" == *piloto* && "$DB_NAME" != *prod* && "$DB_NAME" != *dev* && "$DB_NAME" != *test* ]] || { echo "DB_NAME debe contener «piloto» y no «prod», «dev» ni «test»." >&2; exit 1; }
+          [[ "$DB_PASSWORD_SECRET" == *piloto* && "$JWT_SECRET_NAME" == *piloto* ]] || { echo "Los secretos deben llevar «piloto» en el nombre." >&2; exit 1; }
+          [[ -z "$PROD_CLOUD_RUN_SERVICE" || "$CLOUD_RUN_SERVICE" != "$PROD_CLOUD_RUN_SERVICE" ]] || { echo "El servicio coincide con producción." >&2; exit 1; }
+          [[ -z "$PROD_DB_NAME" || "$DB_NAME" != "$PROD_DB_NAME" ]] || { echo "La base coincide con producción." >&2; exit 1; }
+          [[ -z "$PROD_CLOUD_SQL_INSTANCE" || "$CLOUD_SQL_INSTANCE" != "$PROD_CLOUD_SQL_INSTANCE" ]] || echo "AVISO: el piloto usa la MISMA instancia de Cloud SQL que producción (base distinta). Confirma que el usuario de la base del piloto no tiene acceso a la de producción." >&2
+          if [[ "$EMAIL_ENABLED" == "true" ]]; then
+            for n in SMTP_HOST SMTP_USER SMTP_FROM SMTP_PASS_SECRET; do [[ -n "${!n}" ]] || { echo "EMAIL_ENABLED=true exige $n" >&2; exit 1; }; done
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate (cuenta de servicio de despliegue DEL PILOTO)
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}   # secreto del Environment «piloto», distinto del de producción
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Configure Artifact Registry
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push the PILOT image
+        shell: bash
+        run: |
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/proysocial-piloto:${GITHUB_SHA}"
+          docker build \
+            --build-arg VITE_API_URL= \
+            --build-arg VITE_GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID}" \
+            --tag "${IMAGE_URI}" .
+          docker push "${IMAGE_URI}"
+          echo "IMAGE_URI=${IMAGE_URI}" >> "${GITHUB_ENV}"
+
+      - name: Migrate the PILOT database (con la fase28 si se pidió)
+        shell: bash
+        run: |
+          ENVV="NODE_ENV=production,INSTANCE_CONNECTION_NAME=${CLOUD_SQL_INSTANCE},PGDATABASE=${DB_NAME},PGUSER=${DB_USER}"
+          if [[ "${{ inputs.aplicar_fase28 }}" == "true" ]]; then ENVV="${ENVV},PROYSOCIAL_APLICAR_FASE28=1"; fi
+          gcloud run jobs deploy "${CLOUD_RUN_SERVICE}-migrate" \
+            --image "${IMAGE_URI}" --region "${GCP_REGION}" --service-account "${GCP_SERVICE_ACCOUNT}" \
+            --set-cloudsql-instances "${CLOUD_SQL_INSTANCE}" \
+            --set-env-vars "${ENVV}" --set-secrets "PGPASSWORD=${DB_PASSWORD_SECRET}:latest" \
+            --command node --args backend/scripts/migrate.js --max-retries 0 --task-timeout 20m --quiet
+          gcloud run jobs execute "${CLOUD_RUN_SERVICE}-migrate" --region "${GCP_REGION}" --wait
+
+      - name: Bootstrap the first administrator
+        if: ${{ vars.ADMIN_EMAIL != '' }}
+        shell: bash
+        run: |
+          gcloud run jobs deploy "${CLOUD_RUN_SERVICE}-bootstrap-admin" \
+            --image "${IMAGE_URI}" --region "${GCP_REGION}" --service-account "${GCP_SERVICE_ACCOUNT}" \
+            --set-cloudsql-instances "${CLOUD_SQL_INSTANCE}" \
+            --set-env-vars "NODE_ENV=production,INSTANCE_CONNECTION_NAME=${CLOUD_SQL_INSTANCE},PGDATABASE=${DB_NAME},PGUSER=${DB_USER},ADMIN_EMAIL=${{ vars.ADMIN_EMAIL }},ADMIN_NOMBRE=${{ vars.ADMIN_NOMBRE }},ADMIN_APELLIDO=${{ vars.ADMIN_APELLIDO }}" \
+            --set-secrets "PGPASSWORD=${DB_PASSWORD_SECRET}:latest" \
+            --command node --args backend/scripts/bootstrap-admin.js --max-retries 0 --task-timeout 5m --quiet
+          gcloud run jobs execute "${CLOUD_RUN_SERVICE}-bootstrap-admin" --region "${GCP_REGION}" --wait
+
+      - name: Seed SYNTHETIC data (opcional)
+        if: ${{ inputs.sembrar_datos }}
+        shell: bash
+        run: |
+          gcloud run jobs deploy "${CLOUD_RUN_SERVICE}-seed" \
+            --image "${IMAGE_URI}" --region "${GCP_REGION}" --service-account "${GCP_SERVICE_ACCOUNT}" \
+            --set-cloudsql-instances "${CLOUD_SQL_INSTANCE}" \
+            --set-env-vars "NODE_ENV=production,INSTANCE_CONNECTION_NAME=${CLOUD_SQL_INSTANCE},PGDATABASE=${DB_NAME},PGUSER=${DB_USER},PILOTO_SEED=1,PILOTO_ADMIN_EMAILS=${{ secrets.PILOTO_ADMIN_EMAILS }},PILOTO_DOCENTE_EMAILS=${{ secrets.PILOTO_DOCENTE_EMAILS }}" \
+            --set-secrets "PGPASSWORD=${DB_PASSWORD_SECRET}:latest" \
+            --command node --args "backend/scripts/piloto-seed.js,--confirmar-base=${DB_NAME}" --max-retries 0 --task-timeout 10m --quiet
+          gcloud run jobs execute "${CLOUD_RUN_SERVICE}-seed" --region "${GCP_REGION}" --wait
+
+      - name: Deploy the PILOT application
+        shell: bash
+        run: |
+          gcloud run deploy "${CLOUD_RUN_SERVICE}" \
+            --image "${IMAGE_URI}" --region "${GCP_REGION}" --service-account "${GCP_SERVICE_ACCOUNT}" \
+            --set-cloudsql-instances "${CLOUD_SQL_INSTANCE}" \
+            --set-env-vars "NODE_ENV=production,INSTANCE_CONNECTION_NAME=${CLOUD_SQL_INSTANCE},PGDATABASE=${DB_NAME},PGUSER=${DB_USER},GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID},ALLOWED_GOOGLE_DOMAINS=${GOOGLE_DOMAIN},SESSION_TTL=${SESSION_TTL},EMAIL_ENABLED=${EMAIL_ENABLED},PGPOOL_MAX=4" \
+            --set-secrets "PGPASSWORD=${DB_PASSWORD_SECRET}:latest,JWT_SECRET=${JWT_SECRET_NAME}:latest" \
+            --port 8080 --cpu 1 --memory 1Gi --min-instances 0 --max-instances 2 \
+            --allow-unauthenticated --quiet
+
+      - name: Configure notification email (solo si EMAIL_ENABLED=true)
+        if: ${{ env.EMAIL_ENABLED == 'true' }}
+        shell: bash
+        run: |
+          SERVICE_URL="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" --region "${GCP_REGION}" --format='value(status.url)')"
+          gcloud run services update "${CLOUD_RUN_SERVICE}" --region "${GCP_REGION}" \
+            --update-env-vars "SMTP_HOST=${SMTP_HOST},SMTP_PORT=${SMTP_PORT},SMTP_SECURE=${SMTP_SECURE},SMTP_USER=${SMTP_USER},SMTP_FROM=${SMTP_FROM},APP_PUBLIC_URL=${SERVICE_URL}" \
+            --update-secrets "SMTP_PASS=${SMTP_PASS_SECRET}:latest" --quiet
+
+      - name: Verify the PILOT deployment (prueba de humo pública)
+        shell: bash
+        run: |
+          SERVICE_URL="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" --region "${GCP_REGION}" --format='value(status.url)')"
+          curl --fail --show-error --silent --retry 6 --retry-delay 5 "${SERVICE_URL}/health"
+          node backend/scripts/piloto-humo.mjs "${SERVICE_URL}"
+          echo "Piloto desplegado: ${SERVICE_URL}  (añádela como origen autorizado en el cliente OAuth del piloto)"
