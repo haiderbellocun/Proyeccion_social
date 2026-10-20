@@ -101,12 +101,21 @@ if (devLoginStatus().enabled) {
   app.use("/auth/dev", devAuthRouter);
   console.warn("⚠ ACCESO DE DESARROLLO ACTIVO (base proysocial_dev, solo localhost). No usar en producción.");
 }
+// Las rutas de la SPA (/docente/..., /admin/...) comparten prefijo con la API. Una NAVEGACIÓN del navegador (Accept: text/html: recargar la
+// página, abrir un enlace de notificación o un marcador) debe recibir la aplicación y no el 401 JSON de la API. Las llamadas fetch de la SPA
+// no piden text/html, así que siguen llegando a la API. Solo aplica cuando este servidor también sirve el frontend (despliegue de un contenedor).
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
+const staticDir = process.env.STATIC_DIR || path.resolve(currentDir, "../public");
+if (existsSync(staticDir)) {
+  app.get(["/docente", "/docente/*", "/admin", "/admin/*"], (req, res, next) => {
+    if (!String(req.get("accept") || "").includes("text/html")) return next();
+    res.sendFile(path.join(staticDir, "index.html"));
+  });
+}
 app.use("/docente", requireAuth, requireRole("docente", "admin"), docenteRouter);
 app.use("/admin", requireAuth, requireRole("admin"), adminRouter);
 app.use("/admin", requireAuth, requireRole("admin"), catalogoRouter);
 
-const currentDir = path.dirname(fileURLToPath(import.meta.url));
-const staticDir = process.env.STATIC_DIR || path.resolve(currentDir, "../public");
 if (existsSync(staticDir)) {
   app.use(express.static(staticDir));
   app.get("*", (req, res, next) => {

@@ -103,6 +103,8 @@ export default function GroupManagement({ cabecera }: { cabecera: ReactNode }) {
   const [intento, setIntento] = useState(false);
 
   const [assignDocenteId, setAssignDocenteId] = useState<number | "">("");
+  // Motivo del cambio de asignación (obligatorio en el backend: queda en el historial de asignaciones).
+  const [assignMotivo, setAssignMotivo] = useState("");
 
   const [editDocente, setEditDocente] = useState<DocenteRow | null>(null);
   const [editTipo, setEditTipo] = useState<"ANTIGUO" | "NUEVO">("ANTIGUO");
@@ -280,6 +282,7 @@ export default function GroupManagement({ cabecera }: { cabecera: ReactNode }) {
 
   const openAssign = (grupoId: number) => {
     setAssignDocenteId("");
+    setAssignMotivo("");
     setModo({ k: "asignar", id: grupoId });
   };
 
@@ -297,6 +300,10 @@ export default function GroupManagement({ cabecera }: { cabecera: ReactNode }) {
 
   const handleAsignar = async () => {
     if (modo?.k !== "asignar" || assignDocenteId === "") return;
+    if (assignMotivo.trim().length < 5) {
+      notify.warning("Indica el motivo de la asignación (mínimo 5 caracteres).");
+      return;
+    }
     const grupoId = modo.id;
     try {
       const res = await fetch(
@@ -304,7 +311,7 @@ export default function GroupManagement({ cabecera }: { cabecera: ReactNode }) {
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ grupo_matriz_id: grupoId }),
+          body: JSON.stringify({ grupo_matriz_id: grupoId, motivo: assignMotivo.trim() }),
         }
       );
       if (!res.ok) {
@@ -338,7 +345,8 @@ export default function GroupManagement({ cabecera }: { cabecera: ReactNode }) {
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ grupo_matriz_id: null }),
+          // El retiro se confirma en el diálogo anterior; el motivo describe la acción y el backend registra quién y cuándo.
+          body: JSON.stringify({ grupo_matriz_id: null, motivo: "Retiro del grupo confirmado desde la gestión de grupos" }),
         }
       );
       if (!res.ok) {
@@ -912,7 +920,7 @@ export default function GroupManagement({ cabecera }: { cabecera: ReactNode }) {
     abierto = true;
     etiquetaInsp = `asignar-${grupoModo.id}`;
     inspector = (
-      <FormInspector sup={grupoModo.nombre} titulo="Asignar docente a grupo" onCerrar={() => abrirVer(grupoModo.id)} onGuardar={() => void handleAsignar()} guardando={false} etiquetaGuardar="Asignar" deshabilitarGuardar={assignDocenteId === ""}>
+      <FormInspector sup={grupoModo.nombre} titulo="Asignar docente a grupo" onCerrar={() => abrirVer(grupoModo.id)} onGuardar={() => void handleAsignar()} guardando={false} etiquetaGuardar="Asignar" deshabilitarGuardar={assignDocenteId === "" || assignMotivo.trim().length < 5}>
         <Campo etiqueta="Docente">
           {(p) => (
             <select {...p} className="b2-sel" value={assignDocenteId === "" ? "" : String(assignDocenteId)} onChange={(e) => setAssignDocenteId(e.target.value === "" ? "" : Number(e.target.value))}>
@@ -920,6 +928,9 @@ export default function GroupManagement({ cabecera }: { cabecera: ReactNode }) {
               {candidatosAsignar.map((d) => <option key={d.id} value={d.id}>{`${d.name} — ${d.program}`}</option>)}
             </select>
           )}
+        </Campo>
+        <Campo etiqueta="Motivo de la asignación" obligatorio ancho="completo" ayuda="Queda registrado con tu usuario y la fecha en el historial de asignaciones.">
+          {(p) => <input {...p} className="b2-input" maxLength={500} value={assignMotivo} onChange={(e) => setAssignMotivo(e.target.value)} />}
         </Campo>
         {selectedCandidato && (
           <Dl rows={[

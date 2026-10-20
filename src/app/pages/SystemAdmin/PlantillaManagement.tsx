@@ -112,6 +112,7 @@ export default function PlantillaManagement({
   const [todosDocentes, setTodosDocentes] = useState<{ id: number; name: string }[]>([]);
   const [docenteAsignar, setDocenteAsignar] = useState("");
   const [asignando, setAsignando] = useState(false);
+  const [motivoAsignar, setMotivoAsignar] = useState(""); // obligatorio en el backend (historial de asignaciones)
   const [semestre, setSemestre] = useState("");
   const [semestresList, setSemestresList] = useState<string[]>([]);
   const [grupos, setGrupos] = useState<GrupoRow[]>([]);
@@ -205,17 +206,22 @@ export default function PlantillaManagement({
 
   const asignarDocente = async () => {
     if (!docenteAsignar || selectedGrupoId == null) return;
+    if (motivoAsignar.trim().length < 5) {
+      notify.warning("Indica el motivo de la asignación (mínimo 5 caracteres).");
+      return;
+    }
     setAsignando(true);
     try {
       const r = await fetch(`${API_BASE}/admin/docentes/${docenteAsignar}/grupo-matriz`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ grupo_matriz_id: selectedGrupoId }),
+        body: JSON.stringify({ grupo_matriz_id: selectedGrupoId, motivo: motivoAsignar.trim() }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || "No se pudo asignar el docente");
       notify.success("Grupo asignado al docente");
       setDocenteAsignar("");
+      setMotivoAsignar("");
       void loadResumen(selectedGrupoId);
     } catch (e) {
       notify.fromError(e, "No se pudo asignar el docente");
@@ -718,7 +724,11 @@ export default function PlantillaManagement({
                     {todosDocentes.filter((d) => !resumen.docentes.some((x) => x.id === d.id)).map((d) => <option key={d.id} value={String(d.id)}>{d.name}</option>)}
                   </select>
                 </label>
-                <button type="button" className="b2-btn" disabled={!docenteAsignar || asignando} onClick={() => void asignarDocente()}>{asignando ? "Asignando…" : "Asignar"}</button>
+                <label>
+                  <span className="b2-label">Motivo de la asignación</span>
+                  <input className="b2-input" maxLength={500} value={motivoAsignar} onChange={(e) => setMotivoAsignar(e.target.value)} placeholder="Queda registrado en el historial" />
+                </label>
+                <button type="button" className="b2-btn" disabled={!docenteAsignar || motivoAsignar.trim().length < 5 || asignando} onClick={() => void asignarDocente()}>{asignando ? "Asignando…" : "Asignar"}</button>
               </div>
             </div>
           </details>

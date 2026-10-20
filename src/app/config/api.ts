@@ -17,6 +17,9 @@ export async function apiFetch(
     window.localStorage.removeItem(TOKEN_KEY);
     window.localStorage.removeItem("proysocial:user");
     window.localStorage.removeItem("proysocial:semester");
+    // Sesión vencida o revocada (p. ej. a las 8 h o al inactivar la cuenta): se vuelve al inicio de sesión en lugar de dejar la pantalla
+    // actual con llamadas que fallan en silencio.
+    if (window.location.pathname !== "/") window.location.assign("/");
   }
   return response;
 }
