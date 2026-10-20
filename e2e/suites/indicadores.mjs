@@ -64,148 +64,38 @@ try {
   antes.semestres = Number((await q("select count(*)::int n from semestres"))[0].n);
   await login(p, ADMIN);
 
-  /* ═════════ 1. Avance consolidado ═════════ */
-  await seccion(p, "avance", "Avance consolidado", async () => {
+  /* ═════════ 1. Seguimiento operativo (la vista /admin/avance, antes «Avance consolidado por docente») ═════════
+   * La pantalla se reemplazó por el centro de seguimiento operativo. Su cobertura detallada (cifras contra PostgreSQL, filtros, respuestas tardías,
+   * navegación, responsive) está en backend/test/integration/seguimiento-operativo y e2e/suites/seguimiento-ui (base aislada). Aquí se conserva la
+   * comprobación de coherencia con la API de Avance consolidado sobre los datos de desarrollo, que sigue vigente. */
+  await seccion(p, "avance", "Seguimiento operativo", async () => {
     await irA(p, "/admin/avance");
+    await esperar(p, "document.querySelector('.b2-seg-cards')", "tarjetas del seguimiento", 10000);
+    const S = (await api(p, `/admin/seguimiento?semestre=${SEM}`)).d;
     const A = (await api(p, `/admin/avance-consolidado?semestre=${SEM}`)).d;
-    HOY = A.hoy;
-    const docs = A.docentes;
-    ok("avance: título y definiciones", await E(p, "return document.querySelector('.b2-ana h1')?.textContent.trim()==='Avance consolidado por docente' && /Reportado = enviado o aprobado/.test(document.querySelector('.b2-mx-s').textContent)"));
-    ok("avance: el semestre por defecto es el activo", (await valorSel(p, "Semestre")) === SEM, `semestre=${await valorSel(p, "Semestre")}`);
-    // — tabla vs API —
-    const T = await filasTabla(p, "Avance por docente");
-    ok(`avance ${SEM}: n.º de filas = docentes de la API (${docs.length})`, T.filas.length === docs.length, `${T.filas.length} filas`);
-    const esperadoOrden = [...docs].sort((a, b) => a.avance_global - b.avance_global || a.nombre.localeCompare(b.nombre)).map((d) => d.nombre);
-    ok("avance: orden por defecto (reportado ascendente)", igual(nombres(T), esperadoOrden.map((n) => n.split(" ").slice(0, 2).join(" "))), nombres(T).join(" | "));
-    const ix = (h) => T.cabeceras.indexOf(h);
-    const etiquetaSem = { rojo: "Crítico", amarillo: "En riesgo", verde: "En regla", sin_exigibles: "Sin vencimientos", sin_datos: "Sin matriz" };
-    for (const d of docs) {
-      const fila = T.filas.find((f) => f[0].startsWith(d.nombre));
-      const ex = fila && {
-        rep: fila[ix("Reportado")] === pc(d.avance_global), apr: fila[ix("Aprobado")] === pc(d.avance_aprobado), esp: fila[ix("Esperado")] === pc(d.avance_esperado),
-        cum: fila[ix("Cumplim.")] === pc(d.cumplimiento_esperado), bre: fila[ix("Brecha")] === pp(d.brecha), rev: fila[ix("Por revisar")] === n0(d.pendientes_revision),
-        ven: fila[ix("Vencidos")] === n0(d.entregables_vencidos), est: fila[ix("Estado")] === (d.grupo_id == null ? "Sin grupo" : etiquetaSem[d.semaforo]),
-      };
-      ok(`avance fila ${d.nombre}: reportado/aprobado/esperado/cumplimiento/brecha/por revisar/vencidos/estado = API`, !!ex && Object.values(ex).every(Boolean), JSON.stringify({ ex, fila }));
+    ok("seguimiento: título de la página", await E(p, "return document.querySelector('.b2-ana h1')?.textContent.trim()==='Seguimiento operativo'"));
+    ok("seguimiento: el semestre por defecto es el activo", (await valorSel(p, "Semestre")) === SEM, `semestre=${await valorSel(p, "Semestre")}`);
+    const T = await filasTabla(p, "Seguimiento por docente");
+    ok(`seguimiento: n.º de filas = docentes de la API (${S.docentes.length})`, T.filas.length === S.docentes.length, `${T.filas.length} filas`);
+    ok("seguimiento ≡ avance consolidado: mismos docentes, pendientes de revisión y semáforo", S.tarjetas.docentes === A.totales.docentes && S.tarjetas.enviados_pendientes_revision === A.totales.pendientes_revision);
+    for (const d of A.docentes) {
+      const x = S.docentes.find((r) => r.id === d.id);
+      ok(`seguimiento ≡ avance consolidado ${d.nombre}: reportado, aprobado, esperado, vencidos, brecha y semáforo`, !!x && x.semestre.pct_reportado === d.avance_reportado && x.semestre.pct_aprobado === d.avance_aprobado && x.semestre.pct_esperado === d.avance_esperado && x.semestre.vencidos === d.entregables_vencidos && x.semestre.brecha_pct === d.brecha && x.semestre.semaforo === d.semaforo, JSON.stringify({ seg: x?.semestre.pct_reportado, av: d.avance_reportado }));
     }
-    // — indicadores vs totales —
-    const K = await leerKpis(p, 'section[aria-label="Indicadores del consolidado"] dl');
-    const a = agregar(docs);
-    const esperadoK = kpisAvance({ ...a, docentes: A.totales.docentes, global: A.totales.promedio_global, aprobado: A.totales.promedio_aprobado, esperado: A.totales.promedio_esperado, retraso: A.totales.con_retraso, revisar: A.totales.pendientes_revision, rojo: A.totales.semaforo.rojo });
-    for (const [k, v] of Object.entries(esperadoK)) ok(`avance indicador «${k}» = API (${v})`, K?.[k] === v, `UI=${K?.[k]}`);
-    ok("avance: agregación propia sin filtros ≡ totales del backend (promedios, retraso, semáforo)", a.global === A.totales.promedio_global && a.aprobado === A.totales.promedio_aprobado && a.esperado === A.totales.promedio_esperado && a.retraso === A.totales.con_retraso && a.revisar === A.totales.pendientes_revision && a.rojo === A.totales.semaforo.rojo && a.amarillo === A.totales.semaforo.amarillo && a.verde === A.totales.semaforo.verde, JSON.stringify(a));
-    ok("avance: sin filtros no aparece el rótulo «(filtrado)»", !(await E(p, "return /\\(filtrado\\)/.test(document.querySelector('.b2-ana').innerText)")));
-
-    // — gráficos —
-    ok("avance: 5 gráficos, cada uno en <figure> con <figcaption> y pregunta", await E(p, "const f=[...document.querySelectorAll('.b2-ana figure.b2-fig')]; return f.length===5 && f.every(x=>x.querySelector('figcaption h3')?.textContent.trim().endsWith('?'))"));
-    const bala = await imgs(p, 'ul[aria-label="Avance por docente"] .b2-bl');
-    for (const d of docs.filter((x) => x.total_entregables > 0)) {
-      ok(`avance gráfico bala ${d.nombre}: valores = API`, bala.includes(`${d.nombre}: reportado ${pc(d.avance_global)}, aprobado ${pc(d.avance_aprobado)}, esperado ${pc(d.avance_esperado)}`), bala.find((b) => b.startsWith(d.nombre)));
-    }
-    const est = leerSeg((await imgs(p, '.b2-ap[aria-label^="Estado de los entregables"]'))[0]);
-    ok("avance estados: aprobados + por revisar + observados + sin reportar = total de entregables y cada parte = API", est["Aprobados"] === a.aprobados && est["Por revisar"] === a.revisar && est["Observados"] === a.observados && est["Aprobados"] + est["Por revisar"] + est["Observados"] + est["Sin reportar"] === a.total, JSON.stringify({ est, a: { ap: a.aprobados, rev: a.revisar, obs: a.observados, total: a.total } }));
-    const sem = leerSeg((await imgs(p, '.b2-ap[aria-label^="Docentes por semáforo"]'))[0]);
-    ok("avance semáforo = totales.semaforo", sem["Crítico"] === A.totales.semaforo.rojo && sem["En riesgo"] === A.totales.semaforo.amarillo && sem["En regla"] === A.totales.semaforo.verde, JSON.stringify(sem));
-    // meses futuros: un mes con primer día posterior a hoy se atenúa; ninguno se marca como incumplimiento
-    const cal = sems.find((s) => s.codigo === SEM);
-    const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
-    const futuroEsp = (mes) => { const idx = MESES.indexOf(mes.toLowerCase()); const [yi, mi] = cal.fi.slice(0, 7).split("-").map(Number); const [yf, mf] = cal.ff.slice(0, 7).split("-").map(Number); const c = []; for (let y = yi, m = mi; y < yf || (y === yf && m <= mf); m++) { if (m > 12) { m = 1; y++; } if (m - 1 === idx) c.push({ y, m }); if (y === yf && m === mf) break; } if (c.length !== 1) return false; const pr = `${c[0].y}-${String(c[0].m).padStart(2, "0")}-01`; return (pr < cal.fi.slice(0, 10) ? cal.fi.slice(0, 10) : pr) > HOY; };
-    const cats = JSON.parse(await E(p, "return JSON.stringify([...document.querySelectorAll('.b2-cg-c')].map(c=>({mes:c.querySelector('.b2-cg-e').firstChild.textContent.trim(), futuro:c.hasAttribute('data-futuro'), label:c.getAttribute('aria-label'), tip:c.querySelector('.b2-cg-t').innerText})))"));
-    ok(`avance meses: ${A.meses.length} columnas, una por mes del backend`, igual(cats.map((c) => c.mes), A.meses), cats.map((c) => c.mes).join(","));
-    ok("avance meses: solo se atenúan los meses cuyo primer día es posterior a hoy y ubicables en el calendario", cats.every((c) => c.futuro === futuroEsp(c.mes)), cats.map((c) => `${c.mes}:${c.futuro}`).join(" "));
-    ok("avance meses: «Febrero» (no ubicable en el calendario) no se marca como futuro ni como incumplimiento", !cats.find((c) => c.mes === "Febrero")?.futuro);
-    ok("avance meses: un mes futuro lo dice con texto y no habla de incumplimiento", cats.filter((c) => c.futuro).every((c) => /futuro/i.test(c.label) && !/incumpl|vencid/i.test(c.tip)), cats.filter((c) => c.futuro).map((c) => c.label).join(" | ").slice(0, 160));
-    for (const c of cats.slice(0, 3)) {
-      const vals = docs.map((d) => d.avance_por_mes.find((m) => m.mes === c.mes)).filter((m) => m && m.total > 0);
-      const rep = A.totales.por_mes.find((m) => m.mes === c.mes)?.porcentaje;
-      if (vals.length) ok(`avance mes ${c.mes}: reportado prom. = totales.por_mes`, c.label.includes(`Reportado (prom.) ${pc(rep)}`), c.label);
-    }
-    const venc = await imgs(p, '.b2-ap[aria-label]');
-    for (const d of docs.filter((x) => x.entregables_vencidos > 0)) ok(`avance vencidos ${d.nombre} = API`, venc.some((v) => v === `${d.nombre}: Vencidos ${d.entregables_vencidos}`), d.nombre);
-
-    // — orden, búsqueda y filtros de cliente —
-    await clic(p, "Ordenar por Vencidos");
-    await pausa(500);
-    let t = await filasTabla(p, "Avance por docente");
-    const porVenc = (dir) => [...docs].sort((x, y) => dir * (x.entregables_vencidos - y.entregables_vencidos) || x.nombre.localeCompare(y.nombre)).map((d) => d.nombre.split(" ").slice(0, 2).join(" "));
-    ok("avance orden: «Vencidos» ascendente", igual(nombres(t), porVenc(1)), nombres(t).join(" | "));
-    await clic(p, "Ordenar por Vencidos"); await pausa(500);
-    t = await filasTabla(p, "Avance por docente");
-    ok("avance orden: «Vencidos» descendente al repetir el clic", igual(nombres(t), porVenc(-1)), nombres(t).join(" | "));
-    await selValor(p, "Ordenar por", "Septiembre"); await pausa(500);
-    t = await filasTabla(p, "Avance por docente");
-    const mesP = (d) => d.avance_por_mes.find((m) => m.mes === "Septiembre")?.porcentaje ?? 0;
-    ok("avance orden: por avance de un mes (Septiembre, ascendente)", igual(nombres(t), [...docs].sort((x, y) => mesP(x) - mesP(y) || x.nombre.localeCompare(y.nombre)).map((d) => d.nombre.split(" ").slice(0, 2).join(" "))), nombres(t).join(" | "));
-    await selValor(p, "Ordenar por", "global"); await pausa(300);
-
-    // chip «Crítico»: KPIs filtrados = cálculo independiente sobre el subconjunto
-    await clicEmpieza(p, ".b2-chips button", "Crítico"); await pausa(600);
-    const rojos = docs.filter((d) => d.grupo_id != null && d.semaforo === "rojo");
-    t = await filasTabla(p, "Avance por docente");
-    ok(`avance filtro «Crítico»: ${rojos.length} docentes`, t.filas.length === rojos.length && igual([...nombres(t)].sort(), rojos.map((d) => d.nombre.split(" ").slice(0, 2).join(" ")).sort()), nombres(t).join(","));
-    ok(`avance filtro: rótulo «Indicadores (filtrado) · ${rojos.length} de ${docs.length} docentes»`, await E(p, `return document.querySelector('section[aria-label="Indicadores del consolidado"]').innerText.includes('Indicadores (filtrado) · ${rojos.length} de ${docs.length} docentes')`));
-    const Kf = await leerKpis(p, 'section[aria-label="Indicadores del consolidado"] dl');
-    const ef = kpisAvance(agregar(rojos));
-    for (const [k, v] of Object.entries(ef)) ok(`avance «(filtrado)» indicador «${k}» = cálculo independiente (${v})`, Kf?.[k] === v, `UI=${Kf?.[k]}`);
-    // búsqueda sobre el filtro y programa/regional
-    await escribir(p, "Buscar docente", "carlos"); await pausa(500);
-    t = await filasTabla(p, "Avance por docente");
-    ok("avance búsqueda «carlos»: una fila", t.filas.length === 1 && t.filas[0][0].startsWith("Carlos Mendoza"), nombres(t).join(","));
-    const Kc = await leerKpis(p, 'section[aria-label="Indicadores del consolidado"] dl');
-    const carlos = docs.filter((d) => d.nombre.startsWith("Carlos") && d.semaforo === "rojo");
-    ok("avance búsqueda: indicadores recalculados para el docente visible", Kc?.["Docentes"] === "1" && Kc?.["Reportado prom."] === pc(carlos[0].avance_global) && Kc?.["Vencidos"] === n0(carlos[0].entregables_vencidos), JSON.stringify(Kc));
-    await clic(p, "Limpiar filtros"); await pausa(600);
-    t = await filasTabla(p, "Avance por docente");
-    ok("avance «Limpiar filtros»: vuelven todos los docentes y los totales del backend", t.filas.length === docs.length && !(await E(p, "return /\\(filtrado\\)/.test(document.querySelector('.b2-ana').innerText)")));
-    const programas = [...new Set(docs.map((d) => d.programa))];
-    await selValor(p, "Programa", programas[0]); await pausa(500);
-    ok(`avance filtro por programa «${programas[0]}»`, (await filasTabla(p, "Avance por docente")).filas.length === docs.filter((d) => d.programa === programas[0]).length);
-    await selValor(p, "Regional", docs[0].regional); await pausa(500);
-    ok(`avance filtro por regional «${docs[0].regional}»`, (await filasTabla(p, "Avance por docente")).filas.length === docs.filter((d) => d.programa === programas[0] && d.regional === docs[0].regional).length);
-    await clic(p, "Limpiar filtros"); await pausa(400);
-
-    // — grupo: la API recibe grupo_id y la tabla muestra solo ese docente —
-    const g16 = docs.find((d) => d.grupo_id != null);
-    await instalarFetch(p);
-    await selValor(p, "Grupo", String(g16.grupo_id));
-    await esperar(p, "document.querySelectorAll('.b2-ana [role=table] .b2-tabla-r').length===1", "una fila", 6000);
-    const urls = await urlsVistas(p);
-    t = await filasTabla(p, "Avance por docente");
-    ok(`avance grupo ${g16.grupo_id}: la solicitud incluye grupo_id y la tabla muestra solo a ${g16.nombre}`, urls.some((u) => u.includes("/admin/avance-consolidado") && u.includes(`grupo_id=${g16.grupo_id}`)) && t.filas.length === 1 && t.filas[0][0].startsWith(g16.nombre), urls.filter((u) => u.includes("avance")).join(" "));
-    const Kg = await leerKpis(p, 'section[aria-label="Indicadores del consolidado"] dl');
-    const Ag = (await api(p, `/admin/avance-consolidado?semestre=${SEM}&grupo_id=${g16.grupo_id}`)).d;
-    ok("avance grupo: indicadores = totales de la API filtrada", Kg?.["Docentes"] === n0(Ag.totales.docentes) && Kg?.["Reportado prom."] === pc(Ag.totales.promedio_global) && Kg?.["Esperado a la fecha"] === pc(Ag.totales.promedio_esperado), JSON.stringify(Kg));
-    // — enlace profundo —
+    const K = await E(p, "return Object.fromEntries([...document.querySelectorAll('.b2-seg-cards dl > div')].map(d => [d.querySelector('dt').textContent.trim(), d.querySelector('dd').textContent.replace(/\\s+/g, ' ').trim()]))");
+    ok("seguimiento: 10 tarjetas", Object.keys(K).length === 10, Object.keys(K).join(" | "));
+    ok("seguimiento: «Vencidos», «En revisión» y «Observados» = API", K["Vencidos"]?.startsWith(n0(S.tarjetas.vencidos)) && K["En revisión"]?.startsWith(n0(S.tarjetas.enviados_pendientes_revision)) && K["Observados"]?.startsWith(n0(S.tarjetas.observados)), JSON.stringify(K).slice(0, 240));
+    // deep link ?semestre=&grupo= (usado por Indicadores por grupo)
+    const g16 = A.docentes.find((d) => d.grupo_id != null);
     await irA(p, `/admin/avance?semestre=${SEM}&grupo=${g16.grupo_id}`);
-    t = await filasTabla(p, "Avance por docente");
-    ok("avance deep link ?semestre=&grupo=: selects y tabla filtrados", (await valorSel(p, "Semestre")) === SEM && (await valorSel(p, "Grupo")) === String(g16.grupo_id) && t.filas.length === 1, `${await valorSel(p, "Semestre")}/${await valorSel(p, "Grupo")}/${t.filas.length}`);
-
-    // — inspector y navegación —
-    await irA(p, "/admin/avance");
-    await E(p, "document.querySelector('.b2-ana [role=table] .b2-tabla-r').click()"); await pausa(700);
-    const d0 = [...docs].sort((x, y) => x.avance_global - y.avance_global || x.nombre.localeCompare(y.nombre))[0];
-    const ti = await inspTexto(p);
-    ok("avance inspector: abre con el docente y sus indicadores = API", await inspAbierto(p) && ti.includes(d0.nombre) && ti.includes(pp(d0.brecha)) && ti.includes(pc(d0.avance_global)) && ti.includes(`Vencidos ${n0(d0.entregables_vencidos)}`) && ti.includes(`Por revisar ${n0(d0.pendientes_revision)}`), ti.slice(0, 260));
-    await tecla(p, "Escape", "Escape", 27); await pausa(500);
-    ok("avance inspector: Esc lo cierra", !(await inspAbierto(p)));
-    for (const [txt, esp] of [["Ver matriz", `/admin/docentes/${d0.id}/matriz`], ["Ir a la bandeja de revisión", "/admin/revision"], ["Ver su grupo en Plantillas", `/admin/sistema?tab=plantillas&semestre=${SEM}&grupo=${d0.grupo_id}`]]) {
-      await irA(p, "/admin/avance");
-      await E(p, "document.querySelector('.b2-ana [role=table] .b2-tabla-r').click()"); await pausa(600);
-      await E(p, `const b=[...document.querySelectorAll('aside.b2-insp[data-open="true"] .b2-btn')].find(x=>x.textContent.trim().startsWith(${JSON.stringify(txt)})); b&&b.click()`); await pausa(1200);
-      ok(`avance inspector «${txt}» → ${esp}`, (await ruta(p)).startsWith(esp), await ruta(p));
-    }
-
-    // — un solo semestre a la vez (Bloque 2): sin «Todos los semestres»; sin parámetro el backend usa el semestre activo —
-    await irA(p, "/admin/avance");
-    ok("avance: el selector de semestre no ofrece «Todos los semestres» (mezclaría periodos)", await E(p, `const s=document.querySelector('select[aria-label="Semestre"]'); return !!s && s.value===${JSON.stringify(SEM)} && ![...s.options].some(o=>/Todos los semestres/.test(o.textContent)||o.value==='')`));
-    const Tt = (await api(p, "/admin/avance-consolidado")).d;
-    ok(`avance sin parámetro = semestre activo ${SEM}: ${docs.length} docentes, todos con grupo del semestre`, Tt.alcance?.semestre === SEM && Tt.alcance?.origen === "semestre_activo" && Tt.docentes.length === docs.length && Tt.docentes.every((d) => d.grupo_id != null), `${Tt.alcance?.semestre} ${Tt.docentes.length}`);
-    ok("avance: la API no devuelve un consolidado mezclado (los docentes sin grupo se informan en alcance, no en la tabla)", typeof Tt.alcance?.docentes_sin_grupo === "number" && Tt.totales.docentes === Tt.docentes.length);
-    // — semestre vacío —
-    await selValor(p, "Semestre", SEM2); await pausa(1500); await cargaAna(p);
-    const A2 = (await api(p, `/admin/avance-consolidado?semestre=${SEM2}`)).d;
-    ok(`avance ${SEM2}: estado vacío explicativo y sin indicadores ni gráficos (API: ${A2.docentes.length} docentes)`, A2.docentes.length === 0 && await E(p, `const t=document.querySelector('.b2-ana').innerText; return t.includes('El semestre ${SEM2} no tiene docentes con grupo de matriz') && !document.querySelector('section[aria-label="Indicadores del consolidado"]') && document.querySelectorAll('figure.b2-fig').length===0`));
-    ok("avance vacío: ofrece ir a «Tareas semanales»", await clic(p, "Ir a Tareas semanales") && (await esperar(p, "location.search.includes('tab=tareas')", "tareas", 5000)));
+    await esperar(p, "document.querySelectorAll('.b2-ana [role=table] .b2-tabla-r').length===1", "una fila", 8000);
+    ok("seguimiento deep link ?semestre=&grupo=: selects y tabla filtrados", (await valorSel(p, "Semestre")) === SEM && (await valorSel(p, "Grupo")) === String(g16.grupo_id) && (await filasTabla(p, "Seguimiento por docente")).filas.length === 1);
+    // semestre sin docentes: estado vacío explicativo
+    await irA(p, `/admin/avance?semestre=${SEM2}`);
+    await esperar(p, "document.querySelector('.b2-adm-vacio-c, .b2-seg-cards')", "vista del otro semestre", 8000);
+    const S2 = (await api(p, `/admin/seguimiento?semestre=${SEM2}`)).d;
+    ok(`seguimiento ${SEM2}: estado vacío explicativo (API: ${S2.docentes.length} docentes)`, S2.docentes.length === 0 && await E(p, "return !document.querySelector('.b2-seg-cards') && /no tiene docentes con grupo/.test(document.querySelector('.b2-ana').innerText)"));
+    ok("seguimiento vacío: ofrece ir a «Tareas semanales»", await clic(p, "Ir a Tareas semanales") && (await esperar(p, "location.search.includes('tab=tareas')", "tareas", 5000)));
   });
 
   /* ═════════ 2. Indicadores por grupo ═════════ */
@@ -271,7 +161,7 @@ try {
       ok(`grupos inspector «${txt}» → ${esp}`, (await ruta(p)).startsWith(esp), await ruta(p));
       if (txt.startsWith("Ver avance")) {
         await cargaAna(p);
-        const tA = await filasTabla(p, "Avance por docente");
+        const tA = await filasTabla(p, "Seguimiento por docente");
         ok("grupos → avance: el enlace profundo abre el avance filtrado por ese grupo y semestre", (await valorSel(p, "Semestre")) === SEM && (await valorSel(p, "Grupo")) === String(gSel.id) && tA.filas.length === (gSel.num_docentes > 0 ? gSel.num_docentes : 0), `${await valorSel(p, "Grupo")} filas=${tA.filas.length}`);
       }
     }
@@ -395,7 +285,7 @@ try {
   const ESP = [/Failed to fetch|No se pudo|TypeError|Error al cargar|net::ERR/i];
   await seccion(p, "estados", "Estados de carga y error", async () => {
     const casos = [
-      ["avance", "/admin/avance", "/admin/avance-consolidado", "/admin"],
+      ["avance", "/admin/avance", "/admin/seguimiento", "/admin"],
       ["grupos", "/admin/indicadores", "/admin/indicadores-grupo", "/admin"],
       ["métricas", "/admin/reportes", "/admin/metricas", "/admin/indicadores"],
     ];
@@ -445,17 +335,16 @@ try {
     await tecla(p, "Tab", "Tab", 9);
     const tip = await E(p, "const c=document.querySelector('.b2-cg-c'); c.focus(); const t=c.querySelector('.b2-cg-t'); return getComputedStyle(t).display!=='none' && document.activeElement===c");
     ok("a11y: al enfocar una columna del gráfico mensual aparece su tooltip", tip);
-    ok("a11y: las filas del ranking son botones enfocables y abren el detalle con Enter/clic", await E(p, "const b=document.querySelector('ul[aria-label=\"Avance por docente\"] button.b2-fb-f'); if(!b) return false; b.focus(); return document.activeElement===b"));
-    await E(p, "document.querySelector('ul[aria-label=\"Avance por docente\"] button.b2-fb-f').click()"); await pausa(600);
-    ok("a11y: abrir una fila del ranking abre el inspector del docente", await inspAbierto(p));
-    await tecla(p, "Escape", "Escape", 27);
+    ok("a11y: las filas de la comparación por grupo son botones enfocables", await E(p, "const b=document.querySelector('ul[aria-label=\"Avance por grupo\"] button.b2-fb-f'); if(!b) return false; b.focus(); return document.activeElement===b"));
+    await E(p, "document.querySelector('ul[aria-label=\"Avance por grupo\"] button.b2-fb-f').click()"); await pausa(900);
+    ok("a11y: activar un grupo del gráfico lo aplica como filtro (el selector de grupo cambia)", await E(p, "return document.querySelector('select[aria-label=\"Grupo\"]').value !== ''"));
     await irA(p, "/admin/indicadores");
     ok("a11y indicadores: gráficos con título, leyenda y tabla alternativa", await E(p, "return [...document.querySelectorAll('.b2-ana figure.b2-fig')].every(f=>f.querySelector('figcaption h3')&&f.querySelector('.b2-leg')&&f.querySelector('details.b2-fig-tabla'))"));
   });
 
   /* ═════════ 7. Responsive ═════════ */
   await seccion(p, "responsive", "Responsive", async () => {
-    const PAG = [["avance", "/admin/avance", "Avance por docente"], ["indicadores", "/admin/indicadores", null], ["métricas", "/admin/reportes", "Docentes con menor avance"]];
+    const PAG = [["avance", "/admin/avance", "Seguimiento por docente"], ["indicadores", "/admin/indicadores", null], ["métricas", "/admin/reportes", "Docentes con menor avance"]];
     for (const [w, h] of [[1440, 900], [1280, 800], [820, 1000], [390, 844]]) {
       await p.tamano(w, h);
       const movil = w <= 720, estrecho = w <= 900;

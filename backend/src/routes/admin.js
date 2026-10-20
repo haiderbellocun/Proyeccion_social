@@ -19,6 +19,7 @@ import {
   toDateOnlyISO,
 } from "../services/matrizService.js";
 import { aplicarRevisionAdmin, reabrirEntregable } from "../services/entregableWorkflowService.js";
+import { consultarSeguimiento, consultarSeguimientoDocente } from "../services/seguimientoService.js";
 import {
   cambiarGrupoTx,
   listarIncidencias,
@@ -4370,6 +4371,23 @@ router.delete(
 );
 
 // Bloque 2 (CR-01): un único semestre (`?semestre=` o, sin parámetro, el activo); `grupo_id` inválido responde 400.
+// Seguimiento operativo: lectura consolidada con las fórmulas oficiales (ver services/seguimientoService.js).
+router.get("/seguimiento", async (req, res) => {
+  try {
+    res.json(await consultarSeguimiento(pool, req.query));
+  } catch (error) {
+    responderError(res, error, "Error en GET /admin/seguimiento");
+  }
+});
+
+router.get("/seguimiento/docentes/:id", async (req, res) => {
+  try {
+    res.json(await consultarSeguimientoDocente(pool, req.params.id, req.query));
+  } catch (error) {
+    responderError(res, error, "Error en GET /admin/seguimiento/docentes/:id");
+  }
+});
+
 router.get("/avance-consolidado", async (req, res) => {
   const grupoIdQ = req.query.grupo_id;
   try {

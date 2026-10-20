@@ -21,7 +21,7 @@
     "ejemplo:excel": "node scripts/generar-excel-ejemplo.js",
     "evidencias:backfill": "node scripts/backfill-evidencias.js",
     "test:db:setup": "node scripts/test-db-setup.js",
-    "test:integration:protegidos": "node --env-file=.env.test --test --test-concurrency=1 test/integration/historicos.integration.test.js test/integration/historicos11.integration.test.js test/integration/historicos12.integration.test.js test/integration/metricas-semestre.integration.test.js test/integration/historial-asignaciones.integration.test.js test/integration/asignacion-docente-servicio.integration.test.js test/integration/asignacion-grupo-concurrencia.integration.test.js test/integration/esquema-pendiente.integration.test.js test/integration/piloto-recorrido.integration.test.js"
+    "test:integration:protegidos": "node --env-file=.env.test --test --test-concurrency=1 test/integration/historicos.integration.test.js test/integration/historicos11.integration.test.js test/integration/historicos12.integration.test.js test/integration/metricas-semestre.integration.test.js test/integration/historial-asignaciones.integration.test.js test/integration/asignacion-docente-servicio.integration.test.js test/integration/asignacion-grupo-concurrencia.integration.test.js test/integration/esquema-pendiente.integration.test.js test/integration/piloto-recorrido.integration.test.js test/integration/seguimiento-operativo.integration.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

@@ -1,6 +1,9 @@
+// Seguimiento operativo (ruta /admin/avance): qué hace cada docente, en qué iniciativas, qué debe entregar, qué está atrasado y cuánto avanzó.
+// Lee GET /admin/seguimiento (tarjetas, tabla, gráficos y opciones de filtro) y GET /admin/seguimiento/docentes/:id (detalle). Todas las cifras
+// salen del servidor con las fórmulas oficiales (calcularMetricas); aquí no se recalcula ningún porcentaje.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { AnaPagina, ApiladaH, ColumnasAgrupadas, Figura, FilasApiladas, FilasBala, Indicadores, Leyenda, n0, pct, type Categoria } from "../components/b2/charts-b2";
+import { AnaPagina, ApiladaH, ColumnasAgrupadas, Figura, FilasBala, Indicadores, Leyenda, n0, pct, type Categoria } from "../components/b2/charts-b2";
 import { Barra, Buscar, Chips, DataTable, ErrorCarga, Filtro, Tag, fechaCorta, type Col } from "../components/b2/admin-ui";
 import { Bullet } from "../components/b2/Bullet";
 import { IRefrescar, ISeguimiento } from "../components/b2/icons";
@@ -10,221 +13,191 @@ import { useCurrentUser } from "../hooks/useCurrentUser";
 import { notify } from "../lib/notify";
 import { semaforoConfig, type Semaforo } from "../data/matrizConstants";
 import "../components/b2/b2-ana-avance.css";
+import "../components/b2/b2-seguimiento.css";
 
-/* ───────── tipos (respuesta de GET /admin/avance-consolidado) ───────── */
-interface AvanceMes {
-  mes: string;
-  completados: number;
-  reportados?: number;
-  aprobados?: number;
-  total: number;
-  porcentaje: number;
-  porcentaje_aprobado?: number;
+/* ───────── tipos (respuesta de GET /admin/seguimiento) ───────── */
+type Pct = number | null;
+interface MetricasSemestre {
+  total: number; reportados: number; aprobados: number; enviados_pendientes_revision: number; observados: number; borradores: number; no_iniciados: number;
+  vencidos: number; exigibles: number; pct_reportado: Pct; pct_aprobado: Pct; pct_esperado: Pct; brecha: number; brecha_pct: Pct;
+  horas_programadas: number; horas_reportadas: number; horas_aprobadas: number; semaforo: Semaforo;
 }
-
-export interface DocenteAvance {
-  id: number;
-  nombre: string;
-  programa: string;
-  regional: string;
-  grupo_id: number | null;
-  grupo_nombre: string;
-  tipo_docente: "ANTIGUO" | "NUEVO";
-  avance_global: number;
-  avance_real: number;
-  avance_esperado: number;
-  cumplimiento_esperado: number;
-  /** Puntos porcentuales: % aprobado − % esperado. */
-  brecha: number;
-  brecha_entregables?: number;
-  exigibles_a_fecha?: number;
-  cumplimiento_exigible?: number;
-  avance_aprobado: number;
-  semaforo: Semaforo;
-  pendientes_revision: number;
-  observados: number;
-  reportados: number;
-  aprobados: number;
-  total_entregables: number;
-  avance_por_mes: AvanceMes[];
-  entregables_vencidos: number;
-  ultimo_reporte: string | null;
+interface FilaDocente {
+  id: number; nombre: string; programa_id: number | null; programa: string; escuela: string | null; regional: string | null; grupo_id: number | null; grupo_nombre: string | null;
+  tipo_docente: "ANTIGUO" | "NUEVO"; estado_usuario: string; iniciativas: { id: number; titulo: string; tipo: string }[];
+  periodo: { programados: number; reportados: number; aprobados: number; pendientes: number; vencidos: number; observados: number; por_revisar: number; pct_reportado: Pct; pct_aprobado: Pct; enviados_fuera_del_periodo: number };
+  semestre: MetricasSemestre;
+  proxima_accion: { plantilla_id: number; entregable_id: number | null; entregable: string; semana: number; fecha_fin: string; vencido: boolean; estado: string; iniciativa_titulo: string | null } | null;
+  ultimo_envio: string | null;
 }
-
-interface Totales {
-  docentes: number;
-  promedio_global: number;
-  promedio_aprobado?: number;
-  promedio_esperado?: number;
-  con_retraso?: number;
-  pendientes_revision?: number;
-  semaforo?: { verde: number; amarillo: number; rojo: number };
-  por_mes: { mes: string; porcentaje: number }[];
-}
-
+interface Periodo { tipo: "semana" | "mes" | "semana_mes" | "semestre"; semana: number | null; mes: string | null; desde: string | null; hasta: string | null; etiqueta: string; origen: string }
 interface Payload {
-  meses: string[];
-  docentes: DocenteAvance[];
-  totales: Totales;
-  hoy?: string;
-  alcance?: { semestre: string | null; activo: boolean; estado_periodo: string; vacio: boolean; advertencias: string[] };
-}
-
-interface SemestreDetalle { codigo: string; fecha_inicio: string; fecha_fin: string }
-interface GrupoOpt { id: number; nombre: string; semestre: string }
-
-type EstadoFiltro = "todos" | "rojo" | "amarillo" | "verde" | "sin_exigibles" | "sin_grupo";
-type Orden = { clave: string; dir: "asc" | "desc" };
-
-/* ───────── agregación (misma definición que `totales` del backend) ─────────
- * Solo se usa cuando hay filtros de cliente (programa, regional, estado, búsqueda); sin filtros se muestran los totales del backend. */
-const round1 = (v: number) => Math.round(v * 10) / 10;
-export interface AgregadoAvance {
-  docentes: number;
-  promedio_global: number;
-  promedio_aprobado: number;
-  promedio_esperado: number;
-  con_retraso: number;
-  pendientes_revision: number;
-  observados: number;
-  vencidos: number;
-  aprobados: number;
-  reportados: number;
-  total_entregables: number;
-  semaforo: { verde: number; amarillo: number; rojo: number };
-  por_mes: { mes: string; porcentaje: number }[];
-}
-export function agregarAvance(docs: DocenteAvance[], meses: string[] = []): AgregadoAvance {
-  const n = docs.length;
-  const sum = (f: (d: DocenteAvance) => number) => docs.reduce((s, d) => s + f(d), 0);
-  const avg = (arr: number[]) => (arr.length === 0 ? 0 : round1(arr.reduce((a, b) => a + b, 0) / arr.length));
-  const conGrupo = docs.filter((d) => d.total_entregables > 0);
-  return {
-    docentes: n,
-    promedio_global: n > 0 ? round1(sum((d) => d.avance_global) / n) : 0,
-    promedio_aprobado: avg(conGrupo.map((d) => d.avance_aprobado)),
-    promedio_esperado: avg(conGrupo.map((d) => d.avance_esperado)),
-    con_retraso: docs.filter((d) => d.entregables_vencidos > 0).length,
-    pendientes_revision: sum((d) => d.pendientes_revision),
-    observados: sum((d) => d.observados),
-    vencidos: sum((d) => d.entregables_vencidos),
-    aprobados: sum((d) => d.aprobados),
-    reportados: sum((d) => d.reportados),
-    total_entregables: sum((d) => d.total_entregables),
-    semaforo: {
-      verde: docs.filter((d) => d.semaforo === "verde").length,
-      amarillo: docs.filter((d) => d.semaforo === "amarillo").length,
-      rojo: docs.filter((d) => d.semaforo === "rojo").length,
-    },
-    por_mes: meses.map((mes) => ({
-      mes,
-      porcentaje: avg(docs.map((d) => d.avance_por_mes.find((m) => m.mes === mes)).filter((m): m is AvanceMes => !!m && m.total > 0).map((m) => m.porcentaje)),
-    })),
+  semestre: { codigo: string | null; activo: boolean; calendario: { fecha_inicio: string; fecha_fin: string; num_semanas: number } | null };
+  hoy: string; periodo: Periodo; definiciones: Record<string, string>;
+  semana_actual: { numero: number | null; estado: string };
+  tarjetas: {
+    docentes: number; docentes_visibles_en_tabla: number; docentes_con_pendientes: number;
+    periodo: { etiqueta: string; programados: number; reportados: number; aprobados: number; pendientes: number; vencidos: number; pct_reportado: Pct; pct_aprobado: Pct; sin_programados: boolean; enviados_fuera_del_periodo: number };
+    semestre: { programados: number; reportados: number; aprobados: number; pct_reportado: Pct; pct_aprobado: Pct; pct_esperado: Pct; brecha_pct: Pct; brecha: number; exigibles: number };
+    vencidos: number; enviados_pendientes_revision: number; observados: number; programados_semana_actual: number | null; semana_actual: number | null;
   };
+  graficos: {
+    evolucion_semanal: { semana: number; mes: string | null; programados: number; reportados: number; aprobados: number; pct_reportado: Pct; pct_aprobado: Pct }[];
+    por_grupo: { id: number; nombre: string; docentes: number; total: number; reportados: number; aprobados: number; pct_reportado: Pct; pct_aprobado: Pct; pct_esperado: Pct; brecha_pct: Pct; vencidos: number; seleccionado: boolean }[];
+    estado_entregables: { total: number; no_iniciados: number; borradores: number; enviados: number; observados: number; aprobados: number; de_los_cuales_vencidos: number };
+  };
+  docentes: FilaDocente[];
+  opciones: {
+    semanas: { numero: number; desde: string; hasta: string; actual: boolean; programados: number; mes: string | null }[];
+    meses: string[]; grupos: { id: number; nombre: string }[]; programas: { id: number; nombre: string }[]; escuelas: { id: number; nombre: string }[];
+    iniciativas: { id: number; titulo: string; tipo: string }[]; tipos_iniciativa: string[]; docentes: { id: number; nombre: string }[];
+  };
+  docentes_sin_grupo: number; avisos: string[];
+  alcance?: { advertencias?: string[] };
 }
+interface Entregable {
+  plantilla_id: number; entregable_id: number | null; entregable: string; mes: string; semana: number; fecha_fin: string | null;
+  estado: "no_iniciado" | "borrador" | "enviado" | "observado" | "aprobado"; vencido: boolean; requiere_correccion: boolean; comentario_revision: string | null;
+  iniciativa: { id: number; titulo: string; tipo: string; relacion: "demostrada" | "sugerida_por_nombre" | "ninguna" } | null; evidencias: string[]; requiere_evidencia: boolean; en_periodo: boolean;
+}
+interface Detalle {
+  docente: { id: number; nombre: string; correo: string; estado_usuario: string; programa: string | null; escuela: string | null; regional: string | null; grupo_id: number | null; grupo_nombre: string | null; tipo_docente: string };
+  semestre: { codigo: string | null }; sin_matriz: boolean; motivo_sin_matriz: string | null; periodo: Periodo;
+  general: MetricasSemestre;
+  periodo_detalle: { programados: number; reportados: number; aprobados: number; pendientes: number; vencidos: number; observados: number; por_revisar: number; pct_reportado: Pct; pct_aprobado: Pct; sin_programados: boolean; enviados_fuera_del_periodo: { entregable: string; semana_programada: number; fecha_primer_envio: string; estado: string }[] };
+  iniciativas: { id: number; titulo: string; tipo: string; rol: "responsable" | "colaborador"; entregables_vinculados: number; reportados: number; aprobados: number; observados: number; pendientes_revision: number; pendientes: number; vencidos: number; aprobados_de_vinculados_pct: Pct }[];
+  sin_iniciativa_demostrable: { titulo: string; nota: string; total: number; reportados: number; aprobados: number; sugeridos_por_nombre: number };
+  entregables: Entregable[];
+}
+
+type Orden = { clave: string; dir: "asc" | "desc" };
+type EstadoFiltro = "todos" | "pendiente" | "vencido" | "enviado" | "observado" | "borrador" | "no_iniciado" | "aprobado";
 
 /* ───────── utilidades de presentación ───────── */
 const KIND_SEMAFORO: Record<Semaforo, Kind> = { verde: "aprobado", amarillo: "observado", rojo: "vencido", sin_exigibles: "porhacer", sin_datos: "porhacer" };
-const sinGrupo = (d: DocenteAvance) => d.grupo_id == null;
-const claveEstado = (d: DocenteAvance): Exclude<EstadoFiltro, "todos"> => (sinGrupo(d) || d.semaforo === "sin_datos" ? "sin_grupo" : d.semaforo === "sin_exigibles" ? "sin_exigibles" : d.semaforo);
-const estadoDe = (d: DocenteAvance): { kind: Kind; label: string } =>
-  sinGrupo(d) ? { kind: "porhacer", label: "Sin grupo" } : { kind: KIND_SEMAFORO[d.semaforo] ?? "porhacer", label: (semaforoConfig[d.semaforo] ?? semaforoConfig.sin_datos).label };
-const pp = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toLocaleString("es-CO", { maximumFractionDigits: 1 })} pp`;
-const mesDe = (d: DocenteAvance, mes: string) => d.avance_por_mes.find((m) => m.mes === mes);
-const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace("setiembre", "septiembre");
-const MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const KIND_ESTADO: Record<Entregable["estado"], { kind: Kind; label: string }> = {
+  aprobado: { kind: "aprobado", label: "Aprobado" }, enviado: { kind: "revision", label: "En revisión" }, observado: { kind: "observado", label: "Observado" },
+  borrador: { kind: "borrador", label: "Borrador" }, no_iniciado: { kind: "porhacer", label: "Sin iniciar" },
+};
+const pp = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toLocaleString("es-CO", { maximumFractionDigits: 1 })} pp`);
+const sinMatriz = (d: FilaDocente) => d.semestre.total === 0;
+const estadoDe = (d: FilaDocente): { kind: Kind; label: string } =>
+  sinMatriz(d) ? { kind: "porhacer", label: d.grupo_id == null ? "Sin grupo" : "Sin entregables" } : { kind: KIND_SEMAFORO[d.semestre.semaforo] ?? "porhacer", label: (semaforoConfig[d.semestre.semaforo] ?? semaforoConfig.sin_datos).label };
+const TIPO_INICIATIVA: Record<string, string> = { proyecto: "Proyecto", actividad: "Actividad", convenio: "Convenio", capacitacion: "Capacitación" };
+const fecha = (iso: string | null | undefined) => (iso ? fechaCorta(String(iso).slice(0, 10)) : "—");
+const rango = (a: string, b: string) => `${fecha(a)} – ${fecha(b)}`;
+const soloNum = (v: number | null | undefined) => (v == null ? "—" : n0(v));
 
-/** Primer día exigible del mes dentro del semestre; null si el mes no se puede ubicar sin ambigüedad. */
-function inicioDeMes(mes: string, cal: { inicio: string; fin: string } | null): string | null {
-  if (!cal) return null;
-  const idx = MESES_ES.indexOf(norm(mes));
-  if (idx < 0) return null;
-  const [yi, mi] = cal.inicio.slice(0, 7).split("-").map(Number);
-  const [yf, mf] = cal.fin.slice(0, 7).split("-").map(Number);
-  const coincidencias: { y: number; m: number }[] = [];
-  for (let y = yi, m = mi; y < yf || (y === yf && m <= mf); m += 1) {
-    if (m > 12) { m = 1; y += 1; }
-    if (m - 1 === idx) coincidencias.push({ y, m });
-    if (y === yf && m === mf) break;
+function valorOrden(d: FilaDocente, clave: string): number {
+  switch (clave) {
+    case "vencidos": return d.semestre.vencidos;
+    case "pendientes": return d.periodo.pendientes;
+    case "programados": return d.periodo.programados;
+    case "sem_rep": return d.periodo.pct_reportado ?? -1;
+    case "sem_apr": return d.periodo.pct_aprobado ?? -1;
+    case "global": return d.semestre.pct_reportado ?? -1;
+    case "aprobado": return d.semestre.pct_aprobado ?? -1;
+    case "brecha": return d.semestre.brecha_pct ?? 0;
+    default: return 0;
   }
-  if (coincidencias.length !== 1) return null;
-  const { y, m } = coincidencias[0];
-  const primero = `${y}-${String(m).padStart(2, "0")}-01`;
-  return primero < cal.inicio.slice(0, 10) ? cal.inicio.slice(0, 10) : primero;
 }
-
-const CLAVES_ORDEN: { id: string; label: string }[] = [
-  { id: "nombre", label: "Docente" },
-  { id: "global", label: "Reportado" },
-  { id: "aprobado", label: "Aprobado" },
-  { id: "esperado", label: "Esperado" },
-  { id: "cumplimiento", label: "Cumplimiento" },
-  { id: "brecha", label: "Brecha" },
-  { id: "vencidos", label: "Vencidos" },
+const ORDENES: { id: string; label: string }[] = [
+  { id: "vencidos", label: "Vencidos" }, { id: "pendientes", label: "Pendientes del periodo" }, { id: "brecha", label: "Brecha" },
+  { id: "sem_rep", label: "Reportado del periodo" }, { id: "global", label: "Reportado del semestre" }, { id: "aprobado", label: "Aprobado del semestre" }, { id: "nombre", label: "Docente" },
+];
+const ESTADOS: { id: EstadoFiltro; label: string }[] = [
+  { id: "todos", label: "Todos" }, { id: "pendiente", label: "Con acción pendiente" }, { id: "vencido", label: "Vencidos" }, { id: "enviado", label: "En revisión" },
+  { id: "observado", label: "Observados" }, { id: "borrador", label: "Borradores" }, { id: "no_iniciado", label: "Sin iniciar" }, { id: "aprobado", label: "Aprobados" },
+];
+const GRUPOS_DETALLE: { id: string; titulo: string; ver: (e: Entregable) => boolean; abierto: boolean }[] = [
+  { id: "vencidos", titulo: "Vencidos", ver: (e) => e.vencido, abierto: true },
+  { id: "observados", titulo: "Observados (requieren corrección)", ver: (e) => !e.vencido && e.estado === "observado", abierto: true },
+  { id: "borradores", titulo: "Borradores", ver: (e) => !e.vencido && e.estado === "borrador", abierto: true },
+  { id: "sin_iniciar", titulo: "Pendientes de iniciar", ver: (e) => !e.vencido && e.estado === "no_iniciado", abierto: false },
+  { id: "revision", titulo: "Enviados a revisión", ver: (e) => e.estado === "enviado", abierto: true },
+  { id: "aprobados", titulo: "Aprobados", ver: (e) => e.estado === "aprobado", abierto: false },
 ];
 
-function valorOrden(d: DocenteAvance, clave: string): number {
-  switch (clave) {
-    case "global": return d.avance_global;
-    case "aprobado": return d.avance_aprobado;
-    case "esperado": return d.avance_esperado;
-    case "cumplimiento": return d.cumplimiento_esperado;
-    case "brecha": return d.brecha;
-    case "vencidos": return d.entregables_vencidos;
-    default: return mesDe(d, clave)?.porcentaje ?? 0;
-  }
-}
+const entero = (v: string | null) => (v && Number.isInteger(Number(v)) && Number(v) > 0 ? v : "");
 
 export default function AvanceConsolidado() {
   const navigate = useNavigate();
   const user = useCurrentUser();
   const isAdmin = user?.rol === "admin";
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
 
   const [semestre, setSemestre] = useState(() => params.get("semestre") ?? "");
-  const [grupoId, setGrupoId] = useState(() => (Number.isInteger(Number(params.get("grupo"))) && Number(params.get("grupo")) > 0 ? String(Number(params.get("grupo"))) : ""));
-  const [semestresListos, setSemestresListos] = useState(false);
+  const [semana, setSemana] = useState(() => (params.get("periodo") === "semestre" ? "semestre" : entero(params.get("semana"))));
+  const [mes, setMes] = useState(() => params.get("mes") ?? "");
+  const [grupoId, setGrupoId] = useState(() => entero(params.get("grupo") ?? params.get("grupo_id")));
+  const [docenteId, setDocenteId] = useState(() => entero(params.get("docente")));
+  const [programaId, setProgramaId] = useState(() => entero(params.get("programa")));
+  const [escuelaId, setEscuelaId] = useState(() => entero(params.get("escuela")));
+  const [iniciativa, setIniciativa] = useState(() => params.get("iniciativa") ?? "");
+  const [estado, setEstado] = useState<EstadoFiltro>(() => (ESTADOS.some((e) => e.id === params.get("estado")) ? (params.get("estado") as EstadoFiltro) : "todos"));
   const [buscar, setBuscar] = useState("");
-  const [programa, setPrograma] = useState("");
-  const [regional, setRegional] = useState("");
-  const [estado, setEstado] = useState<EstadoFiltro>("todos");
-  const [orden, setOrden] = useState<Orden>({ clave: "global", dir: "asc" });
-  const [sel, setSel] = useState<number | null>(null);
-  const [data, setData] = useState<Payload | null>(null);
-  const [grupos, setGrupos] = useState<GrupoOpt[]>([]);
+  const [orden, setOrden] = useState<Orden>({ clave: "vencidos", dir: "desc" });
+  const [sel, setSel] = useState<number | null>(() => (entero(params.get("detalle")) ? Number(params.get("detalle")) : null));
   const [semestresList, setSemestresList] = useState<string[]>([]);
-  const [detalle, setDetalle] = useState<SemestreDetalle[]>([]);
+  const [semestresListos, setSemestresListos] = useState(false);
+  const [data, setData] = useState<Payload | null>(null);
+  // Las opciones de los filtros se conservan mientras llega una respuesta nueva: si desaparecieran, el selector perdería su valor a mitad de un cambio.
+  const [opcPrev, setOpcPrev] = useState<Payload["opciones"] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [detalle, setDetalle] = useState<Detalle | null>(null);
+  const [cargandoDetalle, setCargandoDetalle] = useState(false);
+  const [errorDetalle, setErrorDetalle] = useState<string | null>(null);
   const solicitud = useRef(0);
-  const solicitudGrupos = useRef(0);
+  const solicitudDetalle = useRef(0);
+  const abortar = useRef<AbortController | null>(null);
 
-  /* ───── carga: solo cuenta la última solicitud ───── */
+  /** Parámetros comunes de ambas consultas (el detalle usa el mismo semestre y periodo que la vista). */
+  const qsPeriodo = useCallback(() => {
+    const q = new URLSearchParams();
+    if (semestre.trim()) q.set("semestre", semestre.trim());
+    if (semana === "semestre") q.set("periodo", "semestre");
+    else if (semana) q.set("semana", semana);
+    if (mes) q.set("mes", mes);
+    return q;
+  }, [semestre, semana, mes]);
+
+  /* ───── carga: solo cuenta la última solicitud (las respuestas tardías de filtros anteriores se descartan) ───── */
   const fetchData = useCallback(async (mantener = false) => {
     if (!isAdmin) return;
     const mia = ++solicitud.current;
+    abortar.current?.abort();
+    const ctl = new AbortController();
+    abortar.current = ctl;
     setLoading(true);
     setError(null);
     if (!mantener) setData(null);
     try {
-      const q = new URLSearchParams();
-      if (semestre.trim()) q.set("semestre", semestre.trim());
-      if (grupoId.trim()) q.set("grupo_id", grupoId.trim());
-      const res = await fetch(`${API_BASE}/admin/avance-consolidado?${q.toString()}`);
+      const q = qsPeriodo();
+      if (grupoId) q.set("grupo_id", grupoId);
+      if (docenteId) q.set("docente_id", docenteId);
+      if (programaId) q.set("programa_id", programaId);
+      if (escuelaId) q.set("escuela_id", escuelaId);
+      if (iniciativa.startsWith("i:")) q.set("iniciativa_id", iniciativa.slice(2));
+      if (iniciativa.startsWith("t:")) q.set("tipo_iniciativa", iniciativa.slice(2));
+      if (estado !== "todos") q.set("estado", estado);
+      const res = await fetch(`${API_BASE}/admin/seguimiento?${q.toString()}`, { signal: ctl.signal });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || "Error al cargar");
       if (mia !== solicitud.current) return;
       setData(json as Payload);
+      setOpcPrev((json as Payload).opciones);
     } catch (e) {
-      if (mia !== solicitud.current) return;
+      if (mia !== solicitud.current || (e as Error)?.name === "AbortError") return;
       console.error(e);
-      notify.error("No se pudo cargar el avance consolidado. Intente de nuevo más tarde.");
-      setError("No se pudo cargar el avance consolidado.");
+      const msg = e instanceof Error && e.message ? e.message : "No se pudo cargar el seguimiento.";
+      notify.error("No se pudo cargar el seguimiento. Intenta de nuevo.");
+      setError(msg);
       setData(null);
     } finally {
       if (mia === solicitud.current) setLoading(false);
     }
-  }, [isAdmin, semestre, grupoId]);
+  }, [isAdmin, qsPeriodo, grupoId, docenteId, programaId, escuelaId, iniciativa, estado]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -235,10 +208,7 @@ export default function AvanceConsolidado() {
         const s: string[] = j.semestres || [];
         const activeCode = String(j.activo?.codigo || "");
         setSemestresList(s);
-        setDetalle(Array.isArray(j.detalle) ? j.detalle : []);
-        if (s.length) {
-          setSemestre((prev) => (prev && s.includes(prev) ? prev : activeCode && s.includes(activeCode) ? activeCode : s[0]));
-        }
+        if (s.length) setSemestre((prev) => (prev && s.includes(prev) ? prev : activeCode && s.includes(activeCode) ? activeCode : s[0]));
       } catch {
         setSemestresList([]);
       } finally {
@@ -248,400 +218,421 @@ export default function AvanceConsolidado() {
   }, [isAdmin]);
 
   useEffect(() => {
-    if (!isAdmin) return;
-    const mia = ++solicitudGrupos.current;
-    (async () => {
-      try {
-        const q = semestre ? `?semestre=${encodeURIComponent(semestre)}` : "";
-        const r = await fetch(`${API_BASE}/admin/grupos-matriz${q}`);
-        const j = await r.json();
-        if (mia !== solicitudGrupos.current) return;
-        setGrupos((j.grupos || []).map((g: GrupoOpt) => ({ id: g.id, nombre: g.nombre, semestre: g.semestre })));
-      } catch {
-        if (mia === solicitudGrupos.current) setGrupos([]);
-      }
-    })();
-  }, [isAdmin, semestre]);
-
-  useEffect(() => {
     if (!semestresListos) return;
     void fetchData();
   }, [fetchData, semestresListos]);
 
-  // Esc cierra el detalle desde cualquier foco
+  // Los filtros quedan en la URL (se pueden compartir y recargar)
+  useEffect(() => {
+    if (!semestresListos) return;
+    const q = new URLSearchParams();
+    const poner = (k: string, v: string) => { if (v) q.set(k, v); };
+    poner("semestre", semestre);
+    if (semana === "semestre") q.set("periodo", "semestre"); else poner("semana", semana);
+    poner("mes", mes); poner("grupo", grupoId); poner("docente", docenteId); poner("programa", programaId); poner("escuela", escuelaId);
+    poner("iniciativa", iniciativa); if (estado !== "todos") q.set("estado", estado); if (sel != null) q.set("detalle", String(sel));
+    setParams(q, { replace: true });
+  }, [semestre, semana, mes, grupoId, docenteId, programaId, escuelaId, iniciativa, estado, sel, semestresListos, setParams]);
+
+  // Detalle del docente seleccionado (con su propia protección contra respuestas tardías)
+  useEffect(() => {
+    if (!isAdmin || sel == null || !semestresListos) { setDetalle(null); return; }
+    const mia = ++solicitudDetalle.current;
+    setCargandoDetalle(true);
+    setErrorDetalle(null);
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/admin/seguimiento/docentes/${sel}?${qsPeriodo().toString()}`);
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || "No se pudo cargar el detalle");
+        if (mia === solicitudDetalle.current) setDetalle(json as Detalle);
+      } catch (e) {
+        if (mia === solicitudDetalle.current) { setDetalle(null); setErrorDetalle(e instanceof Error ? e.message : "No se pudo cargar el detalle"); }
+      } finally {
+        if (mia === solicitudDetalle.current) setCargandoDetalle(false);
+      }
+    })();
+  }, [isAdmin, sel, qsPeriodo, semestresListos]);
+
   useEffect(() => {
     if (sel == null) return;
-    const tecla = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !document.querySelector("dialog[open]")) setSel(null);
-    };
+    const tecla = (e: KeyboardEvent) => { if (e.key === "Escape" && !document.querySelector("dialog[open]")) setSel(null); };
     document.addEventListener("keydown", tecla);
     return () => document.removeEventListener("keydown", tecla);
   }, [sel]);
 
   const docentes = data?.docentes ?? [];
-  const meses = data?.meses ?? [];
-  const hoy = data?.hoy ?? "";
-  const calendario = useMemo(() => {
-    const d = detalle.find((x) => x.codigo === semestre);
-    return d ? { inicio: String(d.fecha_inicio).slice(0, 10), fin: String(d.fecha_fin).slice(0, 10) } : null;
-  }, [detalle, semestre]);
-  const esFuturo = useCallback((mes: string) => {
-    const ini = inicioDeMes(mes, calendario);
-    return !!hoy && !!ini && ini > hoy;
-  }, [calendario, hoy]);
+  const opc = data?.opciones ?? opcPrev ?? undefined;
+  const t = data?.tarjetas;
+  const periodo = data?.periodo;
 
-  /* ───── filtros de cliente ───── */
-  const programas = useMemo(() => [...new Set(docentes.map((d) => d.programa).filter((p) => p && p !== "—"))].sort((a, b) => a.localeCompare(b)), [docentes]);
-  const regionales = useMemo(() => [...new Set(docentes.map((d) => d.regional).filter((p) => p && p !== "—"))].sort((a, b) => a.localeCompare(b)), [docentes]);
-  const coincideBase = useCallback((d: DocenteAvance) => {
-    if (programa && d.programa !== programa) return false;
-    if (regional && d.regional !== regional) return false;
-    const q = buscar.trim().toLowerCase();
-    if (q && !(d.nombre.toLowerCase().includes(q) || d.programa.toLowerCase().includes(q) || d.regional.toLowerCase().includes(q))) return false;
-    return true;
-  }, [programa, regional, buscar]);
-  const conteoEstado = useMemo(() => {
-    const base = docentes.filter(coincideBase);
-    const c: Record<EstadoFiltro, number> = { todos: base.length, rojo: 0, amarillo: 0, verde: 0, sin_exigibles: 0, sin_grupo: 0 };
-    for (const d of base) c[claveEstado(d)] += 1;
-    return c;
-  }, [docentes, coincideBase]);
-  const filtrados = useMemo(() => docentes.filter((d) => coincideBase(d) && (estado === "todos" || claveEstado(d) === estado)), [docentes, coincideBase, estado]);
-  const hayFiltros = programa !== "" || regional !== "" || estado !== "todos" || buscar.trim() !== "";
-  const limpiar = () => { setPrograma(""); setRegional(""); setEstado("todos"); setBuscar(""); };
-
+  /* ───── búsqueda y orden (la tabla; los filtros de servidor ya decidieron la población) ───── */
+  const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const visibles = useMemo(() => {
+    const q = norm(buscar.trim());
+    if (!q) return docentes;
+    return docentes.filter((d) => norm(`${d.nombre} ${d.programa} ${d.grupo_nombre ?? ""} ${d.escuela ?? ""} ${d.iniciativas.map((i) => i.titulo).join(" ")}`).includes(q));
+  }, [docentes, buscar]);
   const ordenados = useMemo(() => {
     const dir = orden.dir === "asc" ? 1 : -1;
-    return [...filtrados].sort((a, b) => {
+    return [...visibles].sort((a, b) => {
       if (orden.clave === "nombre") return dir * a.nombre.localeCompare(b.nombre);
       const va = valorOrden(a, orden.clave);
       const vb = valorOrden(b, orden.clave);
       return va !== vb ? dir * (va - vb) : a.nombre.localeCompare(b.nombre);
     });
-  }, [filtrados, orden]);
-  const alternarOrden = (clave: string) => setOrden((o) => (o.clave === clave ? { clave, dir: o.dir === "asc" ? "desc" : "asc" } : { clave, dir: "asc" }));
-
-  /* ───── indicadores: totales del backend sin filtros; con filtros, misma definición sobre los docentes visibles ───── */
-  const agg: AgregadoAvance | null = useMemo(() => {
-    if (!data) return null;
-    const mios = agregarAvance(hayFiltros ? filtrados : docentes, meses);
-    if (hayFiltros) return mios;
-    const t = data.totales;
-    return {
-      ...mios,
-      docentes: t.docentes,
-      promedio_global: t.promedio_global,
-      promedio_aprobado: t.promedio_aprobado ?? mios.promedio_aprobado,
-      promedio_esperado: t.promedio_esperado ?? mios.promedio_esperado,
-      con_retraso: t.con_retraso ?? mios.con_retraso,
-      pendientes_revision: t.pendientes_revision ?? mios.pendientes_revision,
-      semaforo: t.semaforo ?? mios.semaforo,
-      por_mes: t.por_mes ?? mios.por_mes,
-    };
-  }, [data, hayFiltros, filtrados, docentes, meses]);
-
-  const seleccionado = docentes.find((d) => d.id === sel) ?? null;
-  const sinGrupoN = filtrados.filter(sinGrupo).length;
-  const conGrupoFiltrados = filtrados.filter((d) => !sinGrupo(d));
-  const pie = useMemo(() => agregarAvance(conGrupoFiltrados, meses), [conGrupoFiltrados, meses]);
-
-  /* ───── datos de los gráficos (siempre sobre los docentes visibles) ───── */
-  const ranking = useMemo(
-    () => conGrupoFiltrados.filter((d) => d.total_entregables > 0).sort((a, b) => a.brecha - b.brecha || a.nombre.localeCompare(b.nombre)).slice(0, 10),
-    [conGrupoFiltrados]
-  );
-  const vencimientos = useMemo(
-    () => filtrados.filter((d) => d.entregables_vencidos > 0).sort((a, b) => b.entregables_vencidos - a.entregables_vencidos || a.nombre.localeCompare(b.nombre)).slice(0, 8),
-    [filtrados]
-  );
-  const sinReportar = agg ? Math.max(0, agg.total_entregables - agg.aprobados - agg.pendientes_revision - agg.observados) : 0;
-  const categoriasMes: Categoria[] = useMemo(() => {
-    if (!agg) return [];
-    return meses.map((mes) => {
-      const vals = filtrados.map((d) => mesDe(d, mes)).filter((m): m is AvanceMes => !!m && m.total > 0 && m.porcentaje_aprobado != null).map((m) => m.porcentaje_aprobado as number);
-      const apr = vals.length ? round1(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
-      const rep = agg.por_mes.find((x) => x.mes === mes);
-      const hayDato = filtrados.some((d) => (mesDe(d, mes)?.total ?? 0) > 0);
-      return {
-        id: mes,
-        label: mes,
-        futuro: esFuturo(mes),
-        valores: [
-          { s: "rep" as const, label: "Reportado (prom.)", valor: hayDato ? rep?.porcentaje ?? 0 : null },
-          { s: "apr" as const, label: "Aprobado (prom.)", valor: hayDato ? apr ?? 0 : null },
-        ],
-      };
-    });
-  }, [agg, meses, filtrados, esFuturo]);
+  }, [visibles, orden]);
+  const alternarOrden = (clave: string) => setOrden((o) => (o.clave === clave ? { clave, dir: o.dir === "asc" ? "desc" : "asc" } : { clave, dir: clave === "nombre" ? "asc" : "desc" }));
+  const hayFiltros = !!(grupoId || docenteId || programaId || escuelaId || iniciativa || mes || semana || estado !== "todos" || buscar.trim());
+  const limpiar = () => { setGrupoId(""); setDocenteId(""); setProgramaId(""); setEscuelaId(""); setIniciativa(""); setMes(""); setSemana(""); setEstado("todos"); setBuscar(""); };
+  const cambiaSemestre = (v: string) => { setOpcPrev(null); setSemestre(v); setGrupoId(""); setDocenteId(""); setProgramaId(""); setEscuelaId(""); setIniciativa(""); setMes(""); setSemana(""); setSel(null); };
 
   /* ───── tabla ───── */
-  const cols: Col<DocenteAvance>[] = useMemo(() => [
+  const cols: Col<FilaDocente>[] = useMemo(() => [
     {
-      id: "docente", titulo: "Docente", ancho: "minmax(180px, 1.5fr)", orden: "nombre",
-      celda: (d) => (<><span className="b2-tt" title={d.nombre}>{d.nombre}</span><span className="b2-sub">{d.programa}{d.regional && d.regional !== "—" ? ` · ${d.regional}` : ""}</span></>),
+      id: "docente", titulo: "Docente", ancho: "minmax(150px, 1.4fr)", orden: "nombre",
+      celda: (d) => (<><span className="b2-tt" title={d.nombre}>{d.nombre}{d.estado_usuario !== "activo" && <> <Tag>inactivo</Tag></>}</span><span className="b2-sub">{d.programa}{d.escuela ? ` · ${d.escuela}` : ""}</span></>),
     },
-    { id: "grupo", titulo: "Grupo", ancho: "minmax(120px, 1fr)", prioridad: 3, celda: (d) => <span className="b2-tt" title={d.grupo_nombre}>{sinGrupo(d) ? "—" : d.grupo_nombre}</span> },
-    { id: "bala", titulo: "Reportado · aprobado · esperado", ancho: "minmax(120px, 1fr)", prioridad: 2, celda: (d) => (sinGrupo(d) ? <span className="b2-muted">Sin matriz</span> : <Bullet rep={d.avance_global} apr={d.avance_aprobado} esp={d.avance_esperado} nombre={d.nombre} />) },
-    { id: "rep", titulo: "Reportado", ancho: "82px", num: true, orden: "global", celda: (d) => (sinGrupo(d) ? "—" : pct(d.avance_global)) },
-    { id: "apr", titulo: "Aprobado", ancho: "78px", num: true, prioridad: 2, orden: "aprobado", celda: (d) => (sinGrupo(d) ? "—" : pct(d.avance_aprobado)) },
-    { id: "esp", titulo: "Esperado", ancho: "78px", num: true, prioridad: 2, orden: "esperado", celda: (d) => (sinGrupo(d) ? "—" : pct(d.avance_esperado)) },
-    { id: "cum", titulo: "Cumplim.", ancho: "82px", num: true, prioridad: 3, orden: "cumplimiento", celda: (d) => (sinGrupo(d) ? "—" : pct(d.cumplimiento_esperado)) },
-    { id: "bre", titulo: "Brecha", ancho: "86px", num: true, orden: "brecha", celda: (d) => (sinGrupo(d) ? "—" : <span className={d.brecha < 0 ? "b2-neg b2-ana-av-neg" : undefined}>{pp(d.brecha)}</span>) },
-    { id: "rev", titulo: "Por revisar", ancho: "74px", num: true, prioridad: 2, celda: (d) => n0(d.pendientes_revision) },
-    { id: "ven", titulo: "Vencidos", ancho: "72px", num: true, orden: "vencidos", celda: (d) => <span className={d.entregables_vencidos > 0 ? "b2-neg b2-ana-av-neg" : undefined}>{n0(d.entregables_vencidos)}</span> },
-    { id: "ult", titulo: "Último envío", ancho: "104px", prioridad: 3, celda: (d) => <span className="b2-fch">{fechaCorta(d.ultimo_reporte)}</span> },
-    { id: "est", titulo: "Estado", ancho: "124px", celda: (d) => { const e = estadoDe(d); return <Estado kind={e.kind} label={e.label} />; } },
+    { id: "grupo", titulo: "Grupo", ancho: "minmax(96px, 1fr)", prioridad: 3, celda: (d) => <span className="b2-tt" title={d.grupo_nombre ?? ""}>{d.grupo_nombre ?? "—"}</span> },
+    {
+      id: "ini", titulo: "Iniciativas", ancho: "minmax(104px, 1fr)", prioridad: 3,
+      celda: (d) => (d.iniciativas.length === 0 ? <span className="b2-muted">Sin iniciativas</span> : (<><span className="b2-tt" title={d.iniciativas.map((i) => `${TIPO_INICIATIVA[i.tipo] ?? i.tipo}: ${i.titulo}`).join("\n")}>{d.iniciativas[0].titulo}</span><span className="b2-sub">{d.iniciativas.length > 1 ? `+${d.iniciativas.length - 1} más` : TIPO_INICIATIVA[d.iniciativas[0].tipo] ?? d.iniciativas[0].tipo}</span></>)),
+    },
+    { id: "prog", titulo: "Prog.", ancho: "52px", num: true, orden: "programados", celda: (d) => n0(d.periodo.programados) },
+    { id: "rep", titulo: "Rep.", ancho: "46px", num: true, prioridad: 2, celda: (d) => n0(d.periodo.reportados) },
+    { id: "apr", titulo: "Aprob.", ancho: "54px", num: true, prioridad: 2, celda: (d) => n0(d.periodo.aprobados) },
+    { id: "pen", titulo: "Pend.", ancho: "50px", num: true, orden: "pendientes", celda: (d) => n0(d.periodo.pendientes) },
+    { id: "ven", titulo: "Venc.", ancho: "50px", num: true, orden: "vencidos", celda: (d) => <span className={d.semestre.vencidos > 0 ? "b2-neg b2-ana-av-neg" : undefined}>{n0(d.semestre.vencidos)}</span> },
+    { id: "semp", titulo: "Periodo", ancho: "64px", num: true, prioridad: 2, orden: "sem_rep", celda: (d) => (d.periodo.programados === 0 ? <span className="b2-muted" title="Sin entregables programados en el periodo">—</span> : <span title={`Aprobado ${pct(d.periodo.pct_aprobado)}`}>{pct(d.periodo.pct_reportado)}</span>) },
+    { id: "bala", titulo: "Semestre", ancho: "minmax(104px, 1fr)", prioridad: 2, orden: "global", celda: (d) => (sinMatriz(d) ? <span className="b2-muted">Sin entregables</span> : <Bullet rep={d.semestre.pct_reportado} apr={d.semestre.pct_aprobado} esp={d.semestre.pct_esperado} nombre={d.nombre} />) },
+    {
+      id: "prox", titulo: "Próxima acción", ancho: "minmax(124px, 1.1fr)", prioridad: 3,
+      celda: (d) => (d.proxima_accion ? (<><span className="b2-tt" title={d.proxima_accion.entregable}>{d.proxima_accion.entregable}</span><span className={`b2-sub${d.proxima_accion.vencido ? " b2-neg" : ""}`}>{d.proxima_accion.vencido ? "Vencido · " : "Límite "}{fecha(d.proxima_accion.fecha_fin)} · S{d.proxima_accion.semana}</span></>) : <span className="b2-muted">—</span>),
+    },
+    { id: "est", titulo: "Estado", ancho: "112px", celda: (d) => { const e = estadoDe(d); return <Estado kind={e.kind} label={e.label} />; } },
   ], []);
-
-  const irPlantillas = (d: DocenteAvance) => {
-    const g = grupos.find((x) => x.id === d.grupo_id);
-    const sem = g?.semestre || semestre;
-    navigate(`/admin/sistema?tab=plantillas${sem ? `&semestre=${encodeURIComponent(sem)}` : ""}&grupo=${d.grupo_id}`);
-  };
 
   if (!isAdmin) {
     return (
-      <AnaPagina titulo="Avance consolidado por docente" inspectorAbierto={false} inspectorEtiqueta="" onCerrarInspector={() => undefined}>
-        <div className="b2-alert" role="alert"><span>Solo los administradores pueden ver el avance consolidado.</span></div>
+      <AnaPagina titulo="Seguimiento operativo" inspectorAbierto={false} inspectorEtiqueta="" onCerrarInspector={() => undefined}>
+        <div className="b2-alert" role="alert"><span>Solo los administradores pueden ver el seguimiento operativo.</span></div>
       </AnaPagina>
     );
   }
 
   const cargandoInicial = (loading || !semestresListos) && !data;
-  const vacioSemestre = !!data && docentes.length === 0;
-  const brechaProm = agg ? round1((agg.promedio_aprobado ?? 0) - (agg.promedio_esperado ?? 0)) : 0;
-  const semaforoSegs = agg ? [
-    { s: "ven" as const, label: "Crítico", valor: agg.semaforo.rojo },
-    { s: "obs" as const, label: "En riesgo", valor: agg.semaforo.amarillo },
-    { s: "apr" as const, label: "En regla", valor: agg.semaforo.verde },
-    { s: "sin" as const, label: "Sin vencimientos o sin matriz", valor: Math.max(0, agg.docentes - agg.semaforo.rojo - agg.semaforo.amarillo - agg.semaforo.verde) },
-  ] : [];
+  const vacio = !!data && data.tarjetas.docentes === 0;
+  const eg = data?.graficos.estado_entregables;
+  const semanaActual = data?.semana_actual?.numero ?? null;
+  const categoriasSemana: Categoria[] = (data?.graficos.evolucion_semanal ?? []).map((s) => ({
+    id: String(s.semana), label: `S${s.semana}`, sub: undefined, futuro: semanaActual != null ? s.semana > semanaActual : false,
+    valores: [
+      { s: "rep" as const, label: "Reportado", valor: s.programados > 0 ? s.pct_reportado : null },
+      { s: "apr" as const, label: "Aprobado", valor: s.programados > 0 ? s.pct_aprobado : null },
+    ],
+  }));
+  const gruposConDatos = (data?.graficos.por_grupo ?? []).filter((g) => g.total > 0);
+  const gruposSinDatos = (data?.graficos.por_grupo ?? []).filter((g) => g.total === 0);
+  const semanasOpc = opc?.semanas ?? [];
+  const enSemana = periodo?.tipo === "semana" || periodo?.tipo === "semana_mes";
+
+  const irMatriz = (id: number) => navigate(`/admin/docentes/${id}/matriz`);
+  const tarjetaPct = (p: Pct, prog: number, rep: number, etiqueta: string) => (prog === 0 ? { v: <span className="b2-seg-sin">Sin entregables programados</span>, sub: undefined as string | undefined } : { v: pct(p), sub: `${n0(rep)} de ${n0(prog)} ${etiqueta}` });
+
+  const detallePanel = (() => {
+    if (sel == null) return null;
+    const base = docentes.find((d) => d.id === sel) ?? null;
+    const dd = detalle;
+    const nombre = dd?.docente.nombre ?? base?.nombre ?? "Docente";
+    return (
+      <div className="b2-insp-c b2-seg-det">
+        <p className="b2-insp-sup">{dd?.docente.programa ?? base?.programa ?? ""}{(dd?.docente.escuela ?? base?.escuela) ? ` · ${dd?.docente.escuela ?? base?.escuela}` : ""}</p>
+        <h2 className="b2-insp-h">{nombre}</h2>
+        {base && <div className="b2-insp-estado">{(() => { const e = estadoDe(base); return <Estado kind={e.kind} label={e.label} />; })()}</div>}
+        {cargandoDetalle && !dd && <div className="b2-skel-w" role="status" aria-label="Cargando detalle…">{[88, 64, 76].map((w, i) => <span key={i} className="b2-skel" style={{ width: `${w}%`, height: 16 }} />)}</div>}
+        {errorDetalle && <ErrorCarga onReintentar={() => setSel((s) => s)}>{errorDetalle}</ErrorCarga>}
+        {dd && (
+          <>
+            <p className="b2-insp-p">{dd.docente.grupo_nombre ? `${dd.docente.grupo_nombre} · Docente ${dd.docente.tipo_docente === "NUEVO" ? "nuevo" : "antiguo"}` : "Sin grupo de matriz asignado."}{dd.docente.estado_usuario !== "activo" ? " · Usuario inactivo" : ""}</p>
+            {dd.sin_matriz ? (
+              <div className="b2-aviso-sem" role="status">{dd.motivo_sin_matriz ?? "Sin entregables en este semestre."}</div>
+            ) : (
+              <>
+                <h3 className="b2-insp-sub">Semestre {dd.semestre.codigo}</h3>
+                <Bullet rep={dd.general.pct_reportado} apr={dd.general.pct_aprobado} esp={dd.general.pct_esperado} nombre={dd.docente.nombre} />
+                <div style={{ marginTop: 8 }}><Leyenda items={[{ s: "rep", label: "Reportado" }, { s: "apr", label: "Aprobado" }, { s: "esp", label: "Esperado a la fecha" }]} /></div>
+                <Dl rows={[
+                  ["Reportado", `${pct(dd.general.pct_reportado)} · ${n0(dd.general.reportados)} de ${n0(dd.general.total)}`],
+                  ["Aprobado", `${pct(dd.general.pct_aprobado)} · ${n0(dd.general.aprobados)} de ${n0(dd.general.total)}`],
+                  ["Esperado", `${pct(dd.general.pct_esperado)} · ${n0(dd.general.exigibles)} con límite hasta hoy`],
+                  ["Brecha", <span key="b" className={(dd.general.brecha_pct ?? 0) < 0 ? "b2-neg b2-ana-av-neg" : undefined}>{pp(dd.general.brecha_pct)} · {dd.general.brecha > 0 ? "+" : dd.general.brecha < 0 ? "−" : ""}{Math.abs(dd.general.brecha)} entregables</span>],
+                  ["Por revisar", n0(dd.general.enviados_pendientes_revision)],
+                  ["Observados", n0(dd.general.observados)],
+                  ["Vencidos", <span key="v" className={dd.general.vencidos > 0 ? "b2-neg b2-ana-av-neg" : undefined}>{n0(dd.general.vencidos)}</span>],
+                  ["Horas (prog. · rep.)", `${n0(dd.general.horas_programadas)} · ${n0(dd.general.horas_reportadas)}`],
+                ]} />
+
+                <h3 className="b2-insp-sub">{dd.periodo.etiqueta}</h3>
+                {dd.periodo_detalle.sin_programados ? (
+                  <p className="b2-seg-sin">Sin entregables programados en este periodo.</p>
+                ) : (
+                  <Dl rows={[
+                    ["Programados", n0(dd.periodo_detalle.programados)],
+                    ["Reportados", `${n0(dd.periodo_detalle.reportados)} · ${pct(dd.periodo_detalle.pct_reportado)}`],
+                    ["Aprobados", `${n0(dd.periodo_detalle.aprobados)} · ${pct(dd.periodo_detalle.pct_aprobado)}`],
+                    ["Pendientes", n0(dd.periodo_detalle.pendientes)],
+                    ["Vencidos", n0(dd.periodo_detalle.vencidos)],
+                  ]} />
+                )}
+                {dd.periodo_detalle.enviados_fuera_del_periodo.length > 0 && (
+                  <div className="b2-seg-fuera">
+                    <p><b>Enviados en este periodo, programados para otra semana</b> (no cuentan en el cumplimiento del periodo):</p>
+                    <ul>{dd.periodo_detalle.enviados_fuera_del_periodo.map((e, i) => <li key={i}>{e.entregable} · semana {e.semana_programada} · enviado el {fecha(e.fecha_primer_envio)}</li>)}</ul>
+                  </div>
+                )}
+
+                <h3 className="b2-insp-sub">Proyectos, actividades y convenios</h3>
+                {dd.iniciativas.length === 0 ? <p className="b2-muted">El docente no es responsable ni colaborador de ninguna iniciativa.</p> : (
+                  <ul className="b2-adm-lista b2-seg-ini">
+                    {dd.iniciativas.map((i) => (
+                      <li key={i.id}>
+                        <span>
+                          <span className="b2-seg-ini-t">{i.titulo}</span>
+                          <span className="b2-sub">{TIPO_INICIATIVA[i.tipo] ?? i.tipo} · {i.rol === "responsable" ? "responsable" : "colaborador"}</span>
+                          <span className="b2-sub">{i.entregables_vinculados === 0 ? "Sin entregables vinculados todavía" : `${n0(i.entregables_vinculados)} vinculados · ${n0(i.aprobados)} aprobados · ${n0(i.pendientes_revision)} en revisión · ${n0(i.observados)} observados${i.vencidos ? ` · ${n0(i.vencidos)} vencidos` : ""}`}</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p className="b2-seg-nota"><b>{dd.sin_iniciativa_demostrable.titulo}:</b> {n0(dd.sin_iniciativa_demostrable.total)} entregables. {dd.sin_iniciativa_demostrable.nota}</p>
+
+                <h3 className="b2-insp-sub">Entregables</h3>
+                {GRUPOS_DETALLE.map((g) => {
+                  const lista = dd.entregables.filter(g.ver);
+                  if (lista.length === 0) return null;
+                  return (
+                    <details key={g.id} className="b2-seg-grp" open={g.abierto && lista.length <= 12}>
+                      <summary>{g.titulo} <b>{lista.length}</b></summary>
+                      <ul className="b2-seg-ents">
+                        {lista.map((e) => (
+                          <li key={e.plantilla_id}>
+                            <div className="b2-seg-e-h">
+                              <span className="b2-seg-e-n">{e.entregable}</span>
+                              <span className="b2-seg-e-tags"><Estado kind={KIND_ESTADO[e.estado].kind} label={KIND_ESTADO[e.estado].label} />{e.vencido && <Tag tono="peligro">Vencido</Tag>}</span>
+                            </div>
+                            <span className="b2-sub">Semana {e.semana}{e.mes ? ` · ${e.mes}` : ""} · límite {fecha(e.fecha_fin)}{e.iniciativa ? ` · ${e.iniciativa.relacion === "demostrada" ? "" : "posible: "}${e.iniciativa.titulo}` : ""}</span>
+                            {e.requiere_correccion && e.comentario_revision && <span className="b2-seg-obs">Observación: {e.comentario_revision}</span>}
+                            <span className="b2-seg-e-acc">
+                              {e.entregable_id != null && <button type="button" className="b2-btn b2-btn-sm" onClick={() => navigate(`/admin/revision?reporte=${e.entregable_id}`)}>{e.estado === "enviado" ? "Revisar" : "Ver en revisión"}</button>}
+                              <button type="button" className="b2-btn b2-btn-sm b2-btn-ghost" onClick={() => irMatriz(dd.docente.id)}>Ver en su matriz</button>
+                              {e.evidencias.slice(0, 2).map((u, i) => <a key={i} className="b2-link" href={u} target="_blank" rel="noopener noreferrer">Evidencia{e.evidencias.length > 1 ? ` ${i + 1}` : ""}</a>)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  );
+                })}
+              </>
+            )}
+            <div className="b2-insp-acc">
+              <button type="button" className="b2-btn b2-btn-primary" onClick={() => irMatriz(dd.docente.id)}>Abrir su matriz</button>
+              <button type="button" className="b2-btn" onClick={() => navigate("/admin/revision")}>Ir a la bandeja de revisión{dd.general.enviados_pendientes_revision > 0 ? ` (${dd.general.enviados_pendientes_revision} por revisar)` : ""}</button>
+              <button type="button" className="b2-btn" onClick={() => navigate("/admin/indicadores")}>Indicadores del grupo</button>
+              <button type="button" className="b2-btn" onClick={() => navigate("/admin/sistema?tab=proyectos")}>Ver iniciativas</button>
+              <button type="button" className="b2-btn b2-btn-ghost" onClick={() => setSel(null)}>Cerrar</button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  })();
 
   return (
     <AnaPagina
-      titulo="Avance consolidado por docente"
+      titulo="Seguimiento operativo"
       icono={<ISeguimiento width={20} height={20} />}
-      subtitulo="Reportado = enviado o aprobado · Aprobado = revisado por el administrador · Esperado = con fecha límite hasta hoy."
+      subtitulo={`Reportado = enviado o aprobado · Aprobado = revisado por coordinación · Esperado = con fecha límite hasta hoy.${data?.hoy ? ` Hoy: ${fecha(data.hoy)}.` : ""}`}
       acciones={
         <button type="button" className="b2-btn" onClick={() => void fetchData(true)} disabled={loading}>
           <IRefrescar width={16} height={16} />{loading ? "Actualizando…" : "Actualizar"}
         </button>
       }
-      inspector={seleccionado && (
-        <div className="b2-insp-c">
-          <p className="b2-insp-sup">{seleccionado.programa}{seleccionado.regional && seleccionado.regional !== "—" ? ` · ${seleccionado.regional}` : ""}</p>
-          <h2 className="b2-insp-h">{seleccionado.nombre}</h2>
-          <div className="b2-insp-estado">{(() => { const e = estadoDe(seleccionado); return <Estado kind={e.kind} label={e.label} />; })()}</div>
-          <p className="b2-insp-p">{sinGrupo(seleccionado) ? "Sin grupo de matriz asignado." : `${seleccionado.grupo_nombre} · Docente ${seleccionado.tipo_docente === "NUEVO" ? "nuevo" : "antiguo"}`}</p>
-          {!sinGrupo(seleccionado) && (
-            <>
-              <h3 className="b2-insp-sub">Avance</h3>
-              <Bullet rep={seleccionado.avance_global} apr={seleccionado.avance_aprobado} esp={seleccionado.avance_esperado} nombre={seleccionado.nombre} />
-              <div style={{ marginTop: 8 }}><Leyenda items={[{ s: "rep", label: "Reportado" }, { s: "apr", label: "Aprobado" }, { s: "esp", label: "Esperado a la fecha" }]} /></div>
-              <h3 className="b2-insp-sub">Indicadores</h3>
-              <Dl rows={[
-                ["Reportado", pct(seleccionado.avance_global)],
-                ["Aprobado", pct(seleccionado.avance_aprobado)],
-                ["Esperado", pct(seleccionado.avance_esperado)],
-                ["Cumplimiento", pct(seleccionado.cumplimiento_esperado)],
-                ["Brecha", <span key="b" className={seleccionado.brecha < 0 ? "b2-neg b2-ana-av-neg" : undefined}>{pp(seleccionado.brecha)}{seleccionado.brecha_entregables != null ? ` · ${seleccionado.brecha_entregables > 0 ? "+" : seleccionado.brecha_entregables < 0 ? "−" : ""}${Math.abs(seleccionado.brecha_entregables)} entregables` : ""}</span>],
-                ["Exigibles a la fecha", seleccionado.exigibles_a_fecha != null ? n0(seleccionado.exigibles_a_fecha) : "—"],
-                ["Entregables", `${n0(seleccionado.total_entregables)} en total`],
-                ["Reportados", n0(seleccionado.reportados)],
-                ["Aprobados", n0(seleccionado.aprobados)],
-                ["Por revisar", n0(seleccionado.pendientes_revision)],
-                ["Observados", n0(seleccionado.observados)],
-                ["Vencidos", <span key="v" className={seleccionado.entregables_vencidos > 0 ? "b2-neg b2-ana-av-neg" : undefined}>{n0(seleccionado.entregables_vencidos)}</span>],
-                ["Último envío", fechaCorta(seleccionado.ultimo_reporte)],
-              ]} />
-              <h3 className="b2-insp-sub">Por mes</h3>
-              <ul className="b2-adm-lista b2-ana-av-meses" aria-label="Avance por mes">
-                {seleccionado.avance_por_mes.map((m) => (
-                  <li key={m.mes}>
-                    <span>
-                      <span>{m.mes}{esFuturo(m.mes) && <> <Tag>futuro</Tag></>}</span>
-                      <span className="b2-sub">{n0(m.reportados ?? m.completados)} de {n0(m.total)} reportados · {n0(m.aprobados ?? 0)} aprobados</span>
-                    </span>
-                    <span className="b2-ana-av-mv">{m.total > 0 ? `${pct(m.porcentaje)} rep.` : "—"}<small>{m.total > 0 ? `${pct(m.porcentaje_aprobado)} apr.` : ""}</small></span>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-          <div className="b2-insp-acc">
-            <button type="button" className="b2-btn b2-btn-primary" onClick={() => navigate(`/admin/docentes/${seleccionado.id}/matriz`)}>Ver matriz</button>
-            <button type="button" className="b2-btn" onClick={() => navigate("/admin/revision")}>Ir a la bandeja de revisión{seleccionado.pendientes_revision > 0 ? ` (${seleccionado.pendientes_revision} por revisar)` : ""}</button>
-            {!sinGrupo(seleccionado) && <button type="button" className="b2-btn" onClick={() => irPlantillas(seleccionado)}>Ver su grupo en Plantillas</button>}
-            <button type="button" className="b2-btn b2-btn-ghost" onClick={() => setSel(null)}>Cerrar</button>
-          </div>
-        </div>
-      )}
-      inspectorAbierto={!!seleccionado}
+      inspector={detallePanel}
+      inspectorAbierto={sel != null}
       inspectorEtiqueta={String(sel)}
       onCerrarInspector={() => setSel(null)}
     >
       {error && <ErrorCarga onReintentar={() => void fetchData()}>{error}</ErrorCarga>}
 
-      <Chips<EstadoFiltro>
-        value={estado}
-        onChange={setEstado}
-        etiqueta="Filtrar por estado"
-        items={[
-          { id: "todos", label: "Todos", n: conteoEstado.todos },
-          { id: "rojo", label: "Crítico", n: conteoEstado.rojo },
-          { id: "amarillo", label: "En riesgo", n: conteoEstado.amarillo },
-          { id: "verde", label: "En regla", n: conteoEstado.verde },
-          { id: "sin_exigibles", label: "Sin vencimientos", n: conteoEstado.sin_exigibles },
-          { id: "sin_grupo", label: "Sin grupo o sin matriz", n: conteoEstado.sin_grupo },
-        ]}
-      />
-      <div className="b2-ana-av-f"><Barra contador={data ? (hayFiltros ? `${filtrados.length} de ${docentes.length} docentes` : `${docentes.length} docentes`) : undefined}>
-        <Buscar value={buscar} onChange={setBuscar} placeholder="Buscar docente, programa o regional" etiqueta="Buscar docente" />
-        <Filtro value={semestre || data?.alcance?.semestre || ""} onChange={(v) => { setSemestre(v); setGrupoId(""); setSel(null); }} etiqueta="Semestre" ancho={140}>
-          {/* Un semestre a la vez: sin parámetro el backend usa el activo, así que no hay opción «Todos» (mezclaría periodos). */}
+      <div className="b2-ana-av-f"><Barra contador={data ? `${visibles.length}${visibles.length !== data.tarjetas.docentes_visibles_en_tabla ? ` de ${data.tarjetas.docentes_visibles_en_tabla}` : ""} docentes${data.tarjetas.docentes_visibles_en_tabla !== data.tarjetas.docentes ? ` (de ${data.tarjetas.docentes} en el semestre)` : ""}` : undefined}>
+        <Buscar value={buscar} onChange={setBuscar} placeholder="Buscar docente, programa, grupo o iniciativa" etiqueta="Buscar docente" />
+        <Filtro value={semestre || data?.semestre.codigo || ""} onChange={cambiaSemestre} etiqueta="Semestre" ancho={120}>
           {semestresList.map((s) => <option key={s} value={s}>{s}</option>)}
         </Filtro>
-        <Filtro value={grupoId} onChange={(v) => { setGrupoId(v); setSel(null); }} etiqueta="Grupo" ancho={210}>
+        <Filtro value={semana} onChange={(v) => { setSemana(v); }} etiqueta="Semana académica" ancho={190}>
+          <option value="">{semanaActual ? `Semana en curso (${semanaActual})` : "Semana en curso"}</option>
+          <option value="semestre">Todo el semestre</option>
+          {semanasOpc.map((s) => <option key={s.numero} value={String(s.numero)}>{`Semana ${s.numero}${s.actual ? " (actual)" : ""} · ${rango(s.desde, s.hasta)}${s.programados ? "" : " · sin entregables"}`}</option>)}
+        </Filtro>
+        <Filtro value={mes} onChange={setMes} etiqueta="Mes académico" ancho={150}>
+          <option value="">Todos los meses</option>
+          {(opc?.meses ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
+        </Filtro>
+        <Filtro value={grupoId} onChange={(v) => { setGrupoId(v); setSel(null); }} etiqueta="Grupo" ancho={190}>
           <option value="">Todos los grupos</option>
-          {grupos.map((g) => <option key={g.id} value={String(g.id)}>{g.nombre}</option>)}
+          {(opc?.grupos ?? []).map((g) => <option key={g.id} value={String(g.id)}>{g.nombre}</option>)}
         </Filtro>
-        <Filtro value={programa} onChange={setPrograma} etiqueta="Programa" ancho={190}>
+        <Filtro value={docenteId} onChange={setDocenteId} etiqueta="Docente" ancho={190}>
+          <option value="">Todos los docentes</option>
+          {(opc?.docentes ?? []).map((d) => <option key={d.id} value={String(d.id)}>{d.nombre}</option>)}
+        </Filtro>
+        <Filtro value={programaId} onChange={setProgramaId} etiqueta="Programa" ancho={180}>
           <option value="">Todos los programas</option>
-          {programas.map((p) => <option key={p} value={p}>{p}</option>)}
+          {(opc?.programas ?? []).map((p) => <option key={p.id} value={String(p.id)}>{p.nombre}</option>)}
         </Filtro>
-        <Filtro value={regional} onChange={setRegional} etiqueta="Regional" ancho={150}>
-          <option value="">Todas las regionales</option>
-          {regionales.map((r) => <option key={r} value={r}>{r}</option>)}
+        {(opc?.escuelas.length ?? 0) > 0 && (
+          <Filtro value={escuelaId} onChange={setEscuelaId} etiqueta="Escuela" ancho={170}>
+            <option value="">Todas las escuelas</option>
+            {(opc?.escuelas ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.nombre}</option>)}
+          </Filtro>
+        )}
+        <Filtro value={iniciativa} onChange={setIniciativa} etiqueta="Iniciativa" ancho={190}>
+          <option value="">Todas las iniciativas</option>
+          {(opc?.tipos_iniciativa ?? []).map((tp) => <option key={tp} value={`t:${tp}`}>Todos: {TIPO_INICIATIVA[tp]}s</option>)}
+          {(opc?.iniciativas ?? []).map((i) => <option key={i.id} value={`i:${i.id}`}>{`${TIPO_INICIATIVA[i.tipo] ?? i.tipo}: ${i.titulo}`}</option>)}
         </Filtro>
-        <Filtro value={orden.clave} onChange={(v) => setOrden({ clave: v, dir: "asc" })} etiqueta="Ordenar por" ancho={170}>
-          {CLAVES_ORDEN.map((c) => <option key={c.id} value={c.id}>Ordenar: {c.label}</option>)}
-          {meses.map((m) => <option key={m} value={m}>Ordenar: avance en {m}</option>)}
+        <Filtro value={orden.clave} onChange={(v) => setOrden({ clave: v, dir: v === "nombre" ? "asc" : "desc" })} etiqueta="Ordenar por" ancho={190}>
+          {ORDENES.map((o) => <option key={o.id} value={o.id}>Ordenar: {o.label}</option>)}
         </Filtro>
         <button type="button" className="b2-btn b2-btn-sm" onClick={() => setOrden((o) => ({ ...o, dir: o.dir === "asc" ? "desc" : "asc" }))} aria-label={`Invertir orden, ahora ${orden.dir === "asc" ? "ascendente" : "descendente"}`}>
           {orden.dir === "asc" ? "↑ Ascendente" : "↓ Descendente"}
         </button>
         {hayFiltros && <button type="button" className="b2-btn b2-btn-sm b2-btn-ghost" onClick={limpiar}>Limpiar filtros</button>}
       </Barra></div>
+      <Chips<EstadoFiltro> value={estado} onChange={setEstado} etiqueta="Estado del entregable (afecta a la tabla)" items={ESTADOS} />
+      {estado !== "todos" && <p className="b2-seg-nota">El filtro de estado decide qué docentes aparecen en la tabla (los que tienen entregables en ese estado dentro del periodo); las tarjetas y los gráficos conservan toda la población para que los porcentajes tengan sentido.</p>}
 
-      {cargandoInicial && <div className="b2-skel-w" role="status" aria-label="Cargando avance…">{[92, 70, 84, 60].map((w, i) => <span key={i} className="b2-skel" style={{ width: `${w}%`, height: 18 }} />)}</div>}
+      {cargandoInicial && <div className="b2-skel-w" role="status" aria-label="Cargando seguimiento…">{[92, 70, 84, 60].map((w, i) => <span key={i} className="b2-skel" style={{ width: `${w}%`, height: 18 }} />)}</div>}
 
-      {vacioSemestre && !error && (
+      {data && (data.avisos.length > 0 || (data.alcance?.advertencias?.length ?? 0) > 0) && (
+        <div className="b2-aviso-sem" role="status">{[...data.avisos, ...(data.alcance?.advertencias ?? [])].join(" ")}</div>
+      )}
+
+      {vacio && !error && (
         <div className="b2-fig" role="status">
           <div className="b2-adm-vacio-c">
-            <strong>{grupoId ? "Este grupo no tiene docentes asignados" : semestre ? `El semestre ${semestre} no tiene docentes con grupo de matriz` : "No hay docentes para mostrar"}</strong>
-            <p>El avance se calcula a partir de la matriz de cada docente. Asigna docentes a un grupo en Administración → Tareas semanales, o prueba con otro semestre o grupo.</p>
-            <button type="button" className="b2-btn" onClick={() => navigate("/admin/sistema?tab=tareas")}>Ir a Tareas semanales</button>
+            <strong>{hayFiltros ? "Ningún docente coincide con los filtros" : `El semestre ${data?.semestre.codigo ?? ""} no tiene docentes con grupo de matriz`}</strong>
+            <p>{hayFiltros ? "Prueba con otro grupo, semana o programa, o limpia los filtros." : "El seguimiento se calcula con la matriz de cada docente. Asigna docentes a un grupo en Administración → Tareas semanales."}</p>
+            {hayFiltros ? <button type="button" className="b2-btn" onClick={limpiar}>Limpiar filtros</button> : <button type="button" className="b2-btn" onClick={() => navigate("/admin/sistema?tab=tareas")}>Ir a Tareas semanales</button>}
           </div>
         </div>
       )}
 
-      {agg && !vacioSemestre && (
+      {data && t && !vacio && (
         <>
-          <section className="b2-ana-sec" aria-label="Indicadores del consolidado">
-            {hayFiltros && <div><Tag tono="aviso">Indicadores (filtrado) · {filtrados.length} de {docentes.length} docentes</Tag></div>}
-            {filtrados.length === 0 ? (
-              <div className="b2-aviso-sem" role="status">Ningún docente coincide con los filtros. Prueba con otra búsqueda, otro estado o limpia los filtros.</div>
-            ) : (
-              <Indicadores items={[
-                { k: "Docentes", v: n0(agg.docentes), sub: sinGrupoN > 0 ? `${sinGrupoN} sin grupo` : undefined },
-                { k: "Reportado prom.", v: pct(agg.promedio_global), titulo: "Promedio del % reportado (enviado o aprobado) de todos los docentes" },
-                { k: "Aprobado prom.", v: pct(agg.promedio_aprobado), titulo: "Promedio del % aprobado de los docentes con matriz" },
-                { k: "Esperado a la fecha", v: pct(agg.promedio_esperado), titulo: "Promedio del % con fecha límite hasta hoy" },
-                { k: "Aprobado − esperado", v: pp(brechaProm), alerta: brechaProm < 0, titulo: "Promedio aprobado menos promedio esperado, en puntos porcentuales" },
-                { k: "Con retraso", v: n0(agg.con_retraso), sub: "docentes", alerta: agg.con_retraso > 0 },
-                { k: "Por revisar", v: n0(agg.pendientes_revision) },
-                { k: "Observados", v: n0(agg.observados) },
-                { k: "Vencidos", v: n0(agg.vencidos), sub: "entregables", alerta: agg.vencidos > 0 },
-                { k: "Riesgo crítico", v: n0(agg.semaforo.rojo), sub: "semáforo rojo", alerta: agg.semaforo.rojo > 0 },
-              ]} />
+          <section className="b2-ana-sec" aria-label="Indicadores del seguimiento">
+            <p className="b2-seg-per">
+              <b>{periodo?.etiqueta}</b>
+              {periodo?.desde && periodo?.hasta ? ` · ${rango(periodo.desde, periodo.hasta)}` : ""}
+              {periodo?.origen === "semana_actual" ? " · semana en curso" : ""}
+              {periodo?.tipo === "semestre" && periodo.origen === "sin_semana_en_curso" ? " · no hay semana en curso en este semestre" : ""}
+              {hayFiltros && <Tag tono="aviso">Indicadores (filtrado)</Tag>}
+            </p>
+            <div className="b2-seg-cards"><Indicadores items={[
+              { k: "Docentes del semestre", v: n0(t.docentes), sub: data.docentes_sin_grupo > 0 ? `${data.docentes_sin_grupo} sin grupo, fuera del semestre` : undefined, titulo: data.definiciones.docentes },
+              { k: "Con pendientes", v: n0(t.docentes_con_pendientes), sub: "docentes", alerta: t.docentes_con_pendientes > 0, titulo: data.definiciones.docentes_con_pendientes },
+              { k: `Reportado · ${t.periodo.etiqueta}`, ...tarjetaPct(t.periodo.pct_reportado, t.periodo.programados, t.periodo.reportados, "programados"), titulo: data.definiciones.reportado_periodo },
+              { k: `Aprobado · ${t.periodo.etiqueta}`, ...tarjetaPct(t.periodo.pct_aprobado, t.periodo.programados, t.periodo.aprobados, "programados"), titulo: data.definiciones.aprobado_periodo },
+              { k: "Reportado · semestre", v: pct(t.semestre.pct_reportado), sub: `${n0(t.semestre.reportados)} de ${n0(t.semestre.programados)}`, titulo: data.definiciones.reportado_semestre },
+              { k: "Aprobado · semestre", v: pct(t.semestre.pct_aprobado), sub: `${n0(t.semestre.aprobados)} de ${n0(t.semestre.programados)} · esperado ${pct(t.semestre.pct_esperado)} (${pp(t.semestre.brecha_pct)})`, alerta: (t.semestre.brecha_pct ?? 0) < 0, titulo: data.definiciones.aprobado_semestre },
+              { k: "Vencidos", v: n0(t.vencidos), sub: "entregables", alerta: t.vencidos > 0, titulo: data.definiciones.vencidos },
+              { k: "En revisión", v: n0(t.enviados_pendientes_revision), sub: "enviados", titulo: data.definiciones.pendientes_revision },
+              { k: "Observados", v: n0(t.observados), sub: "entregables", titulo: data.definiciones.observados },
+              { k: "Programados esta semana", v: soloNum(t.programados_semana_actual), sub: t.semana_actual ? `semana ${t.semana_actual}, en curso` : "sin semana en curso", titulo: data.definiciones.semana_actual },
+            ]} /></div>
+            {t.periodo.enviados_fuera_del_periodo > 0 && enSemana && (
+              <p className="b2-seg-nota">Además, {n0(t.periodo.enviados_fuera_del_periodo)} entregables programados para otras semanas se enviaron durante esta; no cuentan en el cumplimiento del periodo.</p>
             )}
+            <details className="b2-seg-defs">
+              <summary>Cómo se calcula cada indicador</summary>
+              <dl>
+                {Object.entries(data.definiciones).map(([k, v]) => <div key={k}><dt>{k.replace(/_/g, " ")}</dt><dd>{v}</dd></div>)}
+              </dl>
+            </details>
           </section>
 
-          {filtrados.length > 0 && (
-            <section className="b2-ch-grid b2-ana-av-graf" aria-label="Gráficos de avance">
-              <Figura
-                pregunta="¿Quién está por debajo de lo esperado?"
-                nota={<>Docentes con matriz, de mayor a menor brecha negativa (aprobado − esperado). Top {Math.min(10, ranking.length)} de {conGrupoFiltrados.length}; ver todos en la tabla.</>}
-                leyenda={[{ s: "rep", label: "Reportado" }, { s: "apr", label: "Aprobado" }, { s: "esp", label: "Esperado a la fecha" }]}
-                vacio={ranking.length === 0 ? "Ningún docente de la selección tiene matriz con entregables." : undefined}
-                tabla={{ cabeceras: ["Docente", "Reportado", "Aprobado", "Esperado", "Brecha"], filas: ranking.map((d) => [d.nombre, pct(d.avance_global), pct(d.avance_aprobado), pct(d.avance_esperado), pp(d.brecha)]) }}
-              >
-                <FilasBala
-                  etiqueta="Avance por docente"
-                  seleccionada={sel}
-                  onAbrir={(id) => setSel(Number(id))}
-                  filas={ranking.map((d) => ({ id: d.id, etiqueta: d.nombre, sub: d.programa, rep: d.avance_global, apr: d.avance_aprobado, esp: d.avance_esperado, alerta: d.brecha < 0 ? `Brecha ${pp(d.brecha)}` : undefined, extra: d.entregables_vencidos > 0 ? `${n0(d.entregables_vencidos)} vencidos` : undefined }))}
-                />
-              </Figura>
+          <section className="b2-ch-grid b2-ana-av-graf" aria-label="Gráficos de seguimiento">
+            <Figura
+              pregunta="¿Cómo evoluciona cada semana?"
+              nota="De lo programado en cada semana, qué porcentaje está reportado y cuál aprobado. Las semanas futuras se atenúan: aún no son exigibles."
+              leyenda={[{ s: "rep", label: "Reportado" }, { s: "apr", label: "Aprobado" }]}
+              vacio={categoriasSemana.length === 0 ? "Esta selección no tiene entregables programados en ninguna semana." : undefined}
+              tabla={{ cabeceras: ["Semana", "Programados", "Reportados", "Aprobados"], filas: (data.graficos.evolucion_semanal).map((s) => [`S${s.semana}${s.mes ? ` · ${s.mes}` : ""}`, n0(s.programados), n0(s.reportados), n0(s.aprobados)]) }}
+            >
+              <div className="b2-seg-evo"><ColumnasAgrupadas etiqueta="Reportado y aprobado por semana programada" categorias={categoriasSemana} /></div>
+            </Figura>
 
-              <div className="b2-ch-col">
-                <Figura
-                  pregunta="¿En qué estado están los entregables?"
-                  nota="Suma de los docentes visibles. «Sin reportar» incluye también lo que aún no es exigible."
-                  tabla={{ cabeceras: ["Estado", "Entregables"], filas: [["Aprobados", n0(agg.aprobados)], ["Por revisar", n0(agg.pendientes_revision)], ["Observados", n0(agg.observados)], ["Sin reportar", n0(sinReportar)]] }}
-                >
+            <div className="b2-ch-col">
+            <Figura
+              pregunta="¿En qué estado están los entregables?"
+              nota="Cada entregable está en un solo estado. «Vencidos» es una condición (fecha límite pasada sin reportar), ya contada dentro de sin iniciar, borradores y observados."
+              tabla={eg ? { cabeceras: ["Estado", "Entregables"], filas: [["Aprobados", n0(eg.aprobados)], ["En revisión", n0(eg.enviados)], ["Observados", n0(eg.observados)], ["Borradores", n0(eg.borradores)], ["Sin iniciar", n0(eg.no_iniciados)], ["De los cuales vencidos (condición)", n0(eg.de_los_cuales_vencidos)]] } : undefined}
+            >
+              {eg && (
+                <>
                   <ApiladaH
                     etiqueta="Estado de los entregables"
-                    total={agg.total_entregables}
+                    total={eg.total}
                     segmentos={[
-                      { s: "apr", label: "Aprobados", valor: agg.aprobados },
-                      { s: "pen", label: "Por revisar", valor: agg.pendientes_revision },
-                      { s: "obs", label: "Observados", valor: agg.observados },
-                      { s: "sin", label: "Sin reportar", valor: sinReportar },
+                      { s: "apr", label: "Aprobados", valor: eg.aprobados },
+                      { s: "pen", label: "En revisión", valor: eg.enviados },
+                      { s: "obs", label: "Observados", valor: eg.observados },
+                      { s: "b" as const, label: "Borradores", valor: eg.borradores },
+                      { s: "sin", label: "Sin iniciar", valor: eg.no_iniciados },
                     ]}
                   />
-                </Figura>
-                <Figura
-                  pregunta="¿Cuántos docentes están en riesgo?"
-                  nota="Semáforo del backend; «sin vencimientos o sin matriz» no es incumplimiento."
-                  tabla={{ cabeceras: ["Semáforo", "Docentes"], filas: semaforoSegs.map((s) => [s.label, n0(s.valor)]) }}
-                >
-                  <ApiladaH etiqueta="Docentes por semáforo" total={agg.docentes} segmentos={semaforoSegs} />
-                </Figura>
-              </div>
+                  <p className="b2-seg-ven"><Tag tono={eg.de_los_cuales_vencidos > 0 ? "peligro" : "neutro"}>Vencidos</Tag> <b>{n0(eg.de_los_cuales_vencidos)}</b> de {n0(eg.no_iniciados + eg.borradores + eg.observados)} que requieren acción del docente</p>
+                </>
+              )}
+            </Figura>
+            <Figura
+              pregunta="¿Qué grupos necesitan atención?"
+              nota="Reportado, aprobado y esperado del semestre por grupo. Toca un grupo para filtrar. No se aplica el filtro de grupo a esta comparación."
+              leyenda={[{ s: "rep", label: "Reportado" }, { s: "apr", label: "Aprobado" }, { s: "esp", label: "Esperado a la fecha" }]}
+              vacio={gruposConDatos.length === 0 ? "Ningún grupo de la selección tiene entregables." : undefined}
+              tabla={{ cabeceras: ["Grupo", "Docentes", "Entregables", "Reportado", "Aprobado", "Esperado"], filas: [...gruposConDatos, ...gruposSinDatos].map((g) => [g.nombre, n0(g.docentes), n0(g.total), pct(g.pct_reportado), pct(g.pct_aprobado), pct(g.pct_esperado)]) }}
+            >
+              <FilasBala
+                etiqueta="Avance por grupo"
+                seleccionada={grupoId ? Number(grupoId) : undefined}
+                onAbrir={(id) => { setGrupoId(grupoId === String(id) ? "" : String(id)); setSel(null); }}
+                filas={gruposConDatos.map((g) => ({ id: g.id, etiqueta: g.nombre, sub: `${n0(g.docentes)} ${g.docentes === 1 ? "docente" : "docentes"}`, rep: g.pct_reportado ?? 0, apr: g.pct_aprobado ?? 0, esp: g.pct_esperado ?? 0, alerta: (g.brecha_pct ?? 0) < 0 ? `Brecha ${pp(g.brecha_pct)}` : undefined, extra: g.vencidos > 0 ? `${n0(g.vencidos)} vencidos` : undefined }))}
+              />
+              {gruposSinDatos.length > 0 && <p className="b2-seg-nota">Sin entregables en la matriz: {gruposSinDatos.map((g) => `${g.nombre} (${g.docentes} docentes)`).join(", ")}.</p>}
+            </Figura>
 
-              <Figura
-                pregunta="¿Cómo avanza cada mes?"
-                nota="Promedio simple entre los docentes con entregables ese mes. Los meses futuros se atenúan: aún no son exigibles."
-                leyenda={[{ s: "rep", label: "Reportado (prom.)" }, { s: "apr", label: "Aprobado (prom.)" }]}
-                vacio={categoriasMes.length === 0 ? "Este semestre no tiene meses con entregables." : undefined}
-                tabla={{ cabeceras: ["Mes", "Reportado", "Aprobado"], filas: categoriasMes.map((c) => [c.label + (c.futuro ? " (futuro)" : ""), c.valores[0].valor == null ? "—" : pct(c.valores[0].valor), c.valores[1].valor == null ? "—" : pct(c.valores[1].valor)]) }}
-              >
-                <ColumnasAgrupadas etiqueta="Avance promedio por mes" categorias={categoriasMes} />
-              </Figura>
+            </div>
+          </section>
 
-              <Figura
-                pregunta="¿Dónde se concentran los vencimientos?"
-                nota="Entregables vencidos por docente (top 8). Un vencido es un entregable con fecha límite pasada sin reportar."
-                leyenda={[{ s: "ven", label: "Vencidos" }]}
-                vacio={vencimientos.length === 0 ? "Ningún docente de la selección tiene entregables vencidos." : undefined}
-                tabla={{ cabeceras: ["Docente", "Vencidos", "Entregables"], filas: vencimientos.map((d) => [d.nombre, n0(d.entregables_vencidos), n0(d.total_entregables)]) }}
-              >
-                <FilasApiladas
-                  etiqueta="Vencidos por docente"
-                  onAbrir={(id) => setSel(Number(id))}
-                  filas={vencimientos.map((d) => ({ id: d.id, etiqueta: d.nombre, sub: d.programa, segmentos: [{ s: "ven" as const, label: "Vencidos", valor: d.entregables_vencidos }], extra: `de ${n0(d.total_entregables)}` }))}
-                />
-              </Figura>
-            </section>
-          )}
-
-          <section className="b2-ana-sec" aria-label="Avance por docente">
-            <h2>Avance por docente</h2>
-            <DataTable<DocenteAvance>
-              etiqueta="Avance por docente"
+          <section className="b2-ana-sec" aria-label="Seguimiento por docente">
+            <h2>Seguimiento por docente</h2>
+            <DataTable<FilaDocente>
+              etiqueta="Seguimiento por docente"
               cols={cols}
               rows={ordenados}
               getKey={(d) => d.id}
               selId={sel}
               onSelect={(d) => setSel(d ? d.id : null)}
               cargando={loading && !data}
+              ocupado={loading}
               orden={orden}
               onOrden={alternarOrden}
               vacio={
                 <div className="b2-adm-vacio-c">
                   <strong>Ningún docente coincide</strong>
-                  <p>Prueba con otro semestre, otro grupo o una búsqueda distinta.</p>
+                  <p>Prueba con otro estado, semana o búsqueda.</p>
                   {hayFiltros && <button type="button" className="b2-btn b2-btn-sm" onClick={limpiar}>Limpiar filtros</button>}
                 </div>
               }
@@ -650,20 +641,16 @@ export default function AvanceConsolidado() {
                 return {
                   titulo: d.nombre,
                   lineas: [
-                    `${d.programa}${d.regional && d.regional !== "—" ? ` · ${d.regional}` : ""}`,
-                    sinGrupo(d) ? "Sin matriz" : <Bullet key="b" rep={d.avance_global} apr={d.avance_aprobado} esp={d.avance_esperado} nombre={d.nombre} />,
-                    sinGrupo(d) ? "" : `Brecha ${pp(d.brecha)} · ${n0(d.entregables_vencidos)} vencidos`,
+                    `${d.programa}${d.grupo_nombre ? ` · ${d.grupo_nombre}` : ""}`,
+                    d.periodo.programados === 0 ? "Periodo: sin entregables programados" : `Periodo: ${d.periodo.reportados}/${d.periodo.programados} reportados · ${d.periodo.aprobados} aprobados · ${d.periodo.pendientes} pendientes`,
+                    sinMatriz(d) ? "Sin entregables" : <Bullet key="b" rep={d.semestre.pct_reportado} apr={d.semestre.pct_aprobado} esp={d.semestre.pct_esperado} nombre={d.nombre} />,
+                    d.semestre.vencidos > 0 ? `${d.semestre.vencidos} vencidos` : "",
+                    d.proxima_accion ? `${d.proxima_accion.vencido ? "Vencido" : "Próximo"}: ${d.proxima_accion.entregable} (${fecha(d.proxima_accion.fecha_fin)})` : "",
                   ].filter((l) => l !== ""),
                   lado: <Estado kind={e.kind} label={e.label} />,
                 };
               }}
             />
-            {conGrupoFiltrados.length > 0 && (
-              <p className="b2-ana-av-pie" aria-label="Promedios de los docentes filtrados">
-                <b>Promedios{hayFiltros ? " (filtrados)" : ""}:</b> reportado {pct(pie.promedio_global)}
-                {meses.map((m) => <span key={m}> · {m} {pie.por_mes.find((x) => x.mes === m && conGrupoFiltrados.some((d) => (mesDe(d, m)?.total ?? 0) > 0)) ? pct(pie.por_mes.find((x) => x.mes === m)?.porcentaje) : "—"}</span>)}
-              </p>
-            )}
           </section>
         </>
       )}
