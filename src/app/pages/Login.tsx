@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router";
-import { ClipboardCheck, FileCheck2, ShieldCheck, TableProperties } from "lucide-react";
-import { Marca } from "../components/ds/Marca";
+import { AlertCircle, ChevronDown, ChevronRight, Info, Loader2 } from "lucide-react";
+import "@fontsource-variable/nunito-sans";
 import { API_BASE } from "../config/api";
 import { clearSession, getSessionToken, readCurrentUser, saveSession } from "../config/auth";
 import { notify } from "../lib/notify";
+import "../components/b2/b2.css";
+import "./login-b2.css";
 
 const GOOGLE_SCRIPT_ID = "google-identity-services";
 const GOOGLE_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
@@ -44,12 +46,19 @@ function loadGoogleIdentity(): Promise<void> {
 }
 
 type DevUser = { id: number; nombre: string; apellido: string; correo: string; rol: "admin" | "docente" };
+type GoogleEstado = "sin-configurar" | "cargando" | "listo" | "error";
+
+const iniciales = (u: DevUser) => `${u.nombre.trim()[0] ?? ""}${u.apellido.trim()[0] ?? ""}`.toUpperCase();
 
 export default function Login() {
   const navigate = useNavigate();
   const buttonRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(false);
+  const [errorAcceso, setErrorAcceso] = useState("");
   const googleClientId = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "").trim();
+  const [googleEstado, setGoogleEstado] = useState<GoogleEstado>(googleClientId ? "cargando" : "sin-configurar");
+  const [googleDetalle, setGoogleDetalle] = useState("");
+  const [reintento, setReintento] = useState(0);
   // Una sesión sólo sirve con token y usuario a la vez. Un remanente parcial en
   // localStorage no debe impedir volver a iniciar sesión, así que se descarta.
   const [session] = useState(() => {
@@ -60,16 +69,13 @@ export default function Login() {
     return null;
   });
 
-  useEffect(() => {
-    if (!googleClientId && !session) {
-      notify.warning("Falta configurar VITE_GOOGLE_CLIENT_ID en el archivo .env.");
-    }
-  }, [googleClientId, session]);
-
-  // Acceso de PRUEBAS locales: solo existe en `vite dev` y solo si el servidor lo habilita
-  // (base proysocial_dev, localhost). En una compilación de producción este bloque no se incluye
-  // y el servidor rechaza la ruta aunque se invoque.
+  // Acceso de PRUEBAS locales: la sección solo aparece si el SERVIDOR confirma que está habilitado (responde con la lista de usuarios
+  // sintéticos). El backend decide (base proysocial_dev, localhost, DEV_LOGIN_ENABLED); en producción la ruta no existe y aquí no se muestra
+  // nada. `import.meta.env.DEV` solo evita incluir este código en las compilaciones de producción; no sustituye la autorización del servidor.
   const [devUsers, setDevUsers] = useState<DevUser[]>([]);
+  const [devBase, setDevBase] = useState("");
+  const [devAbierto, setDevAbierto] = useState(true);
+  const [devElegido, setDevElegido] = useState("");
   useEffect(() => {
     if (!import.meta.env.DEV || session) return;
     let cancelled = false;
@@ -77,7 +83,13 @@ export default function Login() {
       .fetch(`${API_BASE}/auth/dev/usuarios`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (!cancelled && d?.usuarios?.length) setDevUsers(d.usuarios);
+        if (cancelled || !d?.usuarios?.length) return;
+        const nombre = (u: DevUser) => `${u.nombre} ${u.apellido}`;
+        const orden = [...(d.usuarios as DevUser[])].sort((a, b) =>
+          a.rol === b.rol ? nombre(a).localeCompare(nombre(b)) : a.rol === "admin" ? -1 : 1
+        );
+        setDevUsers(orden);
+        setDevBase(String(d.entorno?.base || ""));
       })
       .catch(() => {});
     return () => {
@@ -86,6 +98,8 @@ export default function Login() {
   }, [session]);
 
   const handleDevLogin = async (correo: string) => {
+    setErrorAcceso("");
+    setDevElegido(correo);
     try {
       setLoading(true);
       const response = await window.fetch(`${API_BASE}/auth/dev/login`, {
@@ -98,7 +112,8 @@ export default function Login() {
       saveSession(data.token, data.user);
       navigate(data.user.rol === "admin" ? "/admin" : "/docente", { replace: true });
     } catch (cause) {
-      notify.fromError(cause, "No se pudo iniciar la sesión de pruebas");
+      setDevElegido("");
+      setErrorAcceso(cause instanceof Error ? cause.message : "No se pudo iniciar la sesión de pruebas");
     } finally {
       setLoading(false);
     }
@@ -106,8 +121,9 @@ export default function Login() {
 
   const handleCredential = useCallback(
     async ({ credential }: { credential?: string }) => {
+      setErrorAcceso("");
       if (!credential) {
-        notify.error("Google no entregó una credencial válida.");
+        setErrorAcceso("Google no entregó una credencial válida. Inténtalo de nuevo.");
         return;
       }
       try {
@@ -124,7 +140,7 @@ export default function Login() {
         notify.success("Sesión iniciada");
         navigate(data.user.rol === "admin" ? "/admin" : "/docente", { replace: true });
       } catch (cause) {
-        notify.fromError(cause, "No se pudo iniciar sesión");
+        setErrorAcceso(cause instanceof Error ? cause.message : "No se pudo iniciar sesión");
       } finally {
         setLoading(false);
       }
@@ -136,6 +152,8 @@ export default function Login() {
     if (!googleClientId || session || !buttonRef.current) return;
     let cancelled = false;
     let verifyTimer = 0;
+    setGoogleEstado("cargando");
+    setGoogleDetalle("");
     void loadGoogleIdentity()
       .then(() => {
         const container = buttonRef.current;
@@ -151,7 +169,7 @@ export default function Login() {
           size: "large",
           text: "continue_with",
           shape: "rectangular",
-          width: 320,
+          width: Math.min(400, Math.max(200, Math.round(container.getBoundingClientRect().width) || 320)),
           locale: "es",
         });
         // Google rechaza el render sin lanzar excepción cuando el origen no está
@@ -159,128 +177,172 @@ export default function Login() {
         verifyTimer = window.setTimeout(() => {
           if (cancelled) return;
           const height = Math.round(container.getBoundingClientRect().height);
-          if (container.childElementCount > 0 && height > 0) return;
-          notify.error(
-            `Google no pintó el botón para el origen ${window.location.origin}. Agrégalo en "Orígenes autorizados de JavaScript" del cliente OAuth en Google Cloud Console.`
+          if (container.childElementCount > 0 && height > 0) {
+            setGoogleEstado("listo");
+            return;
+          }
+          setGoogleEstado("error");
+          setGoogleDetalle(
+            `Google no mostró el botón para el origen ${window.location.origin}. Debe figurar en «Orígenes autorizados de JavaScript» del cliente OAuth.`
           );
         }, 1500);
       })
       .catch((cause) => {
         if (cancelled) return;
-        notify.fromError(cause, "No se pudo cargar Google");
+        setGoogleEstado("error");
+        setGoogleDetalle(cause instanceof Error ? cause.message : "No se pudo cargar Google.");
       });
     return () => {
       cancelled = true;
       window.clearTimeout(verifyTimer);
     };
-  }, [session, googleClientId, handleCredential]);
+  }, [session, googleClientId, handleCredential, reintento]);
 
   if (session) {
     return <Navigate to={session.user.rol === "admin" ? "/admin" : "/docente"} replace />;
   }
 
   return (
-    <div className="grid min-h-dvh bg-canvas lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
-      {/* Panel de marca */}
-      <aside className="on-ink relative hidden overflow-hidden bg-ink text-ink-text lg:flex lg:flex-col lg:justify-between lg:p-12">
-        <svg className="pointer-events-none absolute inset-0 h-full w-full opacity-[0.07]" aria-hidden>
-          <defs>
-            <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
-              <path d="M44 0H0V44" fill="none" stroke="white" strokeWidth="1" />
-            </pattern>
-          </defs>
-          <rect width="100%" height="100%" fill="url(#grid)" />
+    <div className="b2-scope lg-root">
+      {/* Panel de identidad (solo escritorio) */}
+      <aside className="lg-brand" aria-label="ProySocial">
+        <svg className="lg-geo" viewBox="0 0 560 560" fill="none" aria-hidden>
+          <g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+            <path d="M120 440 280 330M280 330 460 400M280 330 330 170M330 170 480 110M330 170 190 120M460 400 520 280M120 440 60 330" />
+          </g>
+          <g fill="currentColor">
+            <circle cx="280" cy="330" r="13" />
+            <circle cx="120" cy="440" r="6" />
+            <circle cx="330" cy="170" r="8" />
+          </g>
+          <g stroke="currentColor" strokeWidth="1.6">
+            <circle cx="460" cy="400" r="11" />
+            <circle cx="480" cy="110" r="9" />
+            <circle cx="190" cy="120" r="7" />
+            <circle cx="520" cy="280" r="6" />
+            <circle cx="60" cy="330" r="7" />
+          </g>
         </svg>
-        <div className="relative flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand text-white"><Marca className="h-6 w-6" /></span>
-          <span className="leading-tight">
-            <span className="block text-lg text-white" style={{ fontWeight: 650, letterSpacing: "-0.01em" }}>ProySocial</span>
-            <span className="block text-xs text-ink-muted">Corporación Unificada Nacional · CUN</span>
+        <div className="lg-brand-top">
+          <span className="lg-brand-name">
+            <strong>Corporación Unificada Nacional</strong>
+            <span>CUN</span>
           </span>
         </div>
-
-        <div className="relative max-w-xl">
-          <h2 className="text-balance text-[2.5rem] leading-[1.08] text-white" style={{ fontWeight: 650, letterSpacing: "-0.03em" }}>
-            Cada entregable de Proyección Social, con su evidencia y su revisión.
-          </h2>
-          <ul className="mt-9 space-y-4">
-            {[
-              { icon: TableProperties, t: "Matrices de seguimiento", d: "Entregables, semanas, horas y vencimientos del semestre en una sola vista." },
-              { icon: FileCheck2, t: "Evidencias con trazabilidad", d: "Enlaces, versiones e historial de cada envío, observación y aprobación." },
-              { icon: ClipboardCheck, t: "Revisión de coordinación", d: "Una bandeja para aprobar, observar y resolver problemas de acceso." },
-            ].map((x) => (
-              <li key={x.t} className="flex gap-3.5">
-                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ink-3 text-signal-bright"><x.icon className="h-[18px] w-[18px]" /></span>
-                <span>
-                  <span className="block text-[0.9375rem] text-white" style={{ fontWeight: 600 }}>{x.t}</span>
-                  <span className="block text-sm text-ink-muted">{x.d}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
+        <div className="lg-brand-body">
+          <h2>Seguimiento de Proyección Social</h2>
+          <p>Organización y trazabilidad de entregables, evidencias y revisión del semestre, con transparencia para docentes y coordinación.</p>
         </div>
-
-        <p className="relative text-xs text-ink-muted">Seguimiento de Proyección Social · acceso institucional</p>
+        <p className="lg-brand-foot">Acceso exclusivo para usuarios autorizados</p>
       </aside>
 
-      {/* Acceso */}
-      <main className="flex items-center justify-center px-5 py-10 sm:px-8">
-        <div className="w-full max-w-[400px]">
-          <div className="mb-8 flex items-center gap-3 lg:hidden">
-            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-ink text-white"><Marca className="h-6 w-6" /></span>
-            <span className="text-lg text-text" style={{ fontWeight: 650, letterSpacing: "-0.01em" }}>ProySocial</span>
-          </div>
+      <main className="lg-main">
+        {/* Identidad institucional compacta (tableta y móvil); el logo de ProySocial va en la tarjeta */}
+        <header className="lg-top">
+          <span className="lg-brand-name"><strong>Corporación Unificada Nacional</strong><span>CUN</span></span>
+        </header>
 
-          <h1 className="text-[1.75rem]">Inicia sesión</h1>
-          <p className="mt-1.5 text-sm text-text-muted">Accede con tu cuenta institucional de Google para ver tu seguimiento.</p>
+        <div className="lg-col">
+          <section className="lg-card" aria-labelledby="lg-titulo">
+            <img className="lg-logo" src="/branding/logo-proysocial-vertical.png" alt="ProySocial · Proyección Social" width="79" height="104" />
+            <h1 id="lg-titulo">Bienvenido a ProySocial</h1>
+            <p className="lg-sub">Ingresa para consultar y gestionar el seguimiento de Proyección Social.</p>
 
-          <div className="ds-panel mt-7 p-6">
-            <div className="mb-5 flex gap-2.5 rounded-lg bg-brand-soft px-3.5 py-3">
-              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-blue-700" aria-hidden />
-              <p className="text-xs leading-relaxed text-blue-900">
-                Ingresa únicamente con la cuenta de Google previamente autorizada por la institución.
-              </p>
+            <div className="lg-bloque" aria-busy={loading || googleEstado === "cargando"}>
+              <p className="lg-etq">Acceso institucional</p>
+              {googleEstado === "sin-configurar" ? (
+                <p className="lg-aviso" role="status">
+                  <Info aria-hidden />
+                  <span>
+                    El inicio de sesión con Google no está configurado en este entorno.
+                    {devUsers.length > 0 ? " Usa el acceso de desarrollo." : ""}
+                  </span>
+                </p>
+              ) : (
+                <div className={`lg-google${loading ? " is-loading" : ""}`}>
+                  <div ref={buttonRef} className="lg-google-btn" hidden={googleEstado === "error"} />
+                  {googleEstado === "cargando" && <div className="lg-esqueleto" aria-hidden />}
+                  {googleEstado === "error" && (
+                    <div className="lg-aviso is-error" role="alert">
+                      <AlertCircle aria-hidden />
+                      <div>
+                        <p>No se pudo mostrar el acceso con Google.</p>
+                        <p className="lg-aviso-d">{googleDetalle}</p>
+                        <button type="button" className="lg-link" onClick={() => setReintento((n) => n + 1)}>
+                          Reintentar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              <p className="lg-nota">Solo ingresan las cuentas de Google previamente autorizadas por la institución.</p>
+              {loading && (
+                <p className="lg-estado" role="status">
+                  <Loader2 aria-hidden className="lg-spin" /> Validando tu cuenta…
+                </p>
+              )}
+              {errorAcceso && (
+                <p className="lg-aviso is-error" role="alert">
+                  <AlertCircle aria-hidden />
+                  <span>{errorAcceso}</span>
+                </p>
+              )}
             </div>
 
-            {googleClientId ? (
-              <div className={loading ? "pointer-events-none opacity-50" : ""}>
-                <div ref={buttonRef} className="flex min-h-11 justify-center" />
-                {loading && <p className="mt-3 text-center text-xs text-text-subtle" role="status">Validando tu cuenta…</p>}
+            {import.meta.env.DEV && devUsers.length > 0 && (
+              <div className="lg-dev">
+                <button
+                  type="button"
+                  className="lg-dev-cab"
+                  aria-expanded={devAbierto}
+                  aria-controls="lg-dev-lista"
+                  onClick={() => setDevAbierto((v) => !v)}
+                >
+                  <span className="lg-dev-tit">
+                    <span className="lg-dev-tag">DEV</span>
+                    <span>
+                      <strong>Acceso de desarrollo</strong>
+                      <span title={devBase ? `Base ${devBase}` : undefined}>Usuarios de prueba · Información sintética</span>
+                    </span>
+                  </span>
+                  <ChevronDown aria-hidden className={devAbierto ? "is-open" : ""} />
+                </button>
+                {devAbierto && (
+                  <ul id="lg-dev-lista" className="lg-dev-lista">
+                    {devUsers.map((u) => {
+                      const elegido = devElegido === u.correo;
+                      return (
+                        <li key={u.correo}>
+                          <button
+                            type="button"
+                            className={`lg-user${elegido ? " is-selected" : ""}${u.rol === "admin" ? " is-admin" : ""}`}
+                            disabled={loading}
+                            aria-busy={elegido && loading}
+                            onClick={() => handleDevLogin(u.correo)}
+                          >
+                            <span className="lg-av" aria-hidden>{iniciales(u)}</span>
+                            <span className="lg-user-d">
+                              <span className="lg-user-l">
+                                <span className="lg-user-n">{u.nombre} {u.apellido}</span>
+                                <span className={`lg-rol${u.rol === "admin" ? " is-admin" : ""}`}>
+                                  {u.rol === "admin" ? "Administrador" : "Docente"}
+                                </span>
+                              </span>
+                              <span className="lg-user-c">{u.correo}</span>
+                            </span>
+                            {elegido && loading ? <Loader2 aria-hidden className="lg-spin lg-go" /> : <ChevronRight aria-hidden className="lg-go" />}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </div>
-            ) : (
-              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-3 text-xs text-amber-800" role="status">
-                El inicio de sesión con Google no está configurado en este entorno.
-              </p>
             )}
-          </div>
+          </section>
 
-          {import.meta.env.DEV && devUsers.length > 0 && (
-            <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
-              <p className="text-xs text-amber-900" style={{ fontWeight: 650 }}>Entorno de pruebas local · datos sintéticos</p>
-              <p className="mb-3 mt-0.5 text-xs text-amber-800">
-                Base <code>proysocial_dev</code>, solo en localhost. No es producción ni usa Google.
-              </p>
-              <div className="space-y-1.5">
-                {devUsers.map((u) => (
-                  <button
-                    key={u.correo}
-                    type="button"
-                    disabled={loading}
-                    onClick={() => handleDevLogin(u.correo)}
-                    className="w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-left text-xs transition-colors hover:bg-amber-100 disabled:opacity-50"
-                  >
-                    <span className="text-text" style={{ fontWeight: 650 }}>{u.nombre} {u.apellido}</span>{" "}
-                    <span className="text-text-subtle">· {u.rol === "admin" ? "Administrador" : "Docente"}</span>
-                    <span className="block text-text-subtle">{u.correo}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <p className="mt-8 text-center text-xs text-text-subtle">
-            Corporación Unificada Nacional de Educación Superior «CUN»
-          </p>
+          <p className="lg-pie">Corporación Unificada Nacional de Educación Superior «CUN»</p>
         </div>
       </main>
     </div>

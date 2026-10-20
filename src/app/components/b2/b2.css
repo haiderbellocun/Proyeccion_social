@@ -93,7 +93,9 @@
 
 /* ───────── cabecera ───────── */
 .b2-hd { flex: none; height: var(--h-header); background: var(--c-header); color: var(--c-on-dark); display: flex; align-items: center; gap: 4px; padding-right: 12px; position: relative; z-index: var(--z-header); }
-.b2-hd-logo { width: var(--w-logo); height: 100%; background: var(--c-surface); color: var(--c-text); display: flex; align-items: center; gap: 10px; padding: 0 16px; flex: none; font-weight: 800; font-size: 17px; letter-spacing: -0.01em; border-bottom: 1px solid var(--c-line); }
+.b2-hd-logo { width: var(--w-logo); height: 100%; background: var(--c-surface); color: var(--c-text); display: flex; align-items: center; justify-content: center; gap: 10px; padding: 0 16px; flex: none; font-weight: 800; font-size: 17px; letter-spacing: -0.01em; border-bottom: 1px solid var(--c-line); }
+.b2-hd-logo-full { display: block; height: 36px; width: auto; max-width: 100%; object-fit: contain; }
+.b2-hd-logo-iso { display: none; width: 32px; height: 32px; object-fit: contain; }
 .b2-hd-nav { display: flex; height: 100%; margin-left: 8px; min-width: 0; }
 .b2-hd-mod { display: flex; align-items: center; padding: 0 14px; height: 100%; font-size: var(--fs-md); font-weight: 600; color: var(--c-on-dark-2); white-space: nowrap; position: relative; transition: color var(--t-fast) ease, background-color var(--t-fast) ease; }
 .b2-hd-mod[data-active] { color: var(--c-on-dark); box-shadow: inset 0 -2px 0 var(--c-on-dark); }
@@ -346,6 +348,7 @@
 @media (max-width: 1180px) {
   .b2-root { --w-logo: 52px; }
   .b2-hd-name { display: none; } .b2-hd-logo { padding: 0; justify-content: center; }
+  .b2-hd-logo-full { display: none; } .b2-hd-logo-iso { display: block; }
   .b2-hd-mod { padding: 0 10px; }
   .b2-hd-search { width: 170px; }
   .b2-pg-grid { grid-template-columns: minmax(0, 1fr); }

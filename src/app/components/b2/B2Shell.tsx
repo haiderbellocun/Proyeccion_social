@@ -11,7 +11,7 @@ import { UserAvatar } from "../UserAvatar";
 import { etiquetaSemana } from "../../data/matrizConstants";
 import { B2Provider, useB2 } from "./B2Context";
 import { lateralPara, lateralParaDocente, MODULOS_ADMIN, MODULOS_DOCENTE, type ItemLateral } from "./b2-nav";
-import { IAyuda, IBell, IBuscar, ICalendario, ICerrar, IChevD, IExpandirTodo, IExterno, IRefrescar, Marca } from "./icons";
+import { IAyuda, IBell, IBuscar, ICalendario, ICerrar, IChevD, IExpandirTodo, IExterno, IRefrescar } from "./icons";
 import { Kbd, Menu, Popover, Tip } from "./ui";
 import "@fontsource-variable/nunito-sans";
 import "./b2.css";
@@ -122,8 +122,9 @@ function Cabecera({ rol, buscar }: { rol: RolShell; buscar: React.RefObject<HTML
   return (
     <header className="b2-hd">
       <Link className="b2-hd-logo" to={cfg.home} aria-label="ProySocial, ir al inicio">
-        <Marca size={26} />
-        <span className="b2-hd-name">ProySocial</span>
+        {/* Logo institucional (incluye el nombre): completo en escritorio; en navegación compacta solo el isotipo, nunca ambos. */}
+        <img className="b2-hd-logo-full" src="/branding/logo-proysocial.png" alt="ProySocial" width="141" height="36" />
+        <img className="b2-hd-logo-iso" src="/branding/isotipo-proysocial.png" alt="ProySocial" width="32" height="32" />
       </Link>
       <nav className="b2-hd-nav" aria-label="Módulos">
         {cfg.modulos.map((m) => {
