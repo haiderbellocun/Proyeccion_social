@@ -1,10 +1,12 @@
 import jwt from "jsonwebtoken";
 import { pool } from "../db.js";
+import { demoBloqueo, demoDisponible, esUsuarioDemo } from "../config/demo.js";
 
-const SESSION_ISSUER = "proysocial-api";
+export const SESSION_ISSUER = "proysocial-api";
 const SESSION_AUDIENCE = "proysocial-web";
+const DEMO_SCOPE = "demo";
 
-function getJwtSecret() {
+export function getJwtSecret() {
   const secret = String(process.env.JWT_SECRET || "").trim();
   if (secret.length < 32) {
     const error = new Error("JWT_SECRET debe tener al menos 32 caracteres");
@@ -39,6 +41,21 @@ export function createSessionToken(user) {
   );
 }
 
+/** Sesión de demostración: alcance "demo", vida corta y sin renovación. El rol sigue saliendo de la base, no del token. */
+export function createDemoSessionToken(user) {
+  return jwt.sign(
+    { email: user.correo, role: user.rol, scope: DEMO_SCOPE },
+    getJwtSecret(),
+    {
+      algorithm: "HS256",
+      subject: String(user.id),
+      issuer: SESSION_ISSUER,
+      audience: SESSION_AUDIENCE,
+      expiresIn: process.env.DEMO_SESSION_TTL || "2h",
+    }
+  );
+}
+
 export async function requireAuth(req, res, next) {
   const header = String(req.get("authorization") || "");
   const match = header.match(/^Bearer\s+(.+)$/i);
@@ -55,6 +72,16 @@ export async function requireAuth(req, res, next) {
     const userId = Number(payload.sub);
     if (!Number.isInteger(userId) || userId <= 0) {
       return res.status(401).json({ error: "Sesión inválida" });
+    }
+    // Los tokens normales no llevan `scope`; cualquier otro valor distinto de "demo" se rechaza.
+    const esDemo = payload.scope === DEMO_SCOPE;
+    if (payload.scope !== undefined && !esDemo) {
+      return res.status(401).json({ error: "Sesión inválida" });
+    }
+    if (esDemo) {
+      if (!(await demoDisponible())) return res.status(401).json({ error: "La demostración no está disponible" });
+      const bloqueo = demoBloqueo(req.method, req.originalUrl);
+      if (bloqueo) return res.status(403).json({ error: bloqueo, demo: true });
     }
 
     // El rol y el estado se consultan en cada petición para que un cambio en
@@ -73,7 +100,12 @@ export async function requireAuth(req, res, next) {
       return res.status(401).json({ error: "La sesión ya no está autorizada" });
     }
 
+    if (esDemo && !esUsuarioDemo(result.rows[0].correo)) {
+      return res.status(401).json({ error: "La sesión ya no está autorizada" });
+    }
+
     req.user = result.rows[0];
+    req.demo = esDemo;
     next();
   } catch (error) {
     if (error?.code === "AUTH_NOT_CONFIGURED") {

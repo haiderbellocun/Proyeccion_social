@@ -528,3 +528,9 @@ a.b2-doc:hover { background: var(--c-hover); }
 @media (max-width: 720px) { .b2-chip { min-height: 36px; padding: 0 12px; } .b2-link { min-height: 32px; display: inline-flex; align-items: center; } }
 .b2-side-ext { margin-left: auto; opacity: 0.6; flex: none; }
 .b2-side:not([data-open="true"]) .b2-side-ext { display: none; }
+
+/* Aviso de sesión de demostración (solo lectura) */
+.b2-demo { flex: none; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 4px 14px; padding: 6px 16px; background: var(--c-select); border-bottom: 1px solid var(--c-line); color: var(--c-text-2); font-size: var(--fs-sm); line-height: 1.4; text-align: center; }
+.b2-demo strong { color: var(--c-primary); font-weight: 800; }
+.b2-demo-salir { min-height: 28px; padding: 2px 4px; background: none; border: 0; color: var(--c-primary); font: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.b2-demo-salir:hover { color: var(--c-primary-hover); }

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router";
 import { API_BASE, apiFetch as fetch } from "../../config/api";
-import { clearSession } from "../../config/auth";
+import { clearSession, isDemoSession } from "../../config/auth";
 import { useCurrentSemester, useCurrentUser } from "../../hooks/useCurrentUser";
 import { notify } from "../../lib/notify";
 import { NotificationPanel } from "../NotificationPanel";
@@ -319,6 +319,7 @@ function Estructura({ rol }: { rol: RolShell }) {
     <div className="b2-root">
       <a className="b2-skip" href="#contenido">Saltar al contenido</a>
       <Cabecera rol={rol} buscar={buscar} />
+      <BandaDemo />
       <Contexto rol={rol} perfil={perfil} />
       <div className="b2-cuerpo">
         <Lateral rol={rol} abierta={abierta} onToggle={alternar} drive={perfil?.drive ?? null} />
@@ -327,6 +328,22 @@ function Estructura({ rol }: { rol: RolShell }) {
         </main>
       </div>
       <BarraInferior rol={rol} />
+    </div>
+  );
+}
+
+/** Aviso permanente en sesiones de demostración (solo lectura). El bloqueo de escrituras es del servidor; esto solo informa. */
+function BandaDemo() {
+  const navigate = useNavigate();
+  if (!isDemoSession()) return null;
+  const salir = () => {
+    clearSession();
+    navigate("/", { replace: true });
+  };
+  return (
+    <div className="b2-demo" role="status">
+      <span><strong>Modo demostración</strong> · Datos sintéticos · Solo lectura: los cambios están deshabilitados</span>
+      <button type="button" className="b2-demo-salir" onClick={salir}>Cambiar de usuario</button>
     </div>
   );
 }

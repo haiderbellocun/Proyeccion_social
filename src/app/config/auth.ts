@@ -24,9 +24,31 @@ function normalizeDateOnly(value: unknown): string | null {
 const TOKEN_KEY = "proysocial:token";
 const USER_KEY = "proysocial:user";
 const SEMESTER_KEY = "proysocial:semester";
+const DEMO_KEY = "proysocial:demo";
+const DEMO_PASE_KEY = "proysocial:demo-pase";
 
 export function getSessionToken() {
   return window.localStorage.getItem(TOKEN_KEY);
+}
+
+/** Marca de interfaz: la sesión actual es de demostración. El bloqueo real de escrituras lo hace el servidor. */
+export function isDemoSession() {
+  return window.localStorage.getItem(DEMO_KEY) === "1";
+}
+
+export function setDemoSession(on: boolean) {
+  if (on) window.localStorage.setItem(DEMO_KEY, "1");
+  else window.localStorage.removeItem(DEMO_KEY);
+}
+
+/** Pase temporal (válido en el servidor unos minutos) para elegir otro usuario sin volver a escribir la clave. Solo dura la pestaña. */
+export function getDemoPase() {
+  return window.sessionStorage.getItem(DEMO_PASE_KEY);
+}
+
+export function setDemoPase(pase: string | null) {
+  if (pase) window.sessionStorage.setItem(DEMO_PASE_KEY, pase);
+  else window.sessionStorage.removeItem(DEMO_PASE_KEY);
 }
 
 export function readCurrentUser(): CurrentUser | null {

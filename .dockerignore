@@ -13,3 +13,23 @@ gha-creds-*.json
 **/*.pyc
 .agents
 .codex
+
+# Variables y credenciales de todos los entornos
+.env*
+**/.env*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*credentials*.json
+**/*-creds-*.json
+
+# Respaldos y exportaciones
+**/*.dump
+**/*.backup
+**/*.bak
+**/*.sql.gz
+
+# Archivos que no necesita el contenedor
+docs/
+e2e/

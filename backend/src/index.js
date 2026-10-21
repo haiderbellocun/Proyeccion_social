@@ -10,7 +10,9 @@ import adminRouter from "./routes/admin.js";
 import catalogoRouter from "./routes/catalogo.js";
 import importacionesRouter from "./routes/importaciones.js";
 import devAuthRouter from "./routes/devAuth.js";
+import demoAuthRouter from "./routes/demoAuth.js";
 import { devLoginStatus } from "./config/devLogin.js";
+import { demoStatus } from "./config/demo.js";
 import { requireAuth, requireRole } from "./middleware/auth.js";
 import {
   emailConfiguration,
@@ -100,6 +102,14 @@ app.use("/auth", authRouter);
 if (devLoginStatus().enabled) {
   app.use("/auth/dev", devAuthRouter);
   console.warn("⚠ ACCESO DE DESARROLLO ACTIVO (base proysocial_dev, solo localhost). No usar en producción.");
+}
+// Modo demostración del piloto (solo lectura, usuarios sintéticos): requiere DEMO_ENABLED=true y la base proysocial_piloto (ver config/demo.js).
+const demo = demoStatus();
+if (demo.enabled) {
+  app.use("/auth/demo", demoAuthRouter);
+  console.warn("Modo demostración ACTIVO (solo lectura, usuarios sintéticos).");
+} else if (String(process.env.DEMO_ENABLED || "").toLowerCase() === "true") {
+  console.error("DEMO_ENABLED=true pero el modo demostración NO se activó:", demo.razones.join("; "));
 }
 // Las rutas de la SPA (/docente/..., /admin/...) comparten prefijo con la API. Una NAVEGACIÓN del navegador (Accept: text/html: recargar la
 // página, abrir un enlace de notificación o un marcador) debe recibir la aplicación y no el 401 JSON de la API. Las llamadas fetch de la SPA

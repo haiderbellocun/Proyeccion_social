@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router";
-import { AlertCircle, ChevronDown, ChevronRight, Info, Loader2 } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight, Info, KeyRound, Loader2 } from "lucide-react";
 import "@fontsource-variable/nunito-sans";
 import { API_BASE } from "../config/api";
-import { clearSession, getSessionToken, readCurrentUser, saveSession } from "../config/auth";
+import { clearSession, getDemoPase, getSessionToken, readCurrentUser, saveSession, setDemoPase, setDemoSession } from "../config/auth";
 import { notify } from "../lib/notify";
 import "../components/b2/b2.css";
 import "./login-b2.css";
@@ -47,6 +47,8 @@ function loadGoogleIdentity(): Promise<void> {
 
 type DevUser = { id: number; nombre: string; apellido: string; correo: string; rol: "admin" | "docente" };
 type GoogleEstado = "sin-configurar" | "cargando" | "listo" | "error";
+
+type DemoPaso = "cerrado" | "clave" | "usuarios";
 
 const iniciales = (u: DevUser) => `${u.nombre.trim()[0] ?? ""}${u.apellido.trim()[0] ?? ""}`.toUpperCase();
 
@@ -96,6 +98,98 @@ export default function Login() {
       cancelled = true;
     };
   }, [session]);
+
+  // Modo DEMOSTRACIÓN (piloto): independiente del acceso de desarrollo y de Google. Solo se ofrece si el servidor lo confirma (/auth/demo/estado);
+  // la clave se valida en el servidor y nunca se guarda en el cliente. Las sesiones son de solo lectura, lo hace cumplir el servidor.
+  const [demoActivo, setDemoActivo] = useState(false);
+  const [demoPaso, setDemoPaso] = useState<DemoPaso>("cerrado");
+  const [demoClave, setDemoClave] = useState("");
+  const [demoUsers, setDemoUsers] = useState<DevUser[]>([]);
+  const [demoError, setDemoError] = useState("");
+  const [demoCargando, setDemoCargando] = useState(false);
+  const [demoElegido, setDemoElegido] = useState("");
+  useEffect(() => {
+    if (session) return;
+    let cancelled = false;
+    window
+      .fetch(`${API_BASE}/auth/demo/estado`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then(async (d) => {
+        if (cancelled || !d?.habilitado) return;
+        setDemoActivo(true);
+        const pase = getDemoPase();
+        if (!pase) return;
+        const r = await window.fetch(`${API_BASE}/auth/demo/usuarios`, { headers: { Authorization: `Bearer ${pase}` } });
+        if (cancelled) return;
+        if (!r.ok) { setDemoPase(null); return; }
+        const lista = await r.json().catch(() => null);
+        if (lista?.usuarios?.length) { setDemoUsers(lista.usuarios as DevUser[]); setDemoPaso("usuarios"); }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  const handleDemoClave = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!demoClave || demoCargando) return;
+    setDemoError("");
+    setDemoCargando(true);
+    try {
+      const response = await window.fetch(`${API_BASE}/auth/demo/acceso`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clave: demoClave }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "No se pudo validar la clave");
+      setDemoClave("");
+      setDemoPase(data.pase);
+      setDemoUsers(data.usuarios as DevUser[]);
+      setDemoPaso("usuarios");
+    } catch (cause) {
+      setDemoError(cause instanceof Error ? cause.message : "No se pudo validar la clave");
+    } finally {
+      setDemoCargando(false);
+    }
+  };
+
+  const handleDemoSesion = async (correo: string) => {
+    setDemoError("");
+    setDemoElegido(correo);
+    try {
+      setLoading(true);
+      const response = await window.fetch(`${API_BASE}/auth/demo/sesion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${getDemoPase() || ""}` },
+        body: JSON.stringify({ correo }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        setDemoPase(null);
+        setDemoPaso("clave");
+        throw new Error("El acceso de demostración venció. Escribe la clave de nuevo.");
+      }
+      if (!response.ok) throw new Error(data.error || "No se pudo abrir la demostración");
+      saveSession(data.token, data.user);
+      setDemoSession(true);
+      navigate(data.user.rol === "admin" ? "/admin" : "/docente", { replace: true });
+    } catch (cause) {
+      setDemoElegido("");
+      setDemoError(cause instanceof Error ? cause.message : "No se pudo abrir la demostración");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const salirDemo = () => {
+    setDemoPase(null);
+    setDemoUsers([]);
+    setDemoClave("");
+    setDemoError("");
+    setDemoPaso("cerrado");
+  };
 
   const handleDevLogin = async (correo: string) => {
     setErrorAcceso("");
@@ -255,7 +349,7 @@ export default function Login() {
                   <Info aria-hidden />
                   <span>
                     El inicio de sesión con Google no está configurado en este entorno.
-                    {devUsers.length > 0 ? " Usa el acceso de desarrollo." : ""}
+                    {devUsers.length > 0 ? " Usa el acceso de desarrollo." : demoActivo ? " Puedes explorar la demostración." : ""}
                   </span>
                 </p>
               ) : (
@@ -289,6 +383,84 @@ export default function Login() {
                 </p>
               )}
             </div>
+
+            {demoActivo && (
+              <div className="lg-dev lg-demo">
+                <div className="lg-dev-cab lg-demo-cab">
+                  <span className="lg-dev-tit">
+                    <span className="lg-dev-tag">DEMO</span>
+                    <span>
+                      <strong>Entorno de demostración</strong>
+                      <span>Datos sintéticos · Solo lectura</span>
+                    </span>
+                  </span>
+                </div>
+                {demoPaso === "cerrado" && (
+                  <button type="button" className="lg-btn-sec" onClick={() => { setDemoError(""); setDemoPaso("clave"); }}>
+                    <KeyRound aria-hidden /> Explorar demostración
+                  </button>
+                )}
+                {demoPaso === "clave" && (
+                  <form className="lg-demo-form" onSubmit={handleDemoClave}>
+                    <label htmlFor="lg-demo-clave">Clave de acceso a la demostración</label>
+                    <input
+                      id="lg-demo-clave"
+                      type="password"
+                      autoComplete="off"
+                      autoFocus
+                      value={demoClave}
+                      onChange={(e) => setDemoClave(e.target.value)}
+                      disabled={demoCargando}
+                      maxLength={200}
+                    />
+                    <div className="lg-demo-acc">
+                      <button type="submit" className="lg-btn-sec is-primary" disabled={!demoClave || demoCargando} aria-busy={demoCargando}>
+                        {demoCargando ? <Loader2 aria-hidden className="lg-spin" /> : null} Entrar
+                      </button>
+                      <button type="button" className="lg-link" onClick={salirDemo}>Cancelar</button>
+                    </div>
+                  </form>
+                )}
+                {demoPaso === "usuarios" && (
+                  <>
+                    <ul className="lg-dev-lista" aria-label="Usuarios de la demostración">
+                      {demoUsers.map((u) => {
+                        const elegido = demoElegido === u.correo;
+                        return (
+                          <li key={u.correo}>
+                            <button
+                              type="button"
+                              className={`lg-user${elegido ? " is-selected" : ""}${u.rol === "admin" ? " is-admin" : ""}`}
+                              disabled={loading}
+                              aria-busy={elegido && loading}
+                              onClick={() => handleDemoSesion(u.correo)}
+                            >
+                              <span className="lg-av" aria-hidden>{iniciales(u)}</span>
+                              <span className="lg-user-d">
+                                <span className="lg-user-l">
+                                  <span className="lg-user-n">{u.nombre} {u.apellido}</span>
+                                  <span className={`lg-rol${u.rol === "admin" ? " is-admin" : ""}`}>
+                                    {u.rol === "admin" ? "Administrador" : "Docente"}
+                                  </span>
+                                </span>
+                              </span>
+                              {elegido && loading ? <Loader2 aria-hidden className="lg-spin lg-go" /> : <ChevronRight aria-hidden className="lg-go" />}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    <button type="button" className="lg-link" onClick={salirDemo}>Salir de la demostración</button>
+                  </>
+                )}
+                {demoError && (
+                  <p className="lg-aviso is-error" role="alert">
+                    <AlertCircle aria-hidden />
+                    <span>{demoError}</span>
+                  </p>
+                )}
+              </div>
+            )}
 
             {import.meta.env.DEV && devUsers.length > 0 && (
               <div className="lg-dev">

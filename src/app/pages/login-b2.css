@@ -111,6 +111,20 @@
 .lg-spin { animation: lg-giro 0.8s linear infinite; }
 @keyframes lg-giro { to { transform: rotate(360deg); } }
 
+/* Modo demostración (piloto): reutiliza la cabecera y las tarjetas de usuario del bloque DEV */
+.lg-demo-cab { cursor: default; }
+.lg-btn-sec { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px; margin-top: 10px; padding: 0 14px; background: var(--c-surface); border: 1px solid var(--lg-linea-suave); border-radius: 6px; color: var(--c-primary); font-size: var(--fs-md); font-weight: 700; cursor: pointer; transition: background-color var(--t-fast) ease, border-color var(--t-fast) ease; }
+.lg-btn-sec svg { width: 16px; height: 16px; }
+.lg-btn-sec:hover:not(:disabled) { background: var(--c-hover); border-color: var(--c-primary); }
+.lg-btn-sec:disabled { cursor: not-allowed; opacity: 0.6; }
+.lg-btn-sec.is-primary { width: auto; margin-top: 0; padding: 0 22px; background: var(--c-primary); border-color: var(--c-primary); color: var(--c-on-dark); }
+.lg-btn-sec.is-primary:hover:not(:disabled) { background: var(--c-primary-hover); }
+.lg-demo-form { display: grid; gap: 6px; margin-top: 10px; }
+.lg-demo-form label { font-size: var(--fs-sm); font-weight: 700; color: var(--c-text-2); }
+.lg-demo-form input { width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid var(--c-line-2); border-radius: 6px; background: var(--c-surface); color: var(--c-text); font: inherit; font-size: 16px; }
+.lg-demo-acc { display: flex; align-items: center; gap: 14px; margin-top: 4px; }
+.lg-demo-acc .lg-link { margin-top: 0; }
+
 .lg-pie { margin: 20px 0 0; text-align: center; font-size: var(--fs-sm); line-height: 1.5; color: var(--c-text-3); }
 
 /* ───────── Escritorio ───────── */
