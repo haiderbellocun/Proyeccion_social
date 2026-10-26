@@ -29,7 +29,6 @@
   color: var(--c-on-dark);
 }
 .lg-brand :focus-visible { outline-color: var(--c-on-dark); }
-.lg-geo { position: absolute; right: -90px; bottom: -70px; width: 600px; height: 600px; color: var(--c-on-dark); opacity: 0.1; pointer-events: none; }
 .lg-brand-top, .lg-top { display: flex; align-items: center; gap: 12px; position: relative; }
 .lg-mark { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 6px; background: var(--c-primary); color: var(--c-on-dark); }
 .lg-brand-name { display: flex; flex-direction: column; line-height: 1.25; }
@@ -144,7 +143,129 @@
   .lg-dev-lista { max-height: none; }
 }
 
+
+/* ═════════ Movimiento · «una red que cobra vida» ═════════
+ * Solo transform/opacity/stroke-dashoffset. Los elementos son visibles por defecto: las animaciones de entrada usan
+ * fill-mode `backwards`, así que si una animación no corre nada queda oculto. Línea de tiempo (ms):
+ * ambiente 0 · marca 150 · título 250/380 · descripción 450 · tarjeta 500 · logo 700 · controles 780–1080 (usable desde el inicio). */
+.lg-root {
+  --lg-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --lg-ease-suave: cubic-bezier(0.33, 0, 0.2, 1);
+}
+
+/* Red decorativa */
+.lg-motion { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.lg-aura {
+  position: absolute; inset: -12%;
+  background:
+    radial-gradient(46% 42% at 78% 82%, rgba(150, 120, 230, 0.34), transparent 70%),
+    radial-gradient(38% 34% at 14% 16%, rgba(169, 148, 224, 0.2), transparent 72%),
+    radial-gradient(30% 26% at 52% 52%, rgba(94, 70, 168, 0.22), transparent 74%);
+  transform: translate3d(calc(var(--px, 0px) * -0.5), calc(var(--py, 0px) * -0.5), 0);
+  transition: transform 900ms var(--lg-ease-suave);
+  animation: lg-aura-entra 1.4s ease-out backwards, lg-aura-respira 11s ease-in-out 1.4s infinite alternate;
+  will-change: opacity;
+}
+.lg-geo-wrap {
+  position: absolute; right: -90px; bottom: -70px; width: 640px; height: 640px;
+  transform: translate3d(var(--px, 0px), var(--py, 0px), 0);
+  transition: transform 700ms var(--lg-ease-suave);
+}
+.lg-geo { width: 100%; height: 100%; color: var(--lg-acento); overflow: visible; }
+.lg-lineas { stroke: currentColor; opacity: 0.34; }
+.lg-traza { stroke-dasharray: 1; stroke-dashoffset: 0; animation: lg-traza 1.05s var(--lg-ease-suave) var(--d, 0s) backwards; }
+.lg-nodo-entra { transform-box: fill-box; transform-origin: center; animation: lg-nodo-entra 0.7s var(--lg-ease) var(--d, 0s) backwards; }
+.lg-nodo-s { opacity: 0.5; animation: lg-respira 6.4s ease-in-out var(--f, 0s) infinite; }
+.lg-geo-wrap { color: var(--lg-acento); container-type: size; }
+/* Nodos HTML (compositor) */
+.lg-nd { position: absolute; animation: lg-nd-entra 0.7s var(--lg-ease) var(--d, 0s) backwards; }
+.lg-nd span { position: absolute; inset: 0; }
+.lg-nd-core { border-radius: 50%; will-change: transform, opacity; }
+.lg-nd-core.es-relleno { background: currentColor; }
+.lg-nd-core.es-anillo { border: 1.8px solid currentColor; }
+.lg-nd-core.es-principal { opacity: 0.8; animation: lg-pulso 5.2s ease-in-out var(--f, 0s) infinite; }
+.lg-nd-core.es-secundario { opacity: 0.5; animation: lg-respira 6.4s ease-in-out var(--f, 0s) infinite; }
+.lg-nd-halo { border-radius: 50%; background: var(--lg-acento); opacity: 0; will-change: transform, opacity; animation: lg-halo 6.8s ease-out var(--f, 0s) infinite; }
+.lg-nd-recibe { will-change: transform; animation: lg-recibe var(--ciclo) var(--lg-ease-suave) var(--ret) infinite; }
+.lg-sg { position: absolute; left: 0; top: 0; width: 0; height: 0; opacity: 0; will-change: transform, opacity; animation: lg-viaja var(--ciclo) linear var(--ret) infinite; }
+.lg-sg > span { position: absolute; border-radius: 50%; }
+.lg-sg-halo { width: 18px; height: 18px; margin: -9px 0 0 -9px; background: var(--lg-acento); opacity: 0.28; }
+.lg-sg-punto { width: 5.5px; height: 5.5px; margin: -2.75px 0 0 -2.75px; background: #efe9ff; }
+.lg-motion.is-pausada, .lg-motion.is-pausada * { animation-play-state: paused !important; }
+
+@keyframes lg-traza { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes lg-nd-entra { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: none; } }
+@keyframes lg-nodo-entra { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: scale(1); } }
+@keyframes lg-pulso { 0%, 100% { transform: scale(1); opacity: 0.8; } 50% { transform: scale(1.14); opacity: 1; } }
+@keyframes lg-respira { 0%, 100% { opacity: 0.32; } 50% { opacity: 0.72; } }
+@keyframes lg-halo { 0% { transform: scale(1); opacity: 0.28; } 70%, 100% { transform: scale(2.6); opacity: 0; } }
+/* La señal recorre la conexión durante el primer ~20 % del ciclo; el nodo receptor responde justo al llegar. */
+@keyframes lg-viaja {
+  0% { transform: translate3d(calc(var(--x0) * 1cqw), calc(var(--y0) * 1cqw), 0); opacity: 0; }
+  2% { opacity: 1; }
+  18% { opacity: 1; }
+  20% { transform: translate3d(calc(var(--x1) * 1cqw), calc(var(--y1) * 1cqw), 0); opacity: 0; }
+  100% { transform: translate3d(calc(var(--x1) * 1cqw), calc(var(--y1) * 1cqw), 0); opacity: 0; }
+}
+@keyframes lg-recibe {
+  0%, 18% { transform: scale(1); }
+  22% { transform: scale(1.5); }
+  34%, 100% { transform: scale(1); }
+}
+@keyframes lg-aura-entra { from { opacity: 0; } to { opacity: 1; } }
+@keyframes lg-aura-respira { from { opacity: 0.62; } to { opacity: 1; } }
+
+/* Mini red de la cabecera (tableta y móvil) */
+.lg-mini { margin-left: auto; width: 96px; height: 24px; color: var(--lg-acento); opacity: 0.85; }
+
+/* Entrada del panel de identidad */
+.lg-brand-top { animation: lg-sube 0.6s var(--lg-ease) 0.15s backwards; }
+.lg-brand-body::before { transform-origin: left center; animation: lg-regla 0.7s var(--lg-ease) 0.25s backwards; }
+.lg-linea { display: block; overflow: hidden; padding-bottom: 0.08em; margin-bottom: -0.08em; }
+.lg-linea > span { display: block; animation: lg-linea 0.85s var(--lg-ease) 0.25s backwards; }
+.lg-linea + .lg-linea > span { animation-delay: 0.38s; }
+.lg-brand-body p { animation: lg-sube 0.7s var(--lg-ease) 0.45s backwards; }
+.lg-brand-foot { animation: lg-sube 0.6s var(--lg-ease) 0.7s backwards; }
+.lg-top { animation: lg-sube 0.5s var(--lg-ease) 0.1s backwards; }
+
+/* Entrada de la tarjeta y de sus controles (escalonada, sin rebotes) */
+.lg-card { animation: lg-tarjeta 0.75s var(--lg-ease) 0.5s backwards; }
+.lg-logo { animation: lg-logo 0.8s var(--lg-ease) 0.7s backwards; }
+.lg-card h1 { animation: lg-sube 0.55s var(--lg-ease) 0.78s backwards; }
+.lg-sub { animation: lg-sube 0.55s var(--lg-ease) 0.84s backwards; }
+.lg-bloque { animation: lg-sube 0.55s var(--lg-ease) 0.92s backwards; }
+.lg-nota { animation: lg-sube 0.55s var(--lg-ease) 1s backwards; }
+.lg-dev, .lg-demo { animation: lg-sube 0.6s var(--lg-ease) 1.08s backwards; }
+
+@keyframes lg-sube { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes lg-linea { from { transform: translateY(105%); } to { transform: none; } }
+@keyframes lg-regla { from { transform: scaleX(0); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes lg-tarjeta { from { opacity: 0; transform: translateY(16px) scale(0.985); } to { opacity: 1; transform: none; } }
+@keyframes lg-logo { from { opacity: 0; clip-path: inset(0 0 100% 0); transform: translateY(6px); } to { opacity: 1; clip-path: inset(0 0 0 0); transform: none; } }
+
+/* Microinteracciones */
+.lg-google-btn { transition: transform var(--t-fast) var(--lg-ease), filter var(--t-fast) ease; }
+.lg-google-btn:hover { transform: translateY(-1px); filter: drop-shadow(0 6px 10px rgba(80, 60, 150, 0.16)); }
+.lg-esqueleto { position: relative; overflow: hidden; }
+.lg-esqueleto::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 20%, rgba(169, 148, 224, 0.28) 50%, transparent 80%); transform: translateX(-100%); animation: lg-brillo 1.4s ease-in-out infinite; }
+@keyframes lg-brillo { to { transform: translateX(100%); } }
+.lg-btn-sec { transition: background-color var(--t-fast) ease, border-color var(--t-fast) ease, transform var(--t-fast) var(--lg-ease); }
+.lg-btn-sec:hover:not(:disabled) { transform: translateY(-1px); }
+.lg-btn-sec:active:not(:disabled) { transform: translateY(0); }
+.lg-demo-form { animation: lg-sube 0.4s var(--lg-ease) backwards; }
+.lg-dev-lista > li { animation: lg-sube 0.42s var(--lg-ease) calc(var(--i, 0) * 70ms + 60ms) backwards; }
+.lg-user { transition: background-color var(--t-fast) ease, border-color var(--t-fast) ease, transform var(--t-fast) var(--lg-ease), box-shadow var(--t-fast) ease; }
+.lg-user:hover:not(:disabled) { transform: translateX(3px); box-shadow: 0 6px 16px -10px rgba(80, 60, 150, 0.4); }
+.lg-go { transition: color var(--t-fast) ease, transform var(--t-fast) var(--lg-ease); }
+.lg-user:hover:not(:disabled) .lg-go { transform: translateX(2px); }
+.lg-aviso { animation: lg-sube 0.35s var(--lg-ease) backwards; }
+
+/* Movimiento reducido: versión estática completa (red trazada, todo visible) */
 @media (prefers-reduced-motion: reduce) {
-  .lg-root * { transition: none !important; }
-  .lg-spin { animation-duration: 1.6s; }
+  .lg-root *, .lg-root *::before, .lg-root *::after { animation: none !important; transition: none !important; }
+  .lg-sg, .lg-nd-halo { display: none; }
+  .lg-spin { animation: lg-giro 1.6s linear infinite !important; }
+  .lg-nd-core.es-principal { opacity: 0.85; }
+  .lg-nd-core.es-secundario { opacity: 0.55; }
+  .lg-aura { opacity: 0.85; }
 }

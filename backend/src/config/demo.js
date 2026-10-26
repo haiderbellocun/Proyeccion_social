@@ -14,12 +14,17 @@ export const DEMO_EMAILS = [
 ];
 export const DEMO_MIN_KEY_LENGTH = 12;
 
+/** Modo abierto (DEMO_OPEN=true): se elige usuario sin clave y la sesión puede escribir. Solo para datos sintéticos de pruebas con revisores. */
+export function demoAbierto(env = process.env) {
+  return String(env.DEMO_OPEN || "").toLowerCase() === "true";
+}
+
 /** ¿Se permite montar el modo demostración? Devuelve las razones por las que NO. La base se verifica aparte, en demoDisponible(). */
 export function demoStatus(env = process.env) {
   const razones = [];
   if (String(env.DEMO_ENABLED || "").toLowerCase() !== "true") razones.push("DEMO_ENABLED no es 'true'");
   if (String(env.DEV_LOGIN_ENABLED || "").toLowerCase() === "true") razones.push("DEV_LOGIN_ENABLED=true (incompatible con la demostración)");
-  if (String(env.DEMO_ACCESS_KEY || "").trim().length < DEMO_MIN_KEY_LENGTH) razones.push(`DEMO_ACCESS_KEY ausente o menor de ${DEMO_MIN_KEY_LENGTH} caracteres`);
+  if (!demoAbierto(env) && String(env.DEMO_ACCESS_KEY || "").trim().length < DEMO_MIN_KEY_LENGTH) razones.push(`DEMO_ACCESS_KEY ausente o menor de ${DEMO_MIN_KEY_LENGTH} caracteres`);
   if (String(env.JWT_SECRET || "").trim().length < 32) razones.push("JWT_SECRET menor de 32 caracteres");
   if (env.PGDATABASE && env.PGDATABASE !== DEMO_DB) razones.push(`PGDATABASE debe ser exactamente ${DEMO_DB}`);
   return { enabled: razones.length === 0, razones };
@@ -56,7 +61,8 @@ export function claveCorrecta(candidata, env = process.env) {
  * Una sesión demo es de SOLO LECTURA y no llega a administración de usuarios, correos ni importaciones. Devuelve el motivo del bloqueo o null.
  * Se evalúa en el servidor (requireAuth): ocultar botones en la interfaz no cuenta.
  */
-export function demoBloqueo(method, rawPath) {
+export function demoBloqueo(method, rawPath, env = process.env) {
+  if (demoAbierto(env)) return null;
   const m = String(method || "").toUpperCase();
   let p = String(rawPath || "").split("?")[0];
   try { p = decodeURIComponent(p); } catch { /* ruta mal codificada: se evalúa tal cual */ }

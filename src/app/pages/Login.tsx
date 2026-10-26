@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router";
 import { AlertCircle, ChevronDown, ChevronRight, Info, KeyRound, Loader2 } from "lucide-react";
 import "@fontsource-variable/nunito-sans";
@@ -7,6 +7,7 @@ import { clearSession, getDemoPase, getSessionToken, readCurrentUser, saveSessio
 import { notify } from "../lib/notify";
 import "../components/b2/b2.css";
 import "./login-b2.css";
+import { LoginMotionBackground, LoginMotionMini } from "./LoginMotionBackground";
 
 const GOOGLE_SCRIPT_ID = "google-identity-services";
 const GOOGLE_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
@@ -102,6 +103,8 @@ export default function Login() {
   // Modo DEMOSTRACIÓN (piloto): independiente del acceso de desarrollo y de Google. Solo se ofrece si el servidor lo confirma (/auth/demo/estado);
   // la clave se valida en el servidor y nunca se guarda en el cliente. Las sesiones son de solo lectura, lo hace cumplir el servidor.
   const [demoActivo, setDemoActivo] = useState(false);
+  // Modo abierto del piloto: sin clave y con escritura (datos sintéticos de pruebas con revisores).
+  const [demoAbierto, setDemoAbierto] = useState(false);
   const [demoPaso, setDemoPaso] = useState<DemoPaso>("cerrado");
   const [demoClave, setDemoClave] = useState("");
   const [demoUsers, setDemoUsers] = useState<DevUser[]>([]);
@@ -117,9 +120,10 @@ export default function Login() {
       .then(async (d) => {
         if (cancelled || !d?.habilitado) return;
         setDemoActivo(true);
+        setDemoAbierto(Boolean(d.abierto));
         const pase = getDemoPase();
-        if (!pase) return;
-        const r = await window.fetch(`${API_BASE}/auth/demo/usuarios`, { headers: { Authorization: `Bearer ${pase}` } });
+        if (!pase && !d.abierto) return;
+        const r = await window.fetch(`${API_BASE}/auth/demo/usuarios`, { headers: { Authorization: `Bearer ${pase || ""}` } });
         if (cancelled) return;
         if (!r.ok) { setDemoPase(null); return; }
         const lista = await r.json().catch(() => null);
@@ -173,7 +177,7 @@ export default function Login() {
       }
       if (!response.ok) throw new Error(data.error || "No se pudo abrir la demostración");
       saveSession(data.token, data.user);
-      setDemoSession(true);
+      setDemoSession(!demoAbierto);
       navigate(data.user.rol === "admin" ? "/admin" : "/docente", { replace: true });
     } catch (cause) {
       setDemoElegido("");
@@ -300,23 +304,7 @@ export default function Login() {
     <div className="b2-scope lg-root">
       {/* Panel de identidad (solo escritorio) */}
       <aside className="lg-brand" aria-label="ProySocial">
-        <svg className="lg-geo" viewBox="0 0 560 560" fill="none" aria-hidden>
-          <g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-            <path d="M120 440 280 330M280 330 460 400M280 330 330 170M330 170 480 110M330 170 190 120M460 400 520 280M120 440 60 330" />
-          </g>
-          <g fill="currentColor">
-            <circle cx="280" cy="330" r="13" />
-            <circle cx="120" cy="440" r="6" />
-            <circle cx="330" cy="170" r="8" />
-          </g>
-          <g stroke="currentColor" strokeWidth="1.6">
-            <circle cx="460" cy="400" r="11" />
-            <circle cx="480" cy="110" r="9" />
-            <circle cx="190" cy="120" r="7" />
-            <circle cx="520" cy="280" r="6" />
-            <circle cx="60" cy="330" r="7" />
-          </g>
-        </svg>
+        <LoginMotionBackground />
         <div className="lg-brand-top">
           <span className="lg-brand-name">
             <strong>Corporación Unificada Nacional</strong>
@@ -324,7 +312,10 @@ export default function Login() {
           </span>
         </div>
         <div className="lg-brand-body">
-          <h2>Seguimiento de Proyección Social</h2>
+          <h2>
+            <span className="lg-linea"><span>Seguimiento de</span></span>{" "}
+            <span className="lg-linea"><span>Proyección Social</span></span>
+          </h2>
           <p>Organización y trazabilidad de entregables, evidencias y revisión del semestre, con transparencia para docentes y coordinación.</p>
         </div>
         <p className="lg-brand-foot">Acceso exclusivo para usuarios autorizados</p>
@@ -334,6 +325,7 @@ export default function Login() {
         {/* Identidad institucional compacta (tableta y móvil); el logo de ProySocial va en la tarjeta */}
         <header className="lg-top">
           <span className="lg-brand-name"><strong>Corporación Unificada Nacional</strong><span>CUN</span></span>
+          <LoginMotionMini />
         </header>
 
         <div className="lg-col">
@@ -390,12 +382,12 @@ export default function Login() {
                   <span className="lg-dev-tit">
                     <span className="lg-dev-tag">DEMO</span>
                     <span>
-                      <strong>Entorno de demostración</strong>
-                      <span>Datos sintéticos · Solo lectura</span>
+                      <strong>{demoAbierto ? "Entorno de pruebas" : "Entorno de demostración"}</strong>
+                      <span>{demoAbierto ? "Datos sintéticos · Puedes probar y modificar" : "Datos sintéticos · Solo lectura"}</span>
                     </span>
                   </span>
                 </div>
-                {demoPaso === "cerrado" && (
+                {demoPaso === "cerrado" && !demoAbierto && (
                   <button type="button" className="lg-btn-sec" onClick={() => { setDemoError(""); setDemoPaso("clave"); }}>
                     <KeyRound aria-hidden /> Explorar demostración
                   </button>
@@ -424,10 +416,10 @@ export default function Login() {
                 {demoPaso === "usuarios" && (
                   <>
                     <ul className="lg-dev-lista" aria-label="Usuarios de la demostración">
-                      {demoUsers.map((u) => {
+                      {demoUsers.map((u, i) => {
                         const elegido = demoElegido === u.correo;
                         return (
-                          <li key={u.correo}>
+                          <li key={u.correo} style={{ "--i": i } as CSSProperties}>
                             <button
                               type="button"
                               className={`lg-user${elegido ? " is-selected" : ""}${u.rol === "admin" ? " is-admin" : ""}`}
@@ -450,7 +442,7 @@ export default function Login() {
                         );
                       })}
                     </ul>
-                    <button type="button" className="lg-link" onClick={salirDemo}>Salir de la demostración</button>
+                    {!demoAbierto && <button type="button" className="lg-link" onClick={salirDemo}>Salir de la demostración</button>}
                   </>
                 )}
                 {demoError && (
@@ -482,10 +474,10 @@ export default function Login() {
                 </button>
                 {devAbierto && (
                   <ul id="lg-dev-lista" className="lg-dev-lista">
-                    {devUsers.map((u) => {
+                    {devUsers.map((u, i) => {
                       const elegido = devElegido === u.correo;
                       return (
-                        <li key={u.correo}>
+                        <li key={u.correo} style={{ "--i": i } as CSSProperties}>
                           <button
                             type="button"
                             className={`lg-user${elegido ? " is-selected" : ""}${u.rol === "admin" ? " is-admin" : ""}`}

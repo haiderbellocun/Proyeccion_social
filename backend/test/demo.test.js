@@ -68,3 +68,14 @@ test("la IP del cliente es el último valor de X-Forwarded-For", () => {
   assert.equal(ipCliente(req("1.1.1.1, 2.2.2.2")), "2.2.2.2");
   assert.equal(ipCliente(req("")), "10.0.0.1");
 });
+
+test("modo abierto (DEMO_OPEN): sin clave y sin bloqueo de escritura", async () => {
+  const { demoAbierto } = await import("../src/config/demo.js");
+  const base = { DEMO_ENABLED: "true", JWT_SECRET: "x".repeat(40), PGDATABASE: "proysocial_piloto" };
+  assert.equal(demoStatus(base).enabled, false, "sin clave y sin DEMO_OPEN no se activa");
+  assert.equal(demoStatus({ ...base, DEMO_OPEN: "true" }).enabled, true);
+  assert.equal(demoAbierto({ DEMO_OPEN: "true" }), true);
+  assert.equal(demoBloqueo("POST", "/docente/3/info-contacto", { DEMO_OPEN: "true" }), null);
+  assert.equal(demoBloqueo("GET", "/admin/usuarios", { DEMO_OPEN: "true" }), null);
+  assert.ok(demoBloqueo("POST", "/docente/3/info-contacto", {}));
+});

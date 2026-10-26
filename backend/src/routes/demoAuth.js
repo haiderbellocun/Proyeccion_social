@@ -5,7 +5,7 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import { pool } from "../db.js";
 import { SESSION_ISSUER, createDemoSessionToken, getJwtSecret, publicUser } from "../middleware/auth.js";
-import { DEMO_DB, DEMO_EMAILS, claveCorrecta, crearLimitador, demoDisponible, ipCliente } from "../config/demo.js";
+import { DEMO_DB, DEMO_EMAILS, claveCorrecta, crearLimitador, demoAbierto, demoDisponible, ipCliente } from "../config/demo.js";
 
 const router = express.Router();
 const PASE_AUDIENCE = "proysocial-demo-pase";
@@ -38,6 +38,7 @@ function crearPase() {
 }
 
 function paseValido(req) {
+  if (demoAbierto()) return true;
   const m = String(req.get("authorization") || "").match(/^Bearer\s+(.+)$/i);
   if (!m) return false;
   try {
@@ -51,11 +52,22 @@ function paseValido(req) {
 router.get("/estado", (_req, res) => {
   res.json({
     habilitado: true,
-    entorno: { base: DEMO_DB, datos: "sinteticos", solo_lectura: true, aviso: "Entorno de demostración con datos sintéticos; solo lectura." },
+    abierto: demoAbierto(),
+    entorno: demoAbierto()
+      ? { base: DEMO_DB, datos: "sinteticos", solo_lectura: false, aviso: "Entorno de pruebas con datos sintéticos; los cambios están permitidos." }
+      : { base: DEMO_DB, datos: "sinteticos", solo_lectura: true, aviso: "Entorno de demostración con datos sintéticos; solo lectura." },
   });
 });
 
 router.post("/acceso", async (req, res) => {
+  if (demoAbierto()) {
+    try {
+      return res.json({ pase: crearPase(), usuarios: (await usuariosDemo()).map(publicUser) });
+    } catch (error) {
+      console.error("Error en POST /auth/demo/acceso", error?.message);
+      return res.status(500).json({ error: "Error interno" });
+    }
+  }
   const ip = ipCliente(req);
   const espera = Math.max(porIp.espera(ip), limiteGlobal.espera(GLOBAL));
   if (espera > 0) {
@@ -97,7 +109,7 @@ router.post("/sesion", async (req, res) => {
     const semestre = (await pool.query(
       `SELECT codigo, fecha_inicio, fecha_fin, numero_semanas FROM semestres WHERE activo = TRUE ORDER BY fecha_inicio DESC LIMIT 1`
     )).rows[0] || null;
-    res.json({ token: createDemoSessionToken(user), user: publicUser(user), semestre, entorno: "demo", solo_lectura: true });
+    res.json({ token: createDemoSessionToken(user), user: publicUser(user), semestre, entorno: "demo", solo_lectura: !demoAbierto() });
   } catch (error) {
     console.error("Error en POST /auth/demo/sesion", error?.message);
     res.status(500).json({ error: "Error interno" });
