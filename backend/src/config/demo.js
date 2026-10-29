@@ -19,29 +19,74 @@ export function demoAbierto(env = process.env) {
   return String(env.DEMO_OPEN || "").toLowerCase() === "true";
 }
 
+/**
+ * Acceso PÚBLICO de solo lectura (DEMO_PUBLIC_READONLY=true): cualquiera con el enlace elige uno de los cinco perfiles sintéticos SIN clave.
+ * La ausencia de clave no da escritura: las sesiones siguen siendo "demo" (solo lectura, bloqueo en requireAuth). Es incompatible con
+ * DEMO_OPEN (que sí escribe) y solo se mantiene mientras la base contenga exclusivamente los cinco usuarios sintéticos (ver demoDisponible).
+ */
+export function demoPublico(env = process.env) {
+  return String(env.DEMO_PUBLIC_READONLY || "").toLowerCase() === "true";
+}
+
 /** ¿Se permite montar el modo demostración? Devuelve las razones por las que NO. La base se verifica aparte, en demoDisponible(). */
 export function demoStatus(env = process.env) {
   const razones = [];
   if (String(env.DEMO_ENABLED || "").toLowerCase() !== "true") razones.push("DEMO_ENABLED no es 'true'");
   if (String(env.DEV_LOGIN_ENABLED || "").toLowerCase() === "true") razones.push("DEV_LOGIN_ENABLED=true (incompatible con la demostración)");
-  if (!demoAbierto(env) && String(env.DEMO_ACCESS_KEY || "").trim().length < DEMO_MIN_KEY_LENGTH) razones.push(`DEMO_ACCESS_KEY ausente o menor de ${DEMO_MIN_KEY_LENGTH} caracteres`);
+  if (demoPublico(env) && demoAbierto(env)) razones.push("DEMO_PUBLIC_READONLY es incompatible con DEMO_OPEN (el acceso público nunca puede escribir)");
+  if (!demoAbierto(env) && !demoPublico(env) && String(env.DEMO_ACCESS_KEY || "").trim().length < DEMO_MIN_KEY_LENGTH) razones.push(`DEMO_ACCESS_KEY ausente o menor de ${DEMO_MIN_KEY_LENGTH} caracteres`);
   if (String(env.JWT_SECRET || "").trim().length < 32) razones.push("JWT_SECRET menor de 32 caracteres");
   if (env.PGDATABASE && env.PGDATABASE !== DEMO_DB) razones.push(`PGDATABASE debe ser exactamente ${DEMO_DB}`);
   return { enabled: razones.length === 0, razones };
 }
 
 let baseVerificada = false;
+let motivoNoDisponible = "";
+let datosVerificados = { ok: false, hasta: 0 };
+const DATOS_TTL_MS = () => Number(process.env.DEMO_DATOS_TTL_MS || 60000);
+
+/** Último motivo por el que demoDisponible() devolvió false (para un mensaje claro al usuario; no incluye datos internos). */
+export function demoMotivo() {
+  return motivoNoDisponible;
+}
+
+/**
+ * Acceso público: la base solo puede tener los cinco usuarios sintéticos (activos o no), todos sin cuenta de Google vinculada. Si aparece
+ * cualquier otro usuario (datos reales) el acceso público se apaga solo. Se reevalúa cada minuto (DEMO_DATOS_TTL_MS).
+ */
+async function soloDatosSinteticos() {
+  if (Date.now() < datosVerificados.hasta) return datosVerificados.ok;
+  const r = await pool.query(
+    "SELECT COUNT(*)::int AS otros FROM usuarios WHERE LOWER(correo) <> ALL($1::text[]) OR google_sub IS NOT NULL",
+    [DEMO_EMAILS]
+  );
+  datosVerificados = { ok: r.rows[0].otros === 0, hasta: Date.now() + DATOS_TTL_MS() };
+  return datosVerificados.ok;
+}
+
 /** Estado de entorno (variables) Y base realmente conectada. Se consulta en cada petición; la base solo se pregunta hasta confirmarla. */
 export async function demoDisponible() {
+  motivoNoDisponible = "";
   if (!demoStatus().enabled) return false;
-  if (baseVerificada) return true;
   try {
-    const r = await pool.query("SELECT current_database() AS d");
-    baseVerificada = r.rows[0].d === DEMO_DB;
+    if (!baseVerificada) {
+      const r = await pool.query("SELECT current_database() AS d");
+      baseVerificada = r.rows[0].d === DEMO_DB;
+      if (!baseVerificada) {
+        motivoNoDisponible = "La base conectada no es la del piloto.";
+        return false;
+      }
+    }
+    if (demoPublico() && !(await soloDatosSinteticos())) {
+      motivoNoDisponible = "El acceso público de demostración está deshabilitado: la base contiene usuarios distintos de los sintéticos.";
+      return false;
+    }
   } catch {
     baseVerificada = false;
+    motivoNoDisponible = "La base de datos no está disponible para la demostración. Inténtalo de nuevo en unos minutos.";
+    return false;
   }
-  return baseVerificada;
+  return true;
 }
 
 export function esUsuarioDemo(correo) {

@@ -12,7 +12,7 @@ import importacionesRouter from "./routes/importaciones.js";
 import devAuthRouter from "./routes/devAuth.js";
 import demoAuthRouter from "./routes/demoAuth.js";
 import { devLoginStatus } from "./config/devLogin.js";
-import { demoAbierto, demoStatus } from "./config/demo.js";
+import { demoAbierto, demoPublico, demoStatus } from "./config/demo.js";
 import { requireAuth, requireRole } from "./middleware/auth.js";
 import {
   emailConfiguration,
@@ -107,7 +107,7 @@ if (devLoginStatus().enabled) {
 const demo = demoStatus();
 if (demo.enabled) {
   app.use("/auth/demo", demoAuthRouter);
-  console.warn(demoAbierto() ? "Modo demostración ABIERTO (sin clave, con escritura, usuarios sintéticos)." : "Modo demostración ACTIVO (solo lectura, usuarios sintéticos).");
+  console.warn(demoAbierto() ? "Modo demostración ABIERTO (sin clave, con escritura, usuarios sintéticos)." : demoPublico() ? "Modo demostración PÚBLICO (sin clave, SOLO LECTURA, usuarios sintéticos)." : "Modo demostración ACTIVO (solo lectura, con clave, usuarios sintéticos).");
 } else if (String(process.env.DEMO_ENABLED || "").toLowerCase() === "true") {
   console.error("DEMO_ENABLED=true pero el modo demostración NO se activó:", demo.razones.join("; "));
 }

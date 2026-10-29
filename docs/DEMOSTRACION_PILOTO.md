@@ -5,9 +5,10 @@ Permite explorar ProySocial con los cinco usuarios sintéticos `@proysocial.loca
 ## Cómo funciona
 
 1. El login muestra el bloque **«Entorno de demostración · Datos sintéticos»** solo si el servidor responde `GET /auth/demo/estado`.
-2. «Explorar demostración» → el visitante escribe la **clave** → `POST /auth/demo/acceso`.
-3. Si es correcta, el servidor devuelve un **pase** (JWT, 30 min, audiencia propia) y los cinco usuarios. Con el pase se puede volver a elegir usuario sin reescribir la clave (`GET /auth/demo/usuarios`).
-4. Al elegir un usuario → `POST /auth/demo/sesion` (pase + correo): sesión JWT con `scope: "demo"`, **2 h** (`DEMO_SESSION_TTL`), sin renovación.
+2. Las **cinco tarjetas** (mismo diseño y orden que el acceso DEV local: avatar, nombre, rol y correo) se ven de inmediato; salen de `GET /auth/demo/estado`, que solo expone nombre, apellido, correo y rol (sin ids ni fotos) y no sirve para entrar sin la clave.
+3. Al elegir una tarjeta sin haber validado la clave, el login pide la **clave del piloto** (`POST /auth/demo/acceso`) y, si es correcta, entra directo con ese usuario. El servidor devuelve un **pase** (JWT, 30 min, audiencia propia): con él, cambiar de usuario es un clic (`POST /auth/demo/sesion`).
+   - Si la base de datos no responde (p. ej. Cloud SQL rechaza las credenciales) `/auth/demo/*` responde **503** (no 404): el login muestra el motivo y «Reintentar». Solo un 404 significa «demostración apagada».
+4. La sesión (pase + correo): sesión JWT con `scope: "demo"`, **2 h** (`DEMO_SESSION_TTL`), sin renovación.
 5. La sesión demo es de **solo lectura**, lo hace cumplir `requireAuth` en el servidor (no la interfaz): cualquier método distinto de GET/HEAD/OPTIONS responde 403, salvo `POST /auth/logout`. Además quedan bloqueadas (también en lectura) `/admin/usuarios`, `/admin/correos` y `/admin/importaciones`.
 6. Una banda «Modo demostración · Solo lectura» con «Cambiar de usuario» aparece en toda la aplicación.
 
@@ -110,3 +111,29 @@ Si el servicio no admite invocaciones sin autenticar (IAM), la URL con etiqueta 
 - **Datos reales de lectura**: la demo expone en lectura todo lo que hay en `proysocial_piloto` a quien tenga la clave. Son datos sintéticos; si algún día se cargan datos reales en esa base, apaga la demostración.
 - **`/auth/demo/*` es público** (como `/auth/google`): responde 404 si la demo está apagada.
 - La base local usada para probar se llama también `proysocial_piloto` (clon local de `proysocial_dev`); no es la de Cloud SQL.
+
+## Regresión del selector
+
+- `backend/test/loginSelector.test.js` (corre con `npm test`) falla si el login pierde `data-testid="demo-selector"`/`demo-usuario`, si el selector pasa a depender de `import.meta.env.DEV` o de Google, o si la carga vuelve a tragarse errores.
+- `e2e/suites/demo-ui.mjs` cubre clave visible sin botón, cinco tarjetas, los cuatro docentes, escrituras 403, aviso de fallo + «Reintentar» (proxy que devuelve 503) y 1440/1280/820/390 px.
+
+## Acceso público sin clave y de solo lectura (`DEMO_PUBLIC_READONLY=true`)
+
+Para que los evaluadores entren con un clic, sin clave, a cualquiera de los cinco perfiles. **La ausencia de clave no da escritura**: la sesión sigue siendo `scope: "demo"` y `requireAuth` bloquea en el servidor todo método distinto de GET/HEAD/OPTIONS y las secciones `/admin/usuarios|correos|importaciones`.
+
+| Variable | Valor en el piloto |
+|---|---|
+| `DEMO_ENABLED` | `true` |
+| `DEMO_PUBLIC_READONLY` | `true` (modo público de solo lectura) |
+| `DEMO_OPEN` | **no definir** (escribe; con `DEMO_PUBLIC_READONLY` la demo ni se monta) |
+| `DEV_LOGIN_ENABLED` | `false` / ausente |
+| `DEMO_ACCESS_KEY` | opcional; en modo público no se usa (sirve para volver al modo con clave) |
+
+Controles añadidos en el servidor:
+- **Solo cinco perfiles**: lista cerrada; `correo` debe ser una cadena (arreglos/objetos se rechazan).
+- **Apagado automático por datos**: si `usuarios` contiene algo distinto de los cinco sintéticos (o alguna cuenta con Google vinculado), `/auth/demo/*` responde 503 «deshabilitado» y las sesiones demo dejan de valer; se reevalúa cada 60 s (`DEMO_DATOS_TTL_MS`). También exige que la base sea exactamente `proysocial_piloto`.
+- **Límites**: 600 peticiones a `/auth/demo/*` y 120 sesiones emitidas por IP cada 15 min, y 3000 sesiones globales → 429 con `Retry-After`.
+- **Base caída o credenciales rechazadas**: `/auth/demo/*` → 503 con mensaje claro (nunca sesión); el login lo muestra con «Reintentar».
+- `/auth/demo/estado` expone nombre, apellido, correo y rol de los cinco perfiles (sin ids ni fotos).
+
+Pruebas: `backend/test/integration/demo-publico.integration.test.js` (11), `e2e/suites/demo-publico-ui.mjs` (35, compilación de producción, 1440/1280/820/390 px) y `backend/scripts/demo-publico-humo.mjs` (contra cualquier URL, p. ej. la revisión etiquetada antes de pasarle tráfico).
