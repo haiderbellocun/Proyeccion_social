@@ -87,7 +87,7 @@
 .b2-body-text { font-size: var(--fs-md); line-height: 1.4; }
 /* ───────── estructura ───────── */
 .b2-root { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
-.b2-cuerpo { flex: 1; min-height: 0; display: flex; }
+.b2-cuerpo { flex: 1; min-height: 0; display: flex; position: relative; isolation: isolate; }
 .b2-main { flex: 1; min-width: 0; min-height: 0; outline: none; display: flex; flex-direction: column; }
 .b2-root[data-ampliar] .b2-ctx, .b2-root[data-ampliar] .b2-side { display: none; }
 
@@ -485,7 +485,45 @@
 }
 
 /* ═════════ Integración en la aplicación real ═════════ */
-.b2-main { position: relative; display: block; overflow-y: auto; background: var(--c-bg); }
+/* ═════════ Fondo de identidad (patrón geométrico de ProySocial) ═════════
+   Un solo recurso (patron-b2.svg: la celda repetible del patrón de referencia) usado como MÁSCARA sobre un degradado violeta → azul → cian. Así el color
+   cubre toda la pantalla (no se repite por celda) y se ajusta desde aquí. La capa vive DETRÁS de todo el contenido (z-index -1 dentro de un contexto de
+   apilamiento propio), es estática (no se mueve con el scroll ni se anima) y no recibe eventos. Tablas, tarjetas, formularios y modales tienen fondo propio
+   y la tapan; solo asoma en márgenes, laterales, huecos entre módulos, zonas inferiores y estados vacíos.
+   Ajuste global: --b2-patron-op (intensidad), --b2-patron-w (escala; la altura sigue la proporción de la celda) y --b2-patron-c1..c3 (colores). */
+.b2-root, .b2-scope {
+  --b2-patron-op: .11;        /* intensidad normal de fondo */
+  --b2-patron-op-fuerte: .17; /* espacios vacíos y encabezados amplios (.b2-patron--fuerte) */
+  --b2-patron-op-suave: .065; /* secciones con información cercana (.b2-patron--suave) */
+  --b2-patron-cabecera: .35;  /* fracción del patrón que se conserva en la franja del título (0 = oculto, 1 = igual) */
+  --b2-patron-w: 208px;       /* ancho de la celda; alto = ancho ÷ 1,7332 (proporción original) */
+  --b2-patron-c1: #7c5ce0;    /* violeta */
+  --b2-patron-c2: #4b86e8;    /* azul */
+  --b2-patron-c3: #14bfdc;    /* cian */
+  --b2-lienzo: #f9f8fd;       /* base clara bajo el patrón */
+}
+.b2-patron { position: relative; isolation: isolate; }
+.b2-patron::before, .b2-cuerpo::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(120deg, var(--b2-patron-c1) 0%, var(--b2-patron-c2) 50%, var(--b2-patron-c3) 100%);
+  opacity: var(--b2-patron-op);
+  /* Dos capas de máscara en intersección: la celda repetida y un velo vertical que atenúa el patrón en la franja del título (texto directo sobre el lienzo). */
+  -webkit-mask-image: url(./patron-b2.svg), linear-gradient(to bottom, rgba(0, 0, 0, var(--b2-patron-cabecera)) 0, rgba(0, 0, 0, var(--b2-patron-cabecera)) 90px, #000 230px);
+  mask-image: url(./patron-b2.svg), linear-gradient(to bottom, rgba(0, 0, 0, var(--b2-patron-cabecera)) 0, rgba(0, 0, 0, var(--b2-patron-cabecera)) 90px, #000 230px);
+  -webkit-mask-size: var(--b2-patron-w) calc(var(--b2-patron-w) / 1.7332), 100% 100%;
+  mask-size: var(--b2-patron-w) calc(var(--b2-patron-w) / 1.7332), 100% 100%;
+  -webkit-mask-repeat: repeat, no-repeat;
+  mask-repeat: repeat, no-repeat;
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+.b2-patron--fuerte::before { opacity: var(--b2-patron-op-fuerte); }
+.b2-patron--suave::before { opacity: var(--b2-patron-op-suave); }
+/* El lienzo de TODAS las vistas es la franja bajo el encabezado: el patrón se pinta una vez aquí y .b2-main (donde se montan todas las páginas) queda transparente. */
+.b2-cuerpo { background-color: var(--b2-lienzo); }
+.b2-main { position: relative; display: block; overflow-y: auto; background: transparent; }
+@media (max-width: 640px) { .b2-root, .b2-scope { --b2-patron-w: 160px; } }
+@media print { .b2-patron::before { display: none; } }
 .b2-vista.b2-dash { position: absolute; inset: 0; }
 .b2-hd-av { border-radius: var(--r) !important; width: 28px; height: 28px; flex: none; background: var(--c-primary); }
 .b2-hd-count { position: absolute; top: 3px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--c-danger); color: var(--c-on-dark); font-size: 10px; font-weight: 800; display: grid; place-items: center; border: 1.5px solid var(--c-header); line-height: 1; }

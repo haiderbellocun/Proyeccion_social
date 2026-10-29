@@ -1,5 +1,5 @@
 /* Importador de matrices B2 */
-.b2-imp { font-family: var(--f-ui); font-size: var(--fs-md); line-height: 1.4; color: var(--c-text); background: var(--c-bg); }
+.b2-imp { font-family: var(--f-ui); font-size: var(--fs-md); line-height: 1.4; color: var(--c-text); /* sin fondo propio: el lienzo (con el patrón) lo pinta .b2-cuerpo */ }
 .b2-imp :focus-visible { outline: 2px solid var(--c-primary); outline-offset: 2px; }
 :where(.b2-imp) :where(h1, h2, h3, h4, p, dl, dd, ul, ol) { margin: 0; padding: 0; }
 .b2-imp .b2-pg { max-width: 1180px; }

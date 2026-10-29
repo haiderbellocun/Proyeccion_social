@@ -1,5 +1,5 @@
 /* Matriz B2 · ajustes para datos reales (se carga después de b2-matriz.css) */
-.b2-mxp { font-family: var(--f-ui); font-size: var(--fs-md); line-height: 1.4; color: var(--c-text); background: var(--c-bg); }
+.b2-mxp { font-family: var(--f-ui); font-size: var(--fs-md); line-height: 1.4; color: var(--c-text); /* sin fondo propio: el lienzo (con el patrón) lo pinta .b2-cuerpo */ }
 :where(.b2-mxp) :where(h1, h2, h3, p, dl, dd, ul) { margin: 0; padding: 0; }
 .b2-mxp :focus-visible { outline: 2px solid var(--c-primary); outline-offset: 2px; }
 .b2-mxp.b2-fill { position: absolute; inset: 0; }
